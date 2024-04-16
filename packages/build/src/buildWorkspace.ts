@@ -16,7 +16,7 @@ export async function buildWorkspace(workspaceMetadata?: WorkspaceMetadata) {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
     await cmd('npm', ['install'], { cwd: packageDir });
-    await PackageUtil.symlinkDependencies(localPackage, packageMap, logger);
+    // await PackageUtil.symlinkDependencies(localPackage, packageMap, logger);
     logger.info(`Installed ${packageName} (${packageDir})`);
 
     if (packageName != 'typescript-parser') {
