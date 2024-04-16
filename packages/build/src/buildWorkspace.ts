@@ -11,7 +11,7 @@ export async function buildWorkspace(workspaceMetadata?: WorkspaceMetadata) {
   logger.debug(`packageMap:\n${JSON.stringify(packageMap, null, 2)}`, true);
   logger.debug(`filteredPackageNames:\n${JSON.stringify(filteredPackageNames, null, 2)}`, true);
 
-  logger.info(`> Installing and building ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} packages`);
+  logger.info(`> Installing and building ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''}`);
   for (let packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
