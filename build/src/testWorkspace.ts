@@ -8,7 +8,7 @@ export const testWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
   const { packageMap, sortedPackageNames } = workspaceMetadata ? workspaceMetadata : await PackageUtil.getWorkspaceMetadata(workspacePath);
   const filteredPackageNames = sortedPackageNames.filter(packageName => !!packageMap[packageName].packageJson.scripts?.test && packageName != 'typescript-parser');
 
-  logger.info(`> Testing ${filteredPackageNames.length} packages in workspace (${workspacePath})`);
+  logger.info(`> Testing ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
   for (let packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
@@ -17,5 +17,5 @@ export const testWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
 
     await cmd('npm', ['run', 'test'], { cwd: packageDir });
   }
-  logger.info(`> Finished testing ${filteredPackageNames.length} packages in workspace (${workspacePath})`);
+  logger.info(`> Finished testing ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
 }

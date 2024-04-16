@@ -8,7 +8,7 @@ export const watchWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
   const { packageMap, sortedPackageNames } = workspaceMetadata ? workspaceMetadata : await PackageUtil.getWorkspaceMetadata(workspacePath);
   const filteredPackageNames = sortedPackageNames.filter(packageName => !!packageMap[packageName].packageJson.scripts?.watch);
 
-  logger.info(`> Watching ${filteredPackageNames.length} packages in workspace (${workspacePath})`);
+  logger.info(`> Watching ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
   const loggingStartDelay = 0;
   for (let packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];

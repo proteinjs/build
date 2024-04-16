@@ -9,6 +9,9 @@
         "test-workspace": "dist/src/runTestWorkspace.js",
         "watch-workspace": "dist/src/runWatchWorkspace.js"
     },
+    "publishConfig": {
+        "access": "public"
+    },
     "repository": {
         "type": "git",
         "url": "git+https://github.com/proteinjs/build.git"
