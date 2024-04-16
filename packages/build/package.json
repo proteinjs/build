@@ -23,7 +23,7 @@
     "author": "Brent Bahry",
     "license": "MIT",
     "scripts": {
-        "clean": "rm -rf dist/ node_modules/",
+        "clean": "rm -rf dist/ node_modules/ package-lock.json",
         "build": "tsc",
         "watch": "tsc -w -p .",
         "build-dist": "tsc && webpack --mode production"
