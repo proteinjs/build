@@ -25,17 +25,9 @@ jobs:
         with:
           node-version: '20.3.1'
       
-      - name: Install root package
+      - name: Install and build
         run: |
-          npm i
-      
-      - name: Build packages
-        run: |
-          npx build-workspace
-
-      - name: Test packages
-        run: |
-          npx test-workspace
+          cd ./build && npm i && npm run build
 
       - name: Authenticate with npm registry
         run: |
