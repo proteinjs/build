@@ -27,7 +27,7 @@ jobs:
       
       - name: Install and build
         run: |
-          cd ./build && npm i && npm run build
+          cd ./build && npm i && npm run build && cd - && npm i
 
       - name: Authenticate with npm registry
         run: |
