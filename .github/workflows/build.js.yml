@@ -31,11 +31,11 @@ jobs:
       
       - name: Build packages
         run: |
-          npm run build-workspace
+          npx build-workspace
 
       - name: Test packages
         run: |
-          npm run test-workspace
+          npx test-workspace
 
       - name: Authenticate with npm registry
         run: |
