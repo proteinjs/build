@@ -1,6 +1,6 @@
 # Overview
 
-A set of tools for managing workspace build operations, working directly on top of npm. No config required to use. 
+A set of tools for managing workspace build operations, working directly on top of npm. No config required to use.
 
 ## How to use
 
