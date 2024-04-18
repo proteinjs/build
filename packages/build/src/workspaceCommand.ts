@@ -18,6 +18,11 @@ export const workspaceCommand = async () => {
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
   const filteredPackageNames = sortedPackageNames.filter(packageName => hasScript(command, packageName, packageMap));
 
+  if (filteredPackageNames.length == 0) {
+    logger.info(`> There are no packages with the \`${command}\` script in workspace (${workspacePath})`);
+    return;
+  }
+
   logger.info(`> Running \`npm run ${command}\` for ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
   for (let packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];

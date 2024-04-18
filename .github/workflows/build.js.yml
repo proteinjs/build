@@ -35,7 +35,7 @@ jobs:
 
       - name: Test packages
         run: |
-          npx test-workspace
+          npx workspace test
 
       - name: Authenticate with npm registry
         run: |
