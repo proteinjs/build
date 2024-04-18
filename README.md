@@ -7,8 +7,8 @@ A set of tools for managing workspace build operations, working directly on top 
 1. Install as a dev dependency of your workspace root package `npm i --save-dev @proteinjs/build`
 2. The following commands are now available
     - `npx build-workspace` runs `npm install` and `npm run build` for each package, in dependency order, until the workspace is built
-    - `npx test-workspace` runs `npm run test` for each package
     - `npx watch-workspace` runs `npm run watch` for each package
+    - `npx workspace <command>` runs `npm run <command>` for each package
 
 **Note:** if a script is not defined for a package (ie. `build`|`test`|`watch`), the package will be skipped when running the workspace command instead of failing.
 
