@@ -7,7 +7,7 @@
     "watch-workspace": "watch-workspace"
   },
   "devDependencies": {
-    "@proteinjs/build": "^1.0.11",
+    "@proteinjs/build": "^1.0.12",
     "lerna": "8.1.2"
   }
 }
