@@ -8,7 +8,8 @@
         "clean-workspace": "dist/src/runCleanWorkspace.js",
         "build-workspace": "dist/src/runBuildWorkspace.js",
         "test-workspace": "dist/src/runTestWorkspace.js",
-        "watch-workspace": "dist/src/runWatchWorkspace.js"
+        "watch-workspace": "dist/src/runWatchWorkspace.js",
+        "workspace": "dist/src/runWorkspaceCommand.js"
     },
     "publishConfig": {
         "access": "public"
