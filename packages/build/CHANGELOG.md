@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.0.15](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.14...@proteinjs/build@1.0.15) (2024-04-19)
+
+
+### Bug Fixes
+
+* flags now work in `buildWorkspace` and `workspaceCommand` ([82e998c](https://github.com/proteinjs/build/commit/82e998c1cac50e42be34893d20b99369eef52a39))
+
+
+
+
+
 ## [1.0.14](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.13...@proteinjs/build@1.0.14) (2024-04-18)
 
 **Note:** Version bump only for package @proteinjs/build
