@@ -1,5 +1,5 @@
 import * as path from 'path'
-import { LocalPackageMap, PackageUtil, cmd } from '@proteinjs/util-node'
+import { LocalPackageMap, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node'
 import { Logger } from '@proteinjs/util'
 
 /**
@@ -14,10 +14,13 @@ import { Logger } from '@proteinjs/util'
 export const workspaceCommand = async () => {
   const command = process.argv[2]
   const logger = new Logger(`workspace:${command}`);
+  const args = getArgs();
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
-  const filteredPackageNames = sortedPackageNames.filter(packageName => hasScript(command, packageName, packageMap));
-
+  const filteredPackageNames = sortedPackageNames.filter(packageName => { 
+    return hasScript(command, packageName, packageMap) &&
+      !(args.skip && args.skip.includes(packageName));
+  });
   if (filteredPackageNames.length == 0) {
     logger.info(`> There are no packages with the \`${command}\` script in workspace (${workspacePath})`);
     return;
@@ -30,6 +33,22 @@ export const workspaceCommand = async () => {
     await cmd('npm', ['run', command], { cwd: packageDir }, { logPrefix: `[${packageName}] ` });
   }
   logger.info(`> Ran \`npm run ${command}\` for ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
+}
+
+type Args = {
+  skip?: string[],
+}
+
+function getArgs() {
+  const args: Args = {};
+  const argsMap = parseArgsMap(process.argv.slice(3));
+  for (let argName in argsMap) {
+    const argValue = argsMap[argName];
+    if (argName == 'skip' && typeof argValue === 'string')
+      args.skip = argValue.split(',');
+  }
+
+  return args;
 }
 
 function hasScript(scriptName: string, packageName: string, packageMap: LocalPackageMap) {

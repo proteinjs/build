@@ -54,11 +54,11 @@ function getArgs() {
   const argsMap = parseArgsMap(process.argv.slice(2));
   for (let argName in argsMap) {
     const argValue = argsMap[argName];
-    if (argName == '--no-install' && typeof argValue === 'string')
+    if (argName == 'no-install' && typeof argValue === 'string')
       args.noInstall = argValue.split(',');
-    else if (argName == '--no-build' && typeof argValue === 'string')
+    else if (argName == 'no-build' && typeof argValue === 'string')
       args.noBuild = argValue.split(',');
-    else if (argName == '--skip' && typeof argValue === 'string')
+    else if (argName == 'skip' && typeof argValue === 'string')
       args.skip = argValue.split(',');
   }
 
