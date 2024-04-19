@@ -32,7 +32,7 @@
     },
     "dependencies": {
         "@proteinjs/util": "1.0.18",
-        "@proteinjs/util-node": "1.0.21"
+        "@proteinjs/util-node": "1.0.22"
     },
     "devDependencies": {
         "@babel/core": "7.23.7",
