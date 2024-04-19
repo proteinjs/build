@@ -2,8 +2,9 @@
   "name": "root",
   "private": true,
   "scripts": {
+    "clean-workspace": "workspace clean",
     "build-workspace": "build-workspace",
-    "test-workspace": "test-workspace",
+    "test-workspace": "workspace test",
     "watch-workspace": "watch-workspace"
   },
   "devDependencies": {
