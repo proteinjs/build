@@ -47,6 +47,6 @@ jobs:
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
-          npx lerna publish --yes --no-private --force-publish
+          npx lerna publish --yes --no-private
         env:
           NPM_TOKEN: ${{secrets.NPM_TOKEN}}
