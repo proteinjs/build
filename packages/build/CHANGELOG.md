@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.0.23](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.22...@proteinjs/build@1.0.23) (2024-04-22)
+
+
+### Bug Fixes
+
+* `versionWorkspace` shouldn't clean before installing (that can mess with more complicated build processes like @proteinjs/reflection-build-test-b). instead, just delete the package-lock pre-install ([8ceb1cd](https://github.com/proteinjs/build/commit/8ceb1cd6387a2bb91bbb0a381a73be70ed8f931c))
+
+
+
+
+
 ## [1.0.22](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.21...@proteinjs/build@1.0.22) (2024-04-22)
 
 
