@@ -73,7 +73,7 @@ type DependencyVersion = { prefix: string|undefined, version: string }
 function getDependencyVersion(dependencyPackageName: string, localPackage: LocalPackage): DependencyVersion|undefined {
   let currentRawDependencyVersion = localPackage.packageJson.dependencies ? localPackage.packageJson.dependencies[dependencyPackageName] : undefined;
   if (!currentRawDependencyVersion)
-    currentRawDependencyVersion = localPackage.packageJson.dependencies ? localPackage.packageJson.devDependencies[dependencyPackageName] : undefined;
+    currentRawDependencyVersion = localPackage.packageJson.devDependencies ? localPackage.packageJson.devDependencies[dependencyPackageName] : undefined;
 
   if (!currentRawDependencyVersion)
     return undefined;
@@ -174,7 +174,7 @@ async function getRepoInfo(dir: string): Promise<RepoInfo> {
 
 async function publish(localPackage: LocalPackage) {
   if (localPackage.packageJson.private) {
-    logger.warn(`Preventing publish of private package: ${localPackage.name}`);
+    logger.info(`Preventing publish of private package: ${localPackage.name}`);
     return;
   }
 
