@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.0.25](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.24...@proteinjs/build@1.0.25) (2024-04-22)
+
+
+### Bug Fixes
+
+* `versionWorkspace` needs to pull the whole workspace before fetching `WorkspaceMetadata`; else we'll potentially have out-of-date package version info ([025f4fc](https://github.com/proteinjs/build/commit/025f4fc9786bfd53f3bec98221e627c55e2c256a))
+
+
+
+
+
 ## [1.0.24](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.23...@proteinjs/build@1.0.24) (2024-04-22)
 
 
