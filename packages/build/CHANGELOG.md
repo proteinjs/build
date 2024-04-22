@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.0.22](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.21...@proteinjs/build@1.0.22) (2024-04-22)
+
+
+### Bug Fixes
+
+* `versionWorkspace` should not attempt to bump versions of local path dependencies (ie: file:../b) ([58405d8](https://github.com/proteinjs/build/commit/58405d8bb11e563a9da6c5b5b9bdbdf3dd886448))
+
+
+
+
+
 ## [1.0.21](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.20...@proteinjs/build@1.0.21) (2024-04-22)
 
 
