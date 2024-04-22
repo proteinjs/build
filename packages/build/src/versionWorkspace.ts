@@ -8,6 +8,7 @@ const logger = new Logger('workspace:version');
 
 export async function versionWorkspace() {
   const workspacePath = process.cwd();
+  await pullWorkspace(workspacePath);
   const { packageMap, packageGraph, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
   const filteredPackageNames = sortedPackageNames.filter(packageName => {
     const localPackage = packageMap[packageName];
@@ -20,7 +21,6 @@ export async function versionWorkspace() {
   logger.info(`> Versioning workspace (${workspacePath})`);
   for (let packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
-    await pull(localPackage);
     const dependenciesChanged = await bumpDependencies(localPackage, packageMap, packageGraph);
     if (!dependenciesChanged)
       continue;
@@ -35,6 +35,26 @@ export async function versionWorkspace() {
 
   await pushMetarepo(workspacePath);
   logger.info(`> Finished versioning workspace (${workspacePath})`);
+}
+
+async function pullWorkspace(workspacePath: string) {
+  const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
+  const filteredPackageNames = sortedPackageNames.filter(packageName => {
+    const localPackage = packageMap[packageName];
+    return !!localPackage.packageJson.scripts?.clean
+      && !!localPackage.packageJson.scripts?.build 
+      && packageName != 'typescript-parser'
+    ;
+  });
+
+  logger.info(`> Pulling workspace (${workspacePath})`);
+  for (let packageName of filteredPackageNames) {
+    const localPackage = packageMap[packageName];
+    await pull(localPackage);
+  }
+
+  await pushMetarepo(workspacePath);
+  logger.info(`> Finished pulling workspace (${workspacePath})`);
 }
 
 async function bumpDependencies(localPackage: LocalPackage, packageMap: LocalPackageMap, packageGraph: any) {
