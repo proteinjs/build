@@ -49,6 +49,9 @@ async function bumpDependencies(localPackage: LocalPackage, packageMap: LocalPac
     if (!currentDependencyVersion)
       throw new Error(`Package (${localPackage.name}) has dependency on ${localDependency}, but cannot find version in ${localPackage.name}'s package.json`);
 
+    if (currentDependencyVersion.isLocalPath)
+      continue;
+
     if (currentDependencyVersion?.version == localDependencyVersion)
       continue;
 
@@ -68,7 +71,7 @@ async function bumpDependencies(localPackage: LocalPackage, packageMap: LocalPac
   return dependenciesChanged;
 }
 
-type DependencyVersion = { prefix: string|undefined, version: string }
+type DependencyVersion = { prefix?: string, version: string, isLocalPath?: boolean }
 
 function getDependencyVersion(dependencyPackageName: string, localPackage: LocalPackage): DependencyVersion|undefined {
   let currentRawDependencyVersion = localPackage.packageJson.dependencies ? localPackage.packageJson.dependencies[dependencyPackageName] : undefined;
@@ -77,6 +80,9 @@ function getDependencyVersion(dependencyPackageName: string, localPackage: Local
 
   if (!currentRawDependencyVersion)
     return undefined;
+
+  if (currentRawDependencyVersion.startsWith('file:') || currentRawDependencyVersion.startsWith('.'))
+    return { version: currentRawDependencyVersion, isLocalPath: true };
 
   const match = currentRawDependencyVersion.match(/^([~^]?)(\d+\.\d+\.\d+)/);
   return { prefix: match[1], version: match[2] };
