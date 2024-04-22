@@ -62,7 +62,7 @@ async function bumpDependencies(localPackage: LocalPackage, packageMap: LocalPac
     const currentVersion = localPackage.packageJson.version;
     localPackage.packageJson.version = bumpPatchVersion(currentVersion);
     logger.info(`(${localPackage.name}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`);
-    await Fs.writeFiles([{ path: localPackage.filePath, content: localPackage.packageJson }]);
+    await Fs.writeFiles([{ path: localPackage.filePath, content: JSON.stringify(localPackage.packageJson) }]);
   }
 
   return dependenciesChanged;
