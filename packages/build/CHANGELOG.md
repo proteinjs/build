@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.0.20](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.19...@proteinjs/build@1.0.20) (2024-04-22)
+
+
+### Bug Fixes
+
+* `versionWorkspace` writing of package.json still needs to be formatted ([d25b00d](https://github.com/proteinjs/build/commit/d25b00daf6ebd63a3b6d4064346bfd0ae16eeeb6))
+
+
+
+
+
 ## [1.0.19](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.18...@proteinjs/build@1.0.19) (2024-04-22)
 
 
