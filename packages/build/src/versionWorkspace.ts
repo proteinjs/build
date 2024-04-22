@@ -20,6 +20,7 @@ export async function versionWorkspace() {
   logger.info(`> Versioning workspace (${workspacePath})`);
   for (let packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
+    await pull(localPackage);
     const dependenciesChanged = await bumpDependencies(localPackage, packageMap, packageGraph);
     if (!dependenciesChanged)
       continue;
@@ -28,7 +29,7 @@ export async function versionWorkspace() {
     if (localPackage.packageJson.private)
       continue;
 
-    await pushChanges(localPackage);
+    await push(localPackage);
     await publish(localPackage);
   }
 
@@ -113,7 +114,13 @@ async function buildAndTest(localPackage: LocalPackage) {
   }
 }
 
-async function pushChanges(localPackage: LocalPackage): Promise<Commit> {
+async function pull(localPackage: LocalPackage) {
+  const packageDir = path.dirname(localPackage.filePath);
+  await cmd('git', ['pull'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
+  logger.info(`(${localPackage.name}) pulled latest changes`);
+}
+
+async function push(localPackage: LocalPackage): Promise<Commit> {
   const packageDir = path.dirname(localPackage.filePath);
   await cmd('git', ['add', '.'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
   await cmd('git', ['commit', '-m', `chore(version): bumping dependency versions [skip ci]`], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
