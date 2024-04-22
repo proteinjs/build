@@ -14,7 +14,6 @@ export async function versionWorkspace() {
     return !!localPackage.packageJson.scripts?.clean
       && !!localPackage.packageJson.scripts?.build 
       && packageName != 'typescript-parser'
-      && !localPackage.packageJson.private
     ;
   });
 
@@ -25,7 +24,10 @@ export async function versionWorkspace() {
     if (!dependenciesChanged)
       continue;
 
-    await build(localPackage);
+    await buildAndTest(localPackage);
+    if (localPackage.packageJson.private)
+      continue;
+
     await pushChanges(localPackage);
     await publish(localPackage);
   }
@@ -91,7 +93,7 @@ function setDependencyVersion(dependencyPackageName: string, currentVersion: Dep
   logger.info(`(${localPackage.name}) updating dependency version of ${dependencyPackageName} (${currentRawVersion} -> ${newRawVersion})`);
 }
 
-async function build(localPackage: LocalPackage) {
+async function buildAndTest(localPackage: LocalPackage) {
   const packageDir = path.dirname(localPackage.filePath);
   await cmd('npm', ['run', 'clean'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
   logger.info(`(${localPackage.name}) cleaned`);
