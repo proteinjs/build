@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.0.24](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.23...@proteinjs/build@1.0.24) (2024-04-22)
+
+
+### Bug Fixes
+
+* `versionWorkspace` shoud pull before attempting to version a package ([ba5b683](https://github.com/proteinjs/build/commit/ba5b68357f0f1fae3c4494d931505b4088ccc8e2))
+
+
+
+
+
 ## [1.0.23](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.22...@proteinjs/build@1.0.23) (2024-04-22)
 
 
