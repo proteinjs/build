@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.0.18](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.17...@proteinjs/build@1.0.18) (2024-04-22)
+
+
+### Bug Fixes
+
+* `versionWorkspace` should still version (but not publish) private packages. ie. if we don't bump @proteinjs/reflection-build-test-a's depenency on @proteinjs/reflection when reflection changes, the test package's build will break ([c5fc5e5](https://github.com/proteinjs/build/commit/c5fc5e50fde9f138d4044f6ef3437ee7095b2672))
+
+
+
+
+
 ## [1.0.17](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.16...@proteinjs/build@1.0.17) (2024-04-22)
 
 **Note:** Version bump only for package @proteinjs/build
