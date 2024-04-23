@@ -26,11 +26,9 @@ export async function versionWorkspace() {
       continue;
 
     await buildAndTest(localPackage);
-    if (localPackage.packageJson.private)
-      continue;
-
     await push(localPackage);
-    await publish(localPackage);
+    if (!localPackage.packageJson.private && localPackage.packageJson.publishConfig?.access === 'public')
+      await publish(localPackage);
   }
 
   await pushMetarepo(workspacePath);
@@ -143,7 +141,7 @@ async function pull(localPackage: LocalPackage) {
 async function push(localPackage: LocalPackage): Promise<Commit> {
   const packageDir = path.dirname(localPackage.filePath);
   await cmd('git', ['add', '.'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-  await cmd('git', ['commit', '-m', `chore(version): bumping dependency versions [skip ci]`], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
+  await cmd('git', ['commit', '-m', `chore(version): bumping dependency versions for ${localPackage.name} [skip ci]`], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
   await cmd('git', ['push'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
   logger.info(`(${localPackage.name}) pushed latest version (${localPackage.packageJson.version})`);
   const latestCommitSha = await getLatestCommitSha(packageDir);
