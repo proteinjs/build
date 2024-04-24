@@ -32,6 +32,11 @@ export async function versionWorkspace() {
   }
 
   await pushMetarepos(workspacePath);
+  for (let packageName of filteredPackageNames) {
+    const localPackage = packageMap[packageName];
+    await PackageUtil.symlinkDependencies(localPackage, packageMap, logger);
+  }
+  
   logger.info(`> Finished versioning workspace (${workspacePath})`);
 }
 
