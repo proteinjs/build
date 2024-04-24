@@ -36,7 +36,7 @@ export async function versionWorkspace() {
     const localPackage = packageMap[packageName];
     await PackageUtil.symlinkDependencies(localPackage, packageMap, logger);
   }
-  
+
   logger.info(`> Finished versioning workspace (${workspacePath})`);
 }
 
@@ -56,7 +56,6 @@ async function pullWorkspace(workspacePath: string) {
     await pull(localPackage);
   }
 
-  await pushMetarepo(workspacePath);
   logger.info(`> Finished pulling workspace (${workspacePath})`);
 }
 
