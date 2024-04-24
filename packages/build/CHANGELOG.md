@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.1.2](https://github.com/proteinjs/build/compare/@proteinjs/build@1.1.1...@proteinjs/build@1.1.2) (2024-04-24)
+
+
+### Bug Fixes
+
+* `versionWorkspace` erronously pushing meta repo after pulling workspace. not sure how that got there ([1d7571e](https://github.com/proteinjs/build/commit/1d7571e39086bf8ae049cbd46257bf98169b07b5))
+
+
+
+
+
 ## [1.1.1](https://github.com/proteinjs/build/compare/@proteinjs/build@1.1.0...@proteinjs/build@1.1.1) (2024-04-24)
 
 
