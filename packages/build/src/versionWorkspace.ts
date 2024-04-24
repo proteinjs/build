@@ -120,8 +120,8 @@ function setDependencyVersion(dependencyPackageName: string, currentVersion: Dep
 
 async function buildAndTest(localPackage: LocalPackage) {
   const packageDir = path.dirname(localPackage.filePath);
-  const packageLockPath = path.resolve(packageDir, 'package-lock.json');
-  await Fs.deleteFolder(packageLockPath);
+  await cmd('npm', ['run', 'clean'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
+  logger.info(`(${localPackage.name}) cleaned package (${packageDir})`);
   await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
   logger.info(`(${localPackage.name}) installed latest dependency versions (${packageDir})`);
   await cmd('npm', ['run', 'build'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
