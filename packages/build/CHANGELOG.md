@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.0.28](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.27...@proteinjs/build@1.0.28) (2024-04-24)
+
+
+### Bug Fixes
+
+* `versionWorkspace` should push meta repos recursively, deep to shallow ([9e062a3](https://github.com/proteinjs/build/commit/9e062a3e8b98c46b08d816b93b588aff6cf7f59e))
+
+
+
+
+
 ## [1.0.27](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.26...@proteinjs/build@1.0.27) (2024-04-23)
 
 
