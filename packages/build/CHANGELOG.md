@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.1.1](https://github.com/proteinjs/build/compare/@proteinjs/build@1.1.0...@proteinjs/build@1.1.1) (2024-04-24)
+
+
+### Bug Fixes
+
+* `versionWorkspace` should re-symlink workspace dependencies after publishing packages so the workspace continues to function if not in ci ([98a2c39](https://github.com/proteinjs/build/commit/98a2c39494e38c60b910ca18fb7b806733cad123))
+
+
+
+
+
 # [1.1.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.29...@proteinjs/build@1.1.0) (2024-04-24)
 
 
