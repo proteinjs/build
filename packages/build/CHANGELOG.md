@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.0.29](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.28...@proteinjs/build@1.0.29) (2024-04-24)
+
+
+### Bug Fixes
+
+* `versionWorkspace` back to cleaning before installing; fixed the @proteinjs/reflection-build-test-b build process ([c159916](https://github.com/proteinjs/build/commit/c159916ca86a7b1fb5cc43334c7ad58497f19432))
+
+
+
+
+
 ## [1.0.28](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.27...@proteinjs/build@1.0.28) (2024-04-24)
 
 
