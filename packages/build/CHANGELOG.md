@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.1.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.29...@proteinjs/build@1.1.0) (2024-04-24)
+
+
+### Features
+
+* added `workspace-package` to run commands from the workspace root in specific package directories. If a npm command is run, it re-symlinks the package dependencies ([a4da175](https://github.com/proteinjs/build/commit/a4da17549759ca4fd332c611c0e85a6f6e138f6d))
+
+
+
+
+
 ## [1.0.29](https://github.com/proteinjs/build/compare/@proteinjs/build@1.0.28...@proteinjs/build@1.0.29) (2024-04-24)
 
 
