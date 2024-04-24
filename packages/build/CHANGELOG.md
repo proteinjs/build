@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.1.3](https://github.com/proteinjs/build/compare/@proteinjs/build@1.1.2...@proteinjs/build@1.1.3) (2024-04-24)
+
+
+### Bug Fixes
+
+* `versionWorksace` should fail fast if npm token is not available ([a079c77](https://github.com/proteinjs/build/commit/a079c77aaabb154f7760f9a3e08de73f67fe4279))
+
+
+
+
+
 ## [1.1.2](https://github.com/proteinjs/build/compare/@proteinjs/build@1.1.1...@proteinjs/build@1.1.2) (2024-04-24)
 
 
