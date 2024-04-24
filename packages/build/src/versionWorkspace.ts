@@ -31,7 +31,7 @@ export async function versionWorkspace() {
       await publish(localPackage);
   }
 
-  await pushMetarepo(workspacePath);
+  await pushMetarepos(workspacePath);
   logger.info(`> Finished versioning workspace (${workspacePath})`);
 }
 
@@ -152,6 +152,15 @@ async function push(localPackage: LocalPackage): Promise<Commit> {
   await cmd('git', ['push', 'origin', tagName], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
   logger.info(`(${localPackage.name}) pushed tag (${tagName})`);
   return commit;
+}
+
+async function pushMetarepos(dir: string) {
+  const metarepoPaths = (await Fs.getFilePathsMatchingGlob(dir, '**/.gitmodules', ['**/node_modules/**', '**/dist/**']))
+    .map(gitmodulesPath => path.dirname(gitmodulesPath))
+    .sort((a, b) => b.localeCompare(a))
+  ;
+  for (let metarepoPath of metarepoPaths)
+    await pushMetarepo(metarepoPath);
 }
 
 async function pushMetarepo(dir: string) {
