@@ -7,6 +7,9 @@ import { Commit } from './Github'
 const logger = new Logger('workspace:version');
 
 export async function versionWorkspace() {
+  // fail fast if npm token is not available
+  getNpmToken();
+
   const workspacePath = process.cwd();
   await pullWorkspace(workspacePath);
   const { packageMap, packageGraph, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
@@ -32,11 +35,13 @@ export async function versionWorkspace() {
   }
 
   await pushMetarepos(workspacePath);
+  logger.info(`> Symlinking local dependencies in workspace (${workspacePath})`);
   for (let packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     await PackageUtil.symlinkDependencies(localPackage, packageMap, logger);
   }
 
+  logger.info(`> Symlinked local dependencies in workspace (${workspacePath})`);
   logger.info(`> Finished versioning workspace (${workspacePath})`);
 }
 
