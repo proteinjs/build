@@ -10,7 +10,8 @@
     "test-workspace": "dist/src/runTestWorkspace.js",
     "watch-workspace": "dist/src/runWatchWorkspace.js",
     "workspace": "dist/src/runWorkspaceCommand.js",
-    "version-workspace": "dist/src/runVersionWorkspace.js"
+    "version-workspace": "dist/src/runVersionWorkspace.js",
+    "workspace-package": "dist/src/runWorkspacePackageCommand.js"
   },
   "publishConfig": {
     "access": "public"
