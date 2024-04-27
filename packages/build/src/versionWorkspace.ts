@@ -173,9 +173,11 @@ async function pushMetarepos(dir: string) {
 }
 
 async function pushMetarepo(dir: string) {
-  await cmd('git', ['add', '.'], { cwd: dir }, { logPrefix: `[workspace] ` });
-  await cmd('git', ['commit', '-m', `chore(version): bumping submodule versions [skip ci]`], { cwd: dir }, { logPrefix: `[workspace] ` });
-  await cmd('git', ['push'], { cwd: dir }, { logPrefix: `[workspace] ` });
+  const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
+  await cmd('git', ['add', '.'], { cwd: dir }, { logPrefix: `[${repoName}] ` });
+  await cmd('git', ['commit', '-m', `chore(version): bumping submodule versions [skip ci]`], { cwd: dir }, { logPrefix: `[${repoName}] ` });
+  await cmd('git', ['pull'], { cwd: dir }, { logPrefix: `[${repoName}] ` });
+  await cmd('git', ['push'], { cwd: dir }, { logPrefix: `[${repoName}] ` });
   logger.info(`(workspace) pushed metarepo (${dir})`);
 }
 
