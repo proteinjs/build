@@ -1,10 +1,14 @@
 import * as path from 'path'
 import { exec } from 'child_process'
-import { LocalPackage, LocalPackageMap, PackageUtil, cmd, Fs } from '@proteinjs/util-node'
+import { LocalPackage, LocalPackageMap, PackageUtil, cmd, Fs, LogColorWrapper } from '@proteinjs/util-node'
 import { Logger } from '@proteinjs/util'
+import semver from 'semver'
 import { Commit } from './Github'
+import { primaryLogColor, secondaryLogColor } from './logColors'
 
-const logger = new Logger('workspace:version');
+const cw = new LogColorWrapper();
+const logger = new Logger(cw.color('workspace:', primaryLogColor) + cw.color('version', secondaryLogColor));
+const fixedVersionWorkspacesToVersion: {[workspacePath: string]: boolean} = {};
 
 export async function versionWorkspace() {
   // fail fast if npm token is not available
@@ -12,7 +16,7 @@ export async function versionWorkspace() {
 
   const workspacePath = process.cwd();
   await pullWorkspace(workspacePath);
-  const { packageMap, packageGraph, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
+  const { packageMap, packageGraph, sortedPackageNames, workspaceToPackageMap } = await PackageUtil.getWorkspaceMetadata(workspacePath);
   const filteredPackageNames = sortedPackageNames.filter(packageName => {
     const localPackage = packageMap[packageName];
     return !!localPackage.packageJson.scripts?.clean
@@ -29,19 +33,20 @@ export async function versionWorkspace() {
       continue;
 
     await buildAndTest(localPackage);
-    await push(localPackage);
+    if (localPackage.workspace?.lernaJson?.version === 'fixed') {
+      fixedVersionWorkspacesToVersion[localPackage.workspace.path] = true;
+      logger.info(`(${cw.color(packageName)}) skipping version push for package in a fixed-version workspace`);
+      continue;
+    }
+
+    await pushAndTag(localPackage);
     if (!localPackage.packageJson.private && localPackage.packageJson.publishConfig?.access === 'public')
       await publish(localPackage);
   }
 
+  await syncFixedVersionWorkspaces(Object.keys(fixedVersionWorkspacesToVersion), packageMap, workspaceToPackageMap);
   await pushMetarepos(workspacePath);
-  logger.info(`> Symlinking local dependencies in workspace (${workspacePath})`);
-  for (let packageName of filteredPackageNames) {
-    const localPackage = packageMap[packageName];
-    await PackageUtil.symlinkDependencies(localPackage, packageMap, logger);
-  }
-
-  logger.info(`> Symlinked local dependencies in workspace (${workspacePath})`);
+  await symlinkWorkspace(workspacePath, filteredPackageNames, packageMap);
   logger.info(`> Finished versioning workspace (${workspacePath})`);
 }
 
@@ -75,7 +80,7 @@ async function bumpDependencies(localPackage: LocalPackage, packageMap: LocalPac
     const localDependencyVersion = localDependencyPackage.packageJson.version as string;
     const currentDependencyVersion = getDependencyVersion(localDependency, localPackage);
     if (!currentDependencyVersion)
-      throw new Error(`Package (${localPackage.name}) has dependency on ${localDependency}, but cannot find version in ${localPackage.name}'s package.json`);
+      throw new Error(`Package (${cw.color(localPackage.name)}) has dependency on ${localDependency}, but cannot find version in ${cw.color(localPackage.name)}'s package.json`);
 
     if (currentDependencyVersion.isLocalPath)
       continue;
@@ -89,10 +94,9 @@ async function bumpDependencies(localPackage: LocalPackage, packageMap: LocalPac
   }
 
   if (dependenciesChanged) {
-    const bumpPatchVersion = (version: string) => version.replace(/(\d+)\.(\d+)\.(\d+)$/, (_, major, minor, patch) => `${major}.${minor}.${parseInt(patch, 10) + 1}`);
     const currentVersion = localPackage.packageJson.version;
-    localPackage.packageJson.version = bumpPatchVersion(currentVersion);
-    logger.info(`(${localPackage.name}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`);
+    localPackage.packageJson.version = semver.inc(currentVersion, 'patch');
+    logger.info(`(${cw.color(localPackage.name)}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`);
     await Fs.writeFiles([{ path: localPackage.filePath, content: JSON.stringify(localPackage.packageJson, null, 2) }]);
   }
 
@@ -124,42 +128,120 @@ function setDependencyVersion(dependencyPackageName: string, currentVersion: Dep
     localPackage.packageJson.devDependencies[dependencyPackageName] = newRawVersion;
 
   const currentRawVersion = currentVersion.prefix ? currentVersion.prefix + currentVersion.version : currentVersion.version;
-  logger.info(`(${localPackage.name}) updating dependency version of ${dependencyPackageName} (${currentRawVersion} -> ${newRawVersion})`);
+  logger.info(`(${cw.color(localPackage.name)}) updating dependency version of ${cw.color(dependencyPackageName)} (${currentRawVersion} -> ${newRawVersion})`);
+}
+
+async function syncFixedVersionWorkspaces(fixedVersionWorkspacePaths: string[], packageMap: LocalPackageMap, workspaceToPackageMap: {[workspacePath: string]: string[]}) {
+  if (fixedVersionWorkspacePaths.length == 0)
+    return;
+
+  logger.info(`> Syncing fixed-version workspaces`);
+  for (let workspacePath of fixedVersionWorkspacePaths) {
+    const workspacePackages = workspaceToPackageMap[workspacePath]
+      .filter(packageName => packageName != 'typescript-parser')
+      .map(packageName => packageMap[packageName])
+    ;
+    if (workspacePackages.length == 0)
+      continue;
+
+    const syncedVersion = await syncFixedVersions(workspacePackages);
+    if (!syncedVersion)
+      continue;
+
+    await pushAndTagFixedVersionRepo(workspacePath, syncedVersion);
+  }
+
+  logger.info(`> Synced fixed-version workspaces`);
+}
+
+async function syncFixedVersions(localPackages: LocalPackage[]): Promise<string|false> {
+  let highestVersion: string|undefined;
+  for (let localPackage of localPackages) {
+    if (!highestVersion) {
+      highestVersion = localPackage.packageJson.version;
+      continue;
+    }
+
+    if (semver.gt(localPackage.packageJson.version, highestVersion))
+      highestVersion = localPackage.packageJson.version;
+  }
+
+  if (!highestVersion)
+    throw new Error(`Unable to find version for packages`);
+
+  let syncedFixedVersions = false;
+  for (let localPackage of localPackages) {
+    const currentVersion = localPackage.packageJson.version;
+    if (currentVersion === highestVersion)
+      continue;
+
+    localPackage.packageJson.version = highestVersion;
+    logger.info(`(${cw.color(localPackage.name)}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`);
+    await Fs.writeFiles([{ path: localPackage.filePath, content: JSON.stringify(localPackage.packageJson, null, 2) }]);
+    syncedFixedVersions = true;
+  }
+
+  return syncedFixedVersions ? highestVersion : false;
 }
 
 async function buildAndTest(localPackage: LocalPackage) {
   const packageDir = path.dirname(localPackage.filePath);
-  await cmd('npm', ['run', 'clean'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-  logger.info(`(${localPackage.name}) cleaned package (${packageDir})`);
-  await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-  logger.info(`(${localPackage.name}) installed latest dependency versions (${packageDir})`);
-  await cmd('npm', ['run', 'build'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-  logger.info(`(${localPackage.name}) built version ${localPackage.packageJson.version} (${packageDir})`);
+  logger.info(`(${cw.color(localPackage.name)}) cleaning package (${packageDir})`);
+  await cmd('npm', ['run', 'clean'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  logger.info(`(${cw.color(localPackage.name)}) cleaned package (${packageDir})`);
+  logger.info(`(${cw.color(localPackage.name)}) installing latest dependency versions (${packageDir})`);
+  await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  logger.info(`(${cw.color(localPackage.name)}) installed latest dependency versions (${packageDir})`);
+  logger.info(`(${cw.color(localPackage.name)}) building version ${localPackage.packageJson.version} (${packageDir})`);
+  await cmd('npm', ['run', 'build'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  logger.info(`(${cw.color(localPackage.name)}) built version ${localPackage.packageJson.version} (${packageDir})`);
   if (localPackage.packageJson.scripts?.test) {
-    await cmd('npm', ['run', 'test'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-    logger.info(`(${localPackage.name}) tested version ${localPackage.packageJson.version} (${packageDir})`);
+    logger.info(`(${cw.color(localPackage.name)}) testing version ${localPackage.packageJson.version} (${packageDir})`);
+    await cmd('npm', ['run', 'test'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+    logger.info(`(${cw.color(localPackage.name)}) tested version ${localPackage.packageJson.version} (${packageDir})`);
   }
 }
 
 async function pull(localPackage: LocalPackage) {
   const packageDir = path.dirname(localPackage.filePath);
-  await cmd('git', ['pull'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-  logger.info(`(${localPackage.name}) pulled latest changes`);
+  logger.info(`(${cw.color(localPackage.name)}) pulling latest changes`);
+  await cmd('git', ['pull'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  logger.info(`(${cw.color(localPackage.name)}) pulled latest changes`);
 }
 
-async function push(localPackage: LocalPackage): Promise<Commit> {
+async function pushAndTag(localPackage: LocalPackage): Promise<Commit> {
   const packageDir = path.dirname(localPackage.filePath);
-  await cmd('git', ['add', '.'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-  await cmd('git', ['commit', '-m', `chore(version): bumping dependency versions for ${localPackage.name} [skip ci]`], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-  await cmd('git', ['push'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-  logger.info(`(${localPackage.name}) pushed latest version (${localPackage.packageJson.version})`);
+  logger.info(`(${cw.color(localPackage.name)}) pushing latest version (${localPackage.packageJson.version})`);
+  await cmd('git', ['add', '.'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  await cmd('git', ['commit', '-m', `chore(version): bumping dependency versions for ${cw.color(localPackage.name)} [skip ci]`], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  await cmd('git', ['push'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  logger.info(`(${cw.color(localPackage.name)}) pushed latest version (${localPackage.packageJson.version})`);
   const latestCommitSha = await getLatestCommitSha(packageDir);
   const repoInfo = await getRepoInfo(packageDir);
   const commit = { sha: latestCommitSha, ...repoInfo };
   const tagName = `${localPackage.name}@${localPackage.packageJson.version}`;
-  await cmd('git', ['tag', '-a', tagName, '-m', `Release ${tagName}`], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-  await cmd('git', ['push', 'origin', tagName], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-  logger.info(`(${localPackage.name}) pushed tag (${tagName})`);
+  logger.info(`(${cw.color(localPackage.name)}) pushing tag (${tagName})`);
+  await cmd('git', ['tag', '-a', tagName, '-m', `Release ${tagName}`], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  await cmd('git', ['push', 'origin', tagName], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  logger.info(`(${cw.color(localPackage.name)}) pushed tag (${tagName})`);
+  return commit;
+}
+
+async function pushAndTagFixedVersionRepo(dir: string, version: string): Promise<Commit> {
+  const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
+  logger.info(`(${cw.color(repoName)}) pushing latest version (${version})`);
+  await cmd('git', ['add', '.'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
+  await cmd('git', ['commit', '-m', `chore(version): bumping dependency versions [skip ci]`], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
+  await cmd('git', ['push'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
+  logger.info(`(${cw.color(repoName)}) pushed latest version (${version})`);
+  const latestCommitSha = await getLatestCommitSha(dir);
+  const repoInfo = await getRepoInfo(dir);
+  const commit = { sha: latestCommitSha, ...repoInfo };
+  const tagName = `v${version}`;
+  logger.info(`(${cw.color(repoName)}) pushing tag (${tagName})`);
+  await cmd('git', ['tag', '-a', tagName, '-m', `Release ${tagName}`], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
+  await cmd('git', ['push', 'origin', tagName], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
+  logger.info(`(${cw.color(repoName)}) pushed tag (${tagName})`);
   return commit;
 }
 
@@ -174,11 +256,22 @@ async function pushMetarepos(dir: string) {
 
 async function pushMetarepo(dir: string) {
   const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
-  await cmd('git', ['add', '.'], { cwd: dir }, { logPrefix: `[${repoName}] ` });
-  await cmd('git', ['commit', '-m', `chore(version): bumping submodule versions [skip ci]`], { cwd: dir }, { logPrefix: `[${repoName}] ` });
-  await cmd('git', ['pull'], { cwd: dir }, { logPrefix: `[${repoName}] ` });
-  await cmd('git', ['push'], { cwd: dir }, { logPrefix: `[${repoName}] ` });
-  logger.info(`(workspace) pushed metarepo (${dir})`);
+  logger.info(`(${cw.color(repoName)}) pushing metarepo (${dir})`);
+  await cmd('git', ['add', '.'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
+  await cmd('git', ['commit', '-m', `chore(version): bumping submodule versions [skip ci]`], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
+  await cmd('git', ['pull'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
+  await cmd('git', ['push'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
+  logger.info(`(${cw.color(repoName)}) pushed metarepo (${dir})`);
+}
+
+async function symlinkWorkspace(workspacePath: string, packageNames: string[], packageMap: LocalPackageMap) {
+  logger.info(`> Symlinking local dependencies in workspace (${workspacePath})`);
+  for (let packageName of packageNames) {
+    const localPackage = packageMap[packageName];
+    await PackageUtil.symlinkDependencies(localPackage, packageMap, logger);
+  }
+
+  logger.info(`> Symlinked local dependencies in workspace (${workspacePath})`);
 }
 
 async function getLatestCommitSha(dir: string): Promise<string> {
@@ -225,19 +318,20 @@ async function getRepoInfo(dir: string): Promise<RepoInfo> {
 
 async function publish(localPackage: LocalPackage) {
   if (localPackage.packageJson.private) {
-    logger.info(`Preventing publish of private package: ${localPackage.name}`);
+    logger.info(`Preventing publish of private package: ${cw.color(localPackage.name)}`);
     return;
   }
 
   if (!localPackage.name.startsWith('@proteinjs/')) {
-    logger.warn(`Preventing publish of non-proteinjs package: ${localPackage.name}`);
+    logger.warn(`Preventing publish of non-proteinjs package: ${cw.color(localPackage.name)}`);
     return;
   }
 
   const packageDir = path.dirname(localPackage.filePath);
-  await cmd('npm', ['set', `//registry.npmjs.org/:_authToken=${getNpmToken()}`], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-  await cmd('npm', ['publish', '--tag', 'latest', '--access', 'public'], { cwd: packageDir }, { logPrefix: `[${localPackage.name}] ` });
-  logger.info(`(${localPackage.name}) published latest version (${localPackage.packageJson.version})`);
+  logger.info(`(${cw.color(localPackage.name)}) publishing latest version (${localPackage.packageJson.version})`);
+  await cmd('npm', ['set', `//registry.npmjs.org/:_authToken=${getNpmToken()}`], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  await cmd('npm', ['publish', '--tag', 'latest', '--access', 'public'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  logger.info(`(${cw.color(localPackage.name)}) published latest version (${localPackage.packageJson.version})`);
 }
 
 function getNpmToken() {

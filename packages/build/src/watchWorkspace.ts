@@ -1,9 +1,11 @@
 import * as path from 'path'
-import { PackageUtil, WorkspaceMetadata, cmd } from '@proteinjs/util-node'
+import { PackageUtil, WorkspaceMetadata, cmd, LogColorWrapper } from '@proteinjs/util-node'
 import { Logger } from '@proteinjs/util'
+import { primaryLogColor, secondaryLogColor } from './logColors';
 
 export const watchWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
-  const logger = new Logger('watchWorkspace');
+  const cw = new LogColorWrapper();
+  const logger = new Logger(cw.color('workspace:', primaryLogColor) + cw.color('watch', secondaryLogColor));
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = workspaceMetadata ? workspaceMetadata : await PackageUtil.getWorkspaceMetadata(workspacePath);
   const filteredPackageNames = sortedPackageNames.filter(packageName => !!packageMap[packageName].packageJson.scripts?.watch);
@@ -15,7 +17,7 @@ export const watchWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
     const packageDir = path.dirname(localPackage.filePath);
     const loggingEnabledState = { loggingEnabled: false };
     setTimeout(() => loggingEnabledState.loggingEnabled = true, loggingStartDelay);
-    const logPrefix = `[${packageName}] `;
+    const logPrefix = `[${cw.color(packageName)}] `;
     let inMultiLineLog = false;
     const stdoutFilter = (log: string) => {
       if (log.includes('File change detected. Starting incremental compilation'))

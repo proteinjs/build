@@ -1,6 +1,7 @@
 import * as path from 'path'
-import { PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node'
+import { LogColorWrapper, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node'
 import { Logger } from '@proteinjs/util'
+import { primaryLogColor, secondaryLogColor } from './logColors'
 
 /**
  * Install and build workspace, in dependency order.
@@ -12,7 +13,8 @@ import { Logger } from '@proteinjs/util'
  * --skip=@some/package,@another/package
  */
 export async function buildWorkspace() {
-  const logger = new Logger('workspace:build');
+  const cw = new LogColorWrapper();
+  const logger = new Logger(cw.color('workspace:', primaryLogColor) + cw.color('build', secondaryLogColor));
   const args = getArgs();
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
@@ -29,14 +31,14 @@ export async function buildWorkspace() {
     const packageDir = path.dirname(localPackage.filePath);
 
     if (!args.noInstall || !args.noInstall.includes(packageName)) {
-      await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${packageName}] ` });
+      await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
       await PackageUtil.symlinkDependencies(localPackage, packageMap, logger);
-      logger.info(`Installed ${packageName} (${packageDir})`);
+      logger.info(`Installed ${cw.color(packageName)} (${packageDir})`);
     }
 
     if (!args.noBuild || !args.noBuild.includes(packageName)) {
-      await cmd('npm', ['run', 'build'], { cwd: packageDir }, { logPrefix: `[${packageName}] ` });
-      logger.info(`Built ${packageName} (${packageDir})`);
+      await cmd('npm', ['run', 'build'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
+      logger.info(`Built ${cw.color(packageName)} (${packageDir})`);
     }
   }
 

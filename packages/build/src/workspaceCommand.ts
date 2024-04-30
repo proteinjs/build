@@ -1,6 +1,7 @@
 import * as path from 'path'
-import { LocalPackageMap, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node'
+import { LocalPackageMap, LogColorWrapper, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node'
 import { Logger } from '@proteinjs/util'
+import { primaryLogColor, secondaryLogColor } from './logColors'
 
 /**
  * Run a npm command against all packages in the workspace, in dependency order.
@@ -13,7 +14,8 @@ import { Logger } from '@proteinjs/util'
  */
 export const workspaceCommand = async () => {
   const command = process.argv[2]
-  const logger = new Logger(`workspace:${command}`);
+  const cw = new LogColorWrapper();
+  const logger = new Logger(cw.color('workspace:', primaryLogColor) + cw.color(command, secondaryLogColor));
   const args = getArgs();
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
@@ -30,7 +32,7 @@ export const workspaceCommand = async () => {
   for (let packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
-    await cmd('npm', ['run', command], { cwd: packageDir }, { logPrefix: `[${packageName}] ` });
+    await cmd('npm', ['run', command], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
   }
   logger.info(`> Ran \`npm run ${command}\` for ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
 }

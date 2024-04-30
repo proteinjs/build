@@ -3,7 +3,7 @@ import { PackageUtil, cmd, WorkspaceMetadata } from '@proteinjs/util-node'
 import { Logger } from '@proteinjs/util'
 
 export const cleanWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
-  const logger = new Logger('cleanWorkspace');
+  const logger = new Logger('workspace:clean');
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = workspaceMetadata ? workspaceMetadata : await PackageUtil.getWorkspaceMetadata(workspacePath);
   const filteredPackageNames = sortedPackageNames.filter(packageName => !!packageMap[packageName].packageJson.scripts?.clean);
