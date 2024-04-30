@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.2.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.1.5...@proteinjs/build@1.2.0) (2024-04-30)
+
+
+### Features
+
+* `versionWorkspace` now supports fixed-version, private (non-published) workspaces ([3c63d72](https://github.com/proteinjs/build/commit/3c63d72bcc5f57300cc6fc0c76e0f568d2421eb1))
+
+
+
+
+
 ## [1.1.5](https://github.com/proteinjs/build/compare/@proteinjs/build@1.1.4...@proteinjs/build@1.1.5) (2024-04-27)
 
 
