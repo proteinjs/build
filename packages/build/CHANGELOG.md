@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.2.1](https://github.com/proteinjs/build/compare/@proteinjs/build@1.2.0...@proteinjs/build@1.2.1) (2024-05-01)
+
+
+### Bug Fixes
+
+* `versionWorkspace` no longer attempt to color package names in commit messages ([d57728d](https://github.com/proteinjs/build/commit/d57728d87dfca79bafe8ff8fb231930787fe4731))
+
+
+
+
+
 # [1.2.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.1.5...@proteinjs/build@1.2.0) (2024-04-30)
 
 
