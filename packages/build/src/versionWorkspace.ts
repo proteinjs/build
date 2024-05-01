@@ -186,19 +186,19 @@ async function syncFixedVersions(localPackages: LocalPackage[]): Promise<string|
 
 async function buildAndTest(localPackage: LocalPackage) {
   const packageDir = path.dirname(localPackage.filePath);
-  logger.info(`(${cw.color(localPackage.name)}) cleaning package (${packageDir})`);
+  logger.info(`(${cw.color(localPackage.name)}) cleaning package`);
   await cmd('npm', ['run', 'clean'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
-  logger.info(`(${cw.color(localPackage.name)}) cleaned package (${packageDir})`);
-  logger.info(`(${cw.color(localPackage.name)}) installing latest dependency versions (${packageDir})`);
+  logger.info(`(${cw.color(localPackage.name)}) cleaned package`);
+  logger.info(`(${cw.color(localPackage.name)}) installing latest dependency versions`);
   await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
-  logger.info(`(${cw.color(localPackage.name)}) installed latest dependency versions (${packageDir})`);
-  logger.info(`(${cw.color(localPackage.name)}) building version ${localPackage.packageJson.version} (${packageDir})`);
+  logger.info(`(${cw.color(localPackage.name)}) installed latest dependency versions`);
+  logger.info(`(${cw.color(localPackage.name)}) building version ${localPackage.packageJson.version}`);
   await cmd('npm', ['run', 'build'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
   logger.info(`(${cw.color(localPackage.name)}) built version ${localPackage.packageJson.version} (${packageDir})`);
   if (localPackage.packageJson.scripts?.test) {
-    logger.info(`(${cw.color(localPackage.name)}) testing version ${localPackage.packageJson.version} (${packageDir})`);
+    logger.info(`(${cw.color(localPackage.name)}) testing version ${localPackage.packageJson.version}`);
     await cmd('npm', ['run', 'test'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
-    logger.info(`(${cw.color(localPackage.name)}) tested version ${localPackage.packageJson.version} (${packageDir})`);
+    logger.info(`(${cw.color(localPackage.name)}) tested version ${localPackage.packageJson.version}`);
   }
 }
 
@@ -213,7 +213,7 @@ async function pushAndTag(localPackage: LocalPackage): Promise<Commit> {
   const packageDir = path.dirname(localPackage.filePath);
   logger.info(`(${cw.color(localPackage.name)}) pushing latest version (${localPackage.packageJson.version})`);
   await cmd('git', ['add', '.'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
-  await cmd('git', ['commit', '-m', `chore(version): bumping dependency versions for ${cw.color(localPackage.name)} [skip ci]`], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  await cmd('git', ['commit', '-m', `chore(version): bumping dependency versions for ${localPackage.name} [skip ci]`], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
   await cmd('git', ['push'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
   logger.info(`(${cw.color(localPackage.name)}) pushed latest version (${localPackage.packageJson.version})`);
   const latestCommitSha = await getLatestCommitSha(packageDir);
