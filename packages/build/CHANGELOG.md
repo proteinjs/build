@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.2.2](https://github.com/proteinjs/build/compare/@proteinjs/build@1.2.1...@proteinjs/build@1.2.2) (2024-05-02)
+
+
+### Bug Fixes
+
+* `workspacePackageCommand` needs to re-build packageMap after executing npm command ([2e39aba](https://github.com/proteinjs/build/commit/2e39ababfc9bda9db73acbb76c7d7aeeadf796b0))
+
+
+
+
+
 ## [1.2.1](https://github.com/proteinjs/build/compare/@proteinjs/build@1.2.0...@proteinjs/build@1.2.1) (2024-05-01)
 
 
