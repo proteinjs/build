@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.3.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.2.2...@proteinjs/build@1.3.0) (2024-05-03)
+
+
+### Features
+
+* added `symlinkWorkspace` to symlink all local dependencies of all packages in the workspace ([da81067](https://github.com/proteinjs/build/commit/da810678641dee1360f1fb8d6dbed4f1e07d4ad0))
+
+
+
+
+
 ## [1.2.2](https://github.com/proteinjs/build/compare/@proteinjs/build@1.2.1...@proteinjs/build@1.2.2) (2024-05-02)
 
 
