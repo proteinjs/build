@@ -6,7 +6,8 @@ export const testWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
   const logger = new Logger('workspace:test');
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = workspaceMetadata ? workspaceMetadata : await PackageUtil.getWorkspaceMetadata(workspacePath);
-  const filteredPackageNames = sortedPackageNames.filter(packageName => !!packageMap[packageName].packageJson.scripts?.test);
+  const skippedPackages = ['root'];
+  const filteredPackageNames = sortedPackageNames.filter(packageName => !!packageMap[packageName].packageJson.scripts?.test && !skippedPackages.includes(packageName));
 
   logger.info(`> Testing ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
   for (let packageName of filteredPackageNames) {

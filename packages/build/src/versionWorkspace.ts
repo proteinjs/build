@@ -17,11 +17,12 @@ export async function versionWorkspace() {
   const workspacePath = process.cwd();
   await pullWorkspace(workspacePath);
   const { packageMap, packageGraph, sortedPackageNames, workspaceToPackageMap } = await PackageUtil.getWorkspaceMetadata(workspacePath);
+  const skippedPackages = ['root', 'typescript-parser'];
   const filteredPackageNames = sortedPackageNames.filter(packageName => {
     const localPackage = packageMap[packageName];
     return !!localPackage.packageJson.scripts?.clean
       && !!localPackage.packageJson.scripts?.build 
-      && packageName != 'typescript-parser'
+      && !skippedPackages.includes(packageName)
     ;
   });
 

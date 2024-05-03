@@ -19,22 +19,25 @@ export const workspaceCommand = async () => {
   const args = getArgs();
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
+  const skippedPackages = ['root'];
   const filteredPackageNames = sortedPackageNames.filter(packageName => { 
     return hasScript(command, packageName, packageMap) &&
-      !(args.skip && args.skip.includes(packageName));
+      !(args.skip && args.skip.includes(packageName)) &&
+      !skippedPackages.includes(packageName)
+    ;
   });
   if (filteredPackageNames.length == 0) {
     logger.info(`> There are no packages with the \`${command}\` script in workspace (${workspacePath})`);
     return;
   }
 
-  logger.info(`> Running \`npm run ${command}\` for ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
+  logger.info(`> Running \`npm run ${command}\` for ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
   for (let packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
     await cmd('npm', ['run', command], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
   }
-  logger.info(`> Ran \`npm run ${command}\` for ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
+  logger.info(`> Ran \`npm run ${command}\` for ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
 }
 
 type Args = {

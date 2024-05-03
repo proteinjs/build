@@ -8,9 +8,10 @@ export const watchWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
   const logger = new Logger(cw.color('workspace:', primaryLogColor) + cw.color('watch', secondaryLogColor));
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = workspaceMetadata ? workspaceMetadata : await PackageUtil.getWorkspaceMetadata(workspacePath);
-  const filteredPackageNames = sortedPackageNames.filter(packageName => !!packageMap[packageName].packageJson.scripts?.watch);
+  const skippedPackages = ['root'];
+  const filteredPackageNames = sortedPackageNames.filter(packageName => !!packageMap[packageName].packageJson.scripts?.watch && !skippedPackages.includes(packageName));
 
-  logger.info(`> Watching ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
+  logger.info(`> Watching ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
   const loggingStartDelay = 0;
   for (let packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];

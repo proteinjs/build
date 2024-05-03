@@ -18,12 +18,15 @@ export async function buildWorkspace() {
   const args = getArgs();
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
+  const skippedPackages = ['root'];
   const filteredPackageNames = sortedPackageNames.filter(packageName => { 
     return !!packageMap[packageName].packageJson.scripts?.build &&
-      !(args.skip && args.skip.includes(packageName));
+      !(args.skip && args.skip.includes(packageName)) &&
+      !skippedPackages.includes(packageName)
+    ;
   });
 
-  logger.info(`> Installing and building ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
+  logger.info(`> Installing and building ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
   logger.debug(`packageMap:\n${JSON.stringify(packageMap, null, 2)}`, true);
   logger.debug(`filteredPackageNames:\n${JSON.stringify(filteredPackageNames, null, 2)}`, true);
   for (let packageName of filteredPackageNames) {
@@ -42,7 +45,7 @@ export async function buildWorkspace() {
     }
   }
 
-  logger.info(`> Installed and built ${filteredPackageNames.length} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
+  logger.info(`> Installed and built ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`);
 }
 
 type Args = {

@@ -11,7 +11,8 @@
     "watch-workspace": "dist/src/bin/runWatchWorkspace.js",
     "workspace": "dist/src/bin/runWorkspaceCommand.js",
     "version-workspace": "dist/src/bin/runVersionWorkspace.js",
-    "workspace-package": "dist/src/bin/runWorkspacePackageCommand.js"
+    "workspace-package": "dist/src/bin/runWorkspacePackageCommand.js",
+    "symlink-workspace": "dist/src/bin/runSymlinkWorkspace.js"
   },
   "publishConfig": {
     "access": "public"
