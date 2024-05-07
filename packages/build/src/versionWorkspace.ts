@@ -34,7 +34,7 @@ export async function versionWorkspace() {
       continue;
 
     await buildAndTest(localPackage);
-    if (localPackage.workspace?.lernaJson?.version === 'fixed') {
+    if (localPackage.workspace && localPackage.workspace.lernaJson && localPackage.workspace.lernaJson.version !== 'independent') {
       fixedVersionWorkspacesToVersion[localPackage.workspace.path] = true;
       logger.info(`(${cw.color(packageName)}) skipping version push for package in a fixed-version workspace`);
       continue;
@@ -145,7 +145,7 @@ async function syncFixedVersionWorkspaces(fixedVersionWorkspacePaths: string[], 
     if (workspacePackages.length == 0)
       continue;
 
-    const syncedVersion = await syncFixedVersions(workspacePackages);
+    const syncedVersion = await syncFixedVersions(workspacePath, workspacePackages);
     if (!syncedVersion)
       continue;
 
@@ -155,7 +155,7 @@ async function syncFixedVersionWorkspaces(fixedVersionWorkspacePaths: string[], 
   logger.info(`> Synced fixed-version workspaces`);
 }
 
-async function syncFixedVersions(localPackages: LocalPackage[]): Promise<string|false> {
+async function syncFixedVersions(workspacePath: string, localPackages: LocalPackage[]): Promise<string|false> {
   let highestVersion: string|undefined;
   for (let localPackage of localPackages) {
     if (!highestVersion) {
@@ -180,6 +180,16 @@ async function syncFixedVersions(localPackages: LocalPackage[]): Promise<string|
     logger.info(`(${cw.color(localPackage.name)}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`);
     await Fs.writeFiles([{ path: localPackage.filePath, content: JSON.stringify(localPackage.packageJson, null, 2) }]);
     syncedFixedVersions = true;
+  }
+
+  if (syncedFixedVersions) {
+    const lernaJson = localPackages[0].workspace?.lernaJson;
+    if (!lernaJson)
+      throw new Error(`Cannot find lerna.json for workspace: ${workspacePath}`);
+
+    const lernaJsonPath = path.join(workspacePath, 'lerna.json');
+    lernaJson.version = highestVersion;
+    await Fs.writeFiles([{ path: lernaJsonPath, content: JSON.stringify(lernaJson, null, 2) }]);
   }
 
   return syncedFixedVersions ? highestVersion : false;
