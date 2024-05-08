@@ -1,5 +1,5 @@
 #!/usr/bin/env node
 
-import { versionWorkspace } from '../versionWorkspace'
+import { versionWorkspace } from '../versionWorkspace';
 
 versionWorkspace();

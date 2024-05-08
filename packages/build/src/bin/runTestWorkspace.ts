@@ -1,5 +1,5 @@
 #!/usr/bin/env node
 
-import { testWorkspace } from '../testWorkspace'
+import { testWorkspace } from '../testWorkspace';
 
 testWorkspace();

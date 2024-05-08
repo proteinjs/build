@@ -1,5 +1,5 @@
 #!/usr/bin/env node
 
-import { cleanWorkspace } from '../cleanWorkspace'
+import { cleanWorkspace } from '../cleanWorkspace';
 
 cleanWorkspace();

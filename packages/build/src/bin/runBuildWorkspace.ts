@@ -1,5 +1,5 @@
 #!/usr/bin/env node
 
-import { buildWorkspace } from '../buildWorkspace'
+import { buildWorkspace } from '../buildWorkspace';
 
 buildWorkspace();
