@@ -27,13 +27,19 @@ export const watchWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
     const logPrefix = `[${cw.color(packageName)}] `;
     let inMultiLineLog = false;
     const stdoutFilter = (log: string) => {
-      if (log.includes('File change detected. Starting incremental compilation')) return;
+      if (log.includes('File change detected. Starting incremental compilation')) {
+        return;
+      }
 
       // eslint-disable-next-line no-control-regex
       let filteredOutput = log.replace(/\x1Bc|\x1B\[2J\x1B\[0;0H/g, ''); // char sequence for clearing terminal
-      if (filteredOutput.includes('Watching for file changes.')) filteredOutput = filteredOutput.replace(/^\n/, '');
+      if (filteredOutput.includes('Watching for file changes.')) {
+        filteredOutput = filteredOutput.replace(/^\n/, '');
+      }
 
-      if (filteredOutput.trim() == '') return;
+      if (filteredOutput.trim() == '') {
+        return;
+      }
 
       // Replace newline with newline+prefix under the following conditions:
       // 1. It is not at the start of the string (?<!^)
@@ -41,10 +47,15 @@ export const watchWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
       // 3. It is not followed by another newline (?!\r?\n)
       filteredOutput = filteredOutput.replace(/(?<!^)(\r?\n)(?!\r?\n|$)/g, `$1${logPrefix}`);
 
-      if (!inMultiLineLog) filteredOutput = `${logPrefix}${filteredOutput}`;
+      if (!inMultiLineLog) {
+        filteredOutput = `${logPrefix}${filteredOutput}`;
+      }
 
-      if (filteredOutput.endsWith('\n') || filteredOutput.endsWith('\r\n')) inMultiLineLog = false;
-      else inMultiLineLog = true;
+      if (filteredOutput.endsWith('\n') || filteredOutput.endsWith('\r\n')) {
+        inMultiLineLog = false;
+      } else {
+        inMultiLineLog = true;
+      }
 
       return filteredOutput;
     };

@@ -19,7 +19,9 @@ export const testWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
-    if (!(await PackageUtil.hasTests(packageDir))) continue;
+    if (!(await PackageUtil.hasTests(packageDir))) {
+      continue;
+    }
 
     await cmd('npm', ['run', 'test'], { cwd: packageDir });
   }

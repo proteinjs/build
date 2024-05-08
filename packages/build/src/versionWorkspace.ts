@@ -32,7 +32,9 @@ export async function versionWorkspace() {
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     const dependenciesChanged = await bumpDependencies(localPackage, packageMap, packageGraph);
-    if (!dependenciesChanged) continue;
+    if (!dependenciesChanged) {
+      continue;
+    }
 
     await buildAndTest(localPackage);
     if (
@@ -46,8 +48,9 @@ export async function versionWorkspace() {
     }
 
     await pushAndTag(localPackage);
-    if (!localPackage.packageJson.private && localPackage.packageJson.publishConfig?.access === 'public')
+    if (!localPackage.packageJson.private && localPackage.packageJson.publishConfig?.access === 'public') {
       await publish(localPackage);
+    }
   }
 
   await syncFixedVersionWorkspaces(Object.keys(fixedVersionWorkspacesToVersion), packageMap, workspaceToPackageMap);
@@ -78,7 +81,9 @@ async function pullWorkspace(workspacePath: string) {
 
 async function bumpDependencies(localPackage: LocalPackage, packageMap: LocalPackageMap, packageGraph: any) {
   const localDependencies = packageGraph.successors(localPackage.name);
-  if (!localDependencies || localDependencies.length == 0) return false;
+  if (!localDependencies || localDependencies.length == 0) {
+    return false;
+  }
 
   let dependenciesChanged = false;
   for (const localDependency of localDependencies) {
@@ -91,9 +96,13 @@ async function bumpDependencies(localPackage: LocalPackage, packageMap: LocalPac
       );
     }
 
-    if (currentDependencyVersion.isLocalPath) continue;
+    if (currentDependencyVersion.isLocalPath) {
+      continue;
+    }
 
-    if (currentDependencyVersion?.version == localDependencyVersion) continue;
+    if (currentDependencyVersion?.version == localDependencyVersion) {
+      continue;
+    }
 
     const newDependencyVersion: DependencyVersion = {
       prefix: currentDependencyVersion.prefix,
@@ -130,10 +139,13 @@ function getDependencyVersion(
       : undefined;
   }
 
-  if (!currentRawDependencyVersion) return undefined;
+  if (!currentRawDependencyVersion) {
+    return undefined;
+  }
 
-  if (currentRawDependencyVersion.startsWith('file:') || currentRawDependencyVersion.startsWith('.'))
+  if (currentRawDependencyVersion.startsWith('file:') || currentRawDependencyVersion.startsWith('.')) {
     return { version: currentRawDependencyVersion, isLocalPath: true };
+  }
 
   const match = currentRawDependencyVersion.match(/^([~^]?)(\d+\.\d+\.\d+)/);
   return { prefix: match[1], version: match[2] };
@@ -146,9 +158,11 @@ function setDependencyVersion(
   localPackage: LocalPackage
 ) {
   const newRawVersion = newVersion.prefix ? newVersion.prefix + newVersion.version : newVersion.version;
-  if (localPackage.packageJson.dependencies && localPackage.packageJson.dependencies[dependencyPackageName])
+  if (localPackage.packageJson.dependencies && localPackage.packageJson.dependencies[dependencyPackageName]) {
     localPackage.packageJson.dependencies[dependencyPackageName] = newRawVersion;
-  else localPackage.packageJson.devDependencies[dependencyPackageName] = newRawVersion;
+  } else {
+    localPackage.packageJson.devDependencies[dependencyPackageName] = newRawVersion;
+  }
 
   const currentRawVersion = currentVersion.prefix
     ? currentVersion.prefix + currentVersion.version
@@ -163,17 +177,23 @@ async function syncFixedVersionWorkspaces(
   packageMap: LocalPackageMap,
   workspaceToPackageMap: { [workspacePath: string]: string[] }
 ) {
-  if (fixedVersionWorkspacePaths.length == 0) return;
+  if (fixedVersionWorkspacePaths.length == 0) {
+    return;
+  }
 
   logger.info(`> Syncing fixed-version workspaces`);
   for (const workspacePath of fixedVersionWorkspacePaths) {
     const workspacePackages = workspaceToPackageMap[workspacePath]
       .filter((packageName) => packageName != 'typescript-parser')
       .map((packageName) => packageMap[packageName]);
-    if (workspacePackages.length == 0) continue;
+    if (workspacePackages.length == 0) {
+      continue;
+    }
 
     const syncedVersion = await syncFixedVersions(workspacePath, workspacePackages);
-    if (!syncedVersion) continue;
+    if (!syncedVersion) {
+      continue;
+    }
 
     await pushAndTagFixedVersionRepo(workspacePath, syncedVersion);
   }
@@ -189,15 +209,21 @@ async function syncFixedVersions(workspacePath: string, localPackages: LocalPack
       continue;
     }
 
-    if (semver.gt(localPackage.packageJson.version, highestVersion)) highestVersion = localPackage.packageJson.version;
+    if (semver.gt(localPackage.packageJson.version, highestVersion)) {
+      highestVersion = localPackage.packageJson.version;
+    }
   }
 
-  if (!highestVersion) throw new Error(`Unable to find version for packages`);
+  if (!highestVersion) {
+    throw new Error(`Unable to find version for packages`);
+  }
 
   let syncedFixedVersions = false;
   for (const localPackage of localPackages) {
     const currentVersion = localPackage.packageJson.version;
-    if (currentVersion === highestVersion) continue;
+    if (currentVersion === highestVersion) {
+      continue;
+    }
 
     localPackage.packageJson.version = highestVersion;
     logger.info(
@@ -209,7 +235,9 @@ async function syncFixedVersions(workspacePath: string, localPackages: LocalPack
 
   if (syncedFixedVersions) {
     const lernaJson = localPackages[0].workspace?.lernaJson;
-    if (!lernaJson) throw new Error(`Cannot find lerna.json for workspace: ${workspacePath}`);
+    if (!lernaJson) {
+      throw new Error(`Cannot find lerna.json for workspace: ${workspacePath}`);
+    }
 
     const lernaJsonPath = path.join(workspacePath, 'lerna.json');
     lernaJson.version = highestVersion;
@@ -309,7 +337,9 @@ async function pushMetarepos(dir: string) {
   const metarepoPaths = (await Fs.getFilePathsMatchingGlob(dir, '**/.gitmodules', ['**/node_modules/**', '**/dist/**']))
     .map((gitmodulesPath) => path.dirname(gitmodulesPath))
     .sort((a, b) => b.localeCompare(a));
-  for (const metarepoPath of metarepoPaths) await pushMetarepo(metarepoPath);
+  for (const metarepoPath of metarepoPaths) {
+    await pushMetarepo(metarepoPath);
+  }
 }
 
 async function pushMetarepo(dir: string) {
@@ -409,7 +439,9 @@ async function publish(localPackage: LocalPackage) {
 }
 
 function getNpmToken() {
-  if (process.env.NPM_TOKEN) return process.env.NPM_TOKEN;
+  if (process.env.NPM_TOKEN) {
+    return process.env.NPM_TOKEN;
+  }
 
   throw new Error(`NPM_TOKEN env variable not set`);
 }

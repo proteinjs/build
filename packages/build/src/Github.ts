@@ -25,7 +25,9 @@ export class Github {
   }
 
   private getGithubToken() {
-    if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
+    if (process.env.GITHUB_TOKEN) {
+      return process.env.GITHUB_TOKEN;
+    }
 
     throw new Error(`GITHUB_TOKEN env variable not set`);
   }
@@ -52,8 +54,9 @@ export class Github {
         throw new Error(`Workflow run failed: ${workflowName}, for commit: ${JSON.stringify(commit)}`);
       }
 
-      if (Date.now() - startTime > timeout)
+      if (Date.now() - startTime > timeout) {
         throw new Error(`Timed out checking for workflow run: ${workflowName}, for commit: ${JSON.stringify(commit)}`);
+      }
 
       await new Promise((resolve) => setTimeout(resolve, 10000));
     }
@@ -67,9 +70,13 @@ export class Github {
       per_page: 10,
     });
     const workflowRuns = response.data.workflow_runs.filter((run) => {
-      if (run.head_sha !== commit.sha) return false;
+      if (run.head_sha !== commit.sha) {
+        return false;
+      }
 
-      if (workflowName && run.name !== workflowName) return false;
+      if (workflowName && run.name !== workflowName) {
+        return false;
+      }
 
       return true;
     }) as WorkflowRun[];

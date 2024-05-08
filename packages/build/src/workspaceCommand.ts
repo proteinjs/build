@@ -54,7 +54,9 @@ function getArgs() {
   const argsMap = parseArgsMap(process.argv.slice(3));
   for (const argName in argsMap) {
     const argValue = argsMap[argName];
-    if (argName == 'skip' && typeof argValue === 'string') args.skip = argValue.split(',');
+    if (argName == 'skip' && typeof argValue === 'string') {
+      args.skip = argValue.split(',');
+    }
   }
 
   return args;
