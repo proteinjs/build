@@ -34,7 +34,6 @@ export async function lintWorkspace() {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
 
-    await cmd('npx', ['prettier', '.', '--write'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
     await cmd('npx', ['eslint', '.', '--fix'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
     logger.info(`Linted ${cw.color(packageName)} (${packageDir})`);
   }
