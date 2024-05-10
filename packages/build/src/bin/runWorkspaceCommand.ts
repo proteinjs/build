@@ -1,5 +1,5 @@
 #!/usr/bin/env node
 
-import { workspaceCommand } from '../workspaceCommand'
+import { workspaceCommand } from '../workspaceCommand';
 
 workspaceCommand();

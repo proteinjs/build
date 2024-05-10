@@ -1,5 +1,5 @@
 #!/usr/bin/env node
 
-import { symlinkWorkspace } from '../symlinkWorkspace'
+import { symlinkWorkspace } from '../symlinkWorkspace';
 
 symlinkWorkspace();

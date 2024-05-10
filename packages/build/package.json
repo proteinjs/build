@@ -12,7 +12,8 @@
     "workspace": "dist/src/bin/runWorkspaceCommand.js",
     "version-workspace": "dist/src/bin/runVersionWorkspace.js",
     "workspace-package": "dist/src/bin/runWorkspacePackageCommand.js",
-    "symlink-workspace": "dist/src/bin/runSymlinkWorkspace.js"
+    "symlink-workspace": "dist/src/bin/runSymlinkWorkspace.js",
+    "lint-workspace": "dist/src/bin/runLintWorkspace.js"
   },
   "publishConfig": {
     "access": "public"
@@ -45,7 +46,12 @@
     "@types/jest": "29.5.5",
     "@types/node": "20.3.1",
     "@types/semver": "7.5.8",
+    "@typescript-eslint/eslint-plugin": "7.8.0",
+    "@typescript-eslint/parser": "7.8.0",
     "babel-loader": "9.1.3",
+    "eslint": "8.57.0",
+    "eslint-config-prettier": "9.1.0",
+    "eslint-plugin-prettier": "5.1.3",
     "jest": "29.7.0",
     "ts-jest": "29.1.1",
     "typescript": "5.2.2",
