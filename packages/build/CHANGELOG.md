@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.4.1](https://github.com/proteinjs/build/compare/@proteinjs/build@1.4.0...@proteinjs/build@1.4.1) (2024-05-10)
+
+
+### Bug Fixes
+
+* only lint if there are lint configs present ([85b1e71](https://github.com/proteinjs/build/commit/85b1e71b7655bc639c99264069bd224e34a81c7c))
+
+
+
+
+
 # [1.4.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.3.1...@proteinjs/build@1.4.0) (2024-05-10)
 
 
