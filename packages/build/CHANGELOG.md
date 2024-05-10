@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.4.2](https://github.com/proteinjs/build/compare/@proteinjs/build@1.4.1...@proteinjs/build@1.4.2) (2024-05-10)
+
+
+### Bug Fixes
+
+* add .md file type to lint ignore files ([e33e233](https://github.com/proteinjs/build/commit/e33e233dbbbc9e9b8ff3aaf19ef9a65661750d29))
+
+
+
+
+
 ## [1.4.1](https://github.com/proteinjs/build/compare/@proteinjs/build@1.4.0...@proteinjs/build@1.4.1) (2024-05-10)
 
 
