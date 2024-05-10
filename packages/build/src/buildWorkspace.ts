@@ -2,6 +2,7 @@ import * as path from 'path';
 import { LogColorWrapper, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/util';
 import { primaryLogColor, secondaryLogColor } from './logColors';
+import { hasLintConfig } from './lintWorkspace';
 
 /**
  * Install and build workspace, in dependency order.
@@ -48,7 +49,7 @@ export async function buildWorkspace() {
       logger.info(`Built ${cw.color(packageName)} (${packageDir})`);
     }
 
-    if (!args.noLint || !args.noLint.includes(packageName)) {
+    if (hasLintConfig(packageMap, packageName) && (!args.noLint || !args.noLint.includes(packageName))) {
       await cmd('npx', ['prettier', '.', '--write'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
       await cmd('npx', ['eslint', '.', '--fix'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
       logger.info(`Linted ${cw.color(packageName)} (${packageDir})`);
