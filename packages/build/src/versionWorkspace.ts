@@ -31,17 +31,19 @@ export async function versionWorkspace() {
   logger.info(`> Versioning workspace (${workspacePath})`);
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
-    const dependenciesChanged = await bumpDependencies(localPackage, packageMap, packageGraph);
+    const skipBumpingPackageVersion = isInFixedVersionWorkspace(localPackage);
+    const dependenciesChanged = await bumpDependencies(
+      localPackage,
+      packageMap,
+      packageGraph,
+      skipBumpingPackageVersion
+    );
     if (!dependenciesChanged) {
       continue;
     }
 
     await buildAndTest(localPackage);
-    if (
-      localPackage.workspace &&
-      localPackage.workspace.lernaJson &&
-      localPackage.workspace.lernaJson.version !== 'independent'
-    ) {
+    if (isInFixedVersionWorkspace(localPackage) && localPackage.workspace) {
       fixedVersionWorkspacesToVersion[localPackage.workspace.path] = true;
       logger.info(`(${cw.color(packageName)}) skipping version push for package in a fixed-version workspace`);
       continue;
@@ -53,10 +55,24 @@ export async function versionWorkspace() {
     }
   }
 
-  await syncFixedVersionWorkspaces(Object.keys(fixedVersionWorkspacesToVersion), packageMap, workspaceToPackageMap);
+  const pushWithoutSync = true;
+  await syncFixedVersionWorkspaces(
+    Object.keys(fixedVersionWorkspacesToVersion),
+    packageMap,
+    workspaceToPackageMap,
+    pushWithoutSync
+  );
   await pushMetarepos(workspacePath);
   await symlinkWorkspace(workspacePath, filteredPackageNames, packageMap);
   logger.info(`> Finished versioning workspace (${workspacePath})`);
+}
+
+function isInFixedVersionWorkspace(localPackage: LocalPackage) {
+  return (
+    localPackage.workspace &&
+    localPackage.workspace.lernaJson &&
+    localPackage.workspace.lernaJson.version !== 'independent'
+  );
 }
 
 async function pullWorkspace(workspacePath: string) {
@@ -79,7 +95,12 @@ async function pullWorkspace(workspacePath: string) {
   logger.info(`> Finished pulling workspace (${workspacePath})`);
 }
 
-async function bumpDependencies(localPackage: LocalPackage, packageMap: LocalPackageMap, packageGraph: any) {
+async function bumpDependencies(
+  localPackage: LocalPackage,
+  packageMap: LocalPackageMap,
+  packageGraph: any,
+  skipBumpingPackageVersion = false
+) {
   const localDependencies = packageGraph.successors(localPackage.name);
   if (!localDependencies || localDependencies.length == 0) {
     return false;
@@ -113,11 +134,13 @@ async function bumpDependencies(localPackage: LocalPackage, packageMap: LocalPac
   }
 
   if (dependenciesChanged) {
-    const currentVersion = localPackage.packageJson.version;
-    localPackage.packageJson.version = semver.inc(currentVersion, 'patch');
-    logger.info(
-      `(${cw.color(localPackage.name)}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`
-    );
+    if (!skipBumpingPackageVersion) {
+      const currentVersion = localPackage.packageJson.version;
+      localPackage.packageJson.version = semver.inc(currentVersion, 'patch');
+      logger.info(
+        `(${cw.color(localPackage.name)}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`
+      );
+    }
     await Fs.writeFiles([{ path: localPackage.filePath, content: JSON.stringify(localPackage.packageJson, null, 2) }]);
   }
 
@@ -175,7 +198,8 @@ function setDependencyVersion(
 async function syncFixedVersionWorkspaces(
   fixedVersionWorkspacePaths: string[],
   packageMap: LocalPackageMap,
-  workspaceToPackageMap: { [workspacePath: string]: string[] }
+  workspaceToPackageMap: { [workspacePath: string]: string[] },
+  pushWithoutSync = false
 ) {
   if (fixedVersionWorkspacePaths.length == 0) {
     return;
@@ -190,12 +214,17 @@ async function syncFixedVersionWorkspaces(
       continue;
     }
 
-    const syncedVersion = await syncFixedVersions(workspacePath, workspacePackages);
-    if (!syncedVersion) {
-      continue;
+    let syncedVersion: string | false = false;
+    if (!pushWithoutSync) {
+      syncedVersion = await syncFixedVersions(workspacePath, workspacePackages);
+      if (!syncedVersion) {
+        continue;
+      }
     }
 
-    await pushAndTagFixedVersionRepo(workspacePath, syncedVersion);
+    const skipTagging = pushWithoutSync;
+    const skipCi = !pushWithoutSync;
+    await pushAndTagFixedVersionRepo(workspacePath, syncedVersion, skipTagging, skipCi);
   }
 
   logger.info(`> Synced fixed-version workspaces`);
@@ -305,31 +334,47 @@ async function pushAndTag(localPackage: LocalPackage): Promise<Commit> {
   return commit;
 }
 
-async function pushAndTagFixedVersionRepo(dir: string, version: string): Promise<Commit> {
+async function pushAndTagFixedVersionRepo(
+  dir: string,
+  version: string | false,
+  skipTagging = false,
+  skipCi = true
+): Promise<Commit> {
   const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
-  logger.info(`(${cw.color(repoName)}) pushing latest version (${version})`);
+  if (version) {
+    logger.info(`(${cw.color(repoName)}) pushing latest version (${version})`);
+  } else {
+    logger.info(`(${cw.color(repoName)}) pushing dependency bumps`);
+  }
   await cmd('git', ['add', '.'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
   await cmd(
     'git',
-    ['commit', '-m', `chore(version): bumping dependency versions [skip ci]`],
+    ['commit', '-m', `chore(version): bumping dependency versions${skipCi ? ' [skip ci]' : ''}`],
     { cwd: dir },
     { logPrefix: `[${cw.color(repoName)}] ` }
   );
   await cmd('git', ['push'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
-  logger.info(`(${cw.color(repoName)}) pushed latest version (${version})`);
+  if (version) {
+    logger.info(`(${cw.color(repoName)}) pushed latest version (${version})`);
+  } else {
+    logger.info(`(${cw.color(repoName)}) pushed dependency bumps`);
+  }
   const latestCommitSha = await getLatestCommitSha(dir);
   const repoInfo = await getRepoInfo(dir);
   const commit = { sha: latestCommitSha, ...repoInfo };
-  const tagName = `v${version}`;
-  logger.info(`(${cw.color(repoName)}) pushing tag (${tagName})`);
-  await cmd(
-    'git',
-    ['tag', '-a', tagName, '-m', `Release ${tagName}`],
-    { cwd: dir },
-    { logPrefix: `[${cw.color(repoName)}] ` }
-  );
-  await cmd('git', ['push', 'origin', tagName], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
-  logger.info(`(${cw.color(repoName)}) pushed tag (${tagName})`);
+  if (!skipTagging) {
+    const tagName = `v${version}`;
+    logger.info(`(${cw.color(repoName)}) pushing tag (${tagName})`);
+    await cmd(
+      'git',
+      ['tag', '-a', tagName, '-m', `Release ${tagName}`],
+      { cwd: dir },
+      { logPrefix: `[${cw.color(repoName)}] ` }
+    );
+    await cmd('git', ['push', 'origin', tagName], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
+    logger.info(`(${cw.color(repoName)}) pushed tag (${tagName})`);
+  }
+
   return commit;
 }
 
