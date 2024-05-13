@@ -231,20 +231,14 @@ async function syncFixedVersionWorkspaces(
 }
 
 async function syncFixedVersions(workspacePath: string, localPackages: LocalPackage[]): Promise<string | false> {
-  let highestVersion: string | undefined;
-  for (const localPackage of localPackages) {
-    if (!highestVersion) {
-      highestVersion = localPackage.packageJson.version;
-      continue;
-    }
-
-    if (semver.gt(localPackage.packageJson.version, highestVersion)) {
-      highestVersion = localPackage.packageJson.version;
-    }
+  const lernaJson = localPackages[0].workspace?.lernaJson;
+  if (!lernaJson) {
+    throw new Error(`Cannot find lerna.json for workspace: ${workspacePath}`);
   }
 
+  const highestVersion = lernaJson.version;
   if (!highestVersion) {
-    throw new Error(`Unable to find version for packages`);
+    throw new Error(`Lerna version not specified for workspace: ${workspacePath}`);
   }
 
   let syncedFixedVersions = false;
@@ -263,11 +257,6 @@ async function syncFixedVersions(workspacePath: string, localPackages: LocalPack
   }
 
   if (syncedFixedVersions) {
-    const lernaJson = localPackages[0].workspace?.lernaJson;
-    if (!lernaJson) {
-      throw new Error(`Cannot find lerna.json for workspace: ${workspacePath}`);
-    }
-
     const lernaJsonPath = path.join(workspacePath, 'lerna.json');
     lernaJson.version = highestVersion;
     await Fs.writeFiles([{ path: lernaJsonPath, content: JSON.stringify(lernaJson, null, 2) }]);
