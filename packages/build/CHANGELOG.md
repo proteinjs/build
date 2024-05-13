@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.5.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.4.3...@proteinjs/build@1.5.0) (2024-05-13)
+
+
+### Features
+
+* `versionWorkspace` has the option to push dependency bumps to fixed-version workspaces without bumping their package versions or tagging. the purpose is to enable fixed-version (ie. app) workspaces to let their ci handle versioning. ([fba6681](https://github.com/proteinjs/build/commit/fba6681ec7f2a6c059592341a7dd0a68989c3f3d))
+
+
+
+
+
 ## [1.4.2](https://github.com/proteinjs/build/compare/@proteinjs/build@1.4.1...@proteinjs/build@1.4.2) (2024-05-10)
 
 
