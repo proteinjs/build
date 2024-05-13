@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.5.1](https://github.com/proteinjs/build/compare/@proteinjs/build@1.5.0...@proteinjs/build@1.5.1) (2024-05-13)
+
+
+### Bug Fixes
+
+* `versionWorkspace` should take the latest version for fixed-version workspaces from lerna.json ([5107201](https://github.com/proteinjs/build/commit/5107201277071e6fff469c0329373ceb0a864b2f))
+
+
+
+
+
 # [1.5.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.4.3...@proteinjs/build@1.5.0) (2024-05-13)
 
 
