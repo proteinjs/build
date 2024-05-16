@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.5.3](https://github.com/proteinjs/build/compare/@proteinjs/build@1.5.2...@proteinjs/build@1.5.3) (2024-05-16)
+
+
+### Bug Fixes
+
+* `versionWorkspace` should push and tag package versions after a successful npm publish. Previously if the npm publish fails (ie. token rotation) there is more work to undo/redo if versions have already been bumped in the repo ([1ade489](https://github.com/proteinjs/build/commit/1ade4894d5d5440048de25e9b32e775a7d9b0805))
+
+
+
+
+
 ## [1.5.2](https://github.com/proteinjs/build/compare/@proteinjs/build@1.5.1...@proteinjs/build@1.5.2) (2024-05-16)
 
 
