@@ -236,7 +236,7 @@ async function syncFixedVersions(workspacePath: string, localPackages: LocalPack
     throw new Error(`Cannot find lerna.json for workspace: ${workspacePath}`);
   }
 
-  const highestVersion = lernaJson.version;
+  const highestVersion = semver.inc(lernaJson.version, 'patch');
   if (!highestVersion) {
     throw new Error(`Lerna version not specified for workspace: ${workspacePath}`);
   }
