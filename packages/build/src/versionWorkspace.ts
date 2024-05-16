@@ -49,10 +49,11 @@ export async function versionWorkspace() {
       continue;
     }
 
-    await pushAndTag(localPackage);
     if (!localPackage.packageJson.private && localPackage.packageJson.publishConfig?.access === 'public') {
       await publish(localPackage);
     }
+
+    await pushAndTag(localPackage);
   }
 
   const pushWithoutSync = true;
