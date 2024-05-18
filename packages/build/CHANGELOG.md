@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.5.4](https://github.com/proteinjs/build/compare/@proteinjs/build@1.5.3...@proteinjs/build@1.5.4) (2024-05-18)
+
+
+### Bug Fixes
+
+* update version workspace to lint package.json files that it writes ([e881799](https://github.com/proteinjs/build/commit/e881799bd4aec7a2c374caa35a97470c4269abaa))
+
+
+
+
+
 ## [1.5.3](https://github.com/proteinjs/build/compare/@proteinjs/build@1.5.2...@proteinjs/build@1.5.3) (2024-05-16)
 
 
