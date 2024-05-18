@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { LocalPackageMap, LogColorWrapper, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node';
+import { LocalPackage, LocalPackageMap, LogColorWrapper, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/util';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 
@@ -20,7 +20,7 @@ export async function lintWorkspace() {
   const skippedPackages = ['root'];
   const filteredPackageNames = sortedPackageNames.filter((packageName) => {
     return (
-      hasLintConfig(packageMap, packageName) &&
+      hasLintConfig(packageMap[packageName]) &&
       !(args.skip && args.skip.includes(packageName)) &&
       !skippedPackages.includes(packageName)
     );
@@ -62,9 +62,8 @@ function getArgs() {
   return args;
 }
 
-export const hasLintConfig = (packageMap: LocalPackageMap, packageName: string): boolean => {
-  const packageInfo = packageMap[packageName];
-  const directoryPath = path.dirname(packageInfo.filePath);
+export const hasLintConfig = (localPackage: LocalPackage): boolean => {
+  const directoryPath = path.dirname(localPackage.filePath);
 
   const getFilesInDirectory = (directoryPath: string): string[] => {
     try {

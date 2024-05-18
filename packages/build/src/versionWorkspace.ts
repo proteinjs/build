@@ -5,6 +5,7 @@ import { Logger } from '@proteinjs/util';
 import semver from 'semver';
 import { Commit } from './Github';
 import { primaryLogColor, secondaryLogColor } from './logColors';
+import { hasLintConfig } from './lintWorkspace';
 
 const cw = new LogColorWrapper();
 const logger = new Logger(cw.color('workspace:', primaryLogColor) + cw.color('version', secondaryLogColor));
@@ -143,6 +144,22 @@ async function bumpDependencies(
       );
     }
     await Fs.writeFiles([{ path: localPackage.filePath, content: JSON.stringify(localPackage.packageJson, null, 2) }]);
+    if (hasLintConfig(localPackage)) {
+      const packageDir = path.dirname(localPackage.filePath);
+      logger.info(`Linting ${cw.color(localPackage.name)} (${packageDir})`);
+      await cmd(
+        'npx',
+        ['prettier', localPackage.filePath, '--write'],
+        { cwd: packageDir },
+        { logPrefix: `[${cw.color(localPackage.name)}] ` }
+      );
+      await cmd(
+        'npx',
+        ['eslint', localPackage.filePath, '--fix'],
+        { cwd: packageDir },
+        { logPrefix: `[${cw.color(localPackage.name)}] ` }
+      );
+    }
   }
 
   return dependenciesChanged;
@@ -254,6 +271,22 @@ async function syncFixedVersions(workspacePath: string, localPackages: LocalPack
       `(${cw.color(localPackage.name)}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`
     );
     await Fs.writeFiles([{ path: localPackage.filePath, content: JSON.stringify(localPackage.packageJson, null, 2) }]);
+    if (hasLintConfig(localPackage)) {
+      const packageDir = path.dirname(localPackage.filePath);
+      logger.info(`Linting ${cw.color(localPackage.name)} (${packageDir})`);
+      await cmd(
+        'npx',
+        ['prettier', localPackage.filePath, '--write'],
+        { cwd: packageDir },
+        { logPrefix: `[${cw.color(localPackage.name)}] ` }
+      );
+      await cmd(
+        'npx',
+        ['eslint', localPackage.filePath, '--fix'],
+        { cwd: packageDir },
+        { logPrefix: `[${cw.color(localPackage.name)}] ` }
+      );
+    }
     syncedFixedVersions = true;
   }
 
