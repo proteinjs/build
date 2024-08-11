@@ -22,10 +22,24 @@ jobs:
           git config user.name github-actions
           git config user.email github-actions@github.com
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20.3.1'
+          - name: Setup Node.js
+          uses: actions/setup-node@v4
+          with:
+            node-version: '20.3.1'
+  
+      - name: Setup NPM authentication
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Check NPM token validity
+        run: |
+          if ! npm_output=$(npm org ls proteinjs --json 2>&1); then
+            echo "NPM token validation failed. Error details:"
+            echo "$npm_output"
+            exit 1
+          fi
       
       - name: Install root package
         run: |
@@ -50,12 +64,6 @@ jobs:
             git rebase origin/main
             git push origin main
           fi
-
-      - name: Authenticate with npm registry
-        run: |
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Version and Publish
         run: |
