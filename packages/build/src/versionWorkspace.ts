@@ -1,14 +1,14 @@
 import * as path from 'path';
 import { exec } from 'child_process';
 import { LocalPackage, LocalPackageMap, PackageUtil, cmd, Fs, LogColorWrapper } from '@proteinjs/util-node';
-import { Logger } from '@proteinjs/util';
+import { Logger } from '@proteinjs/logger';
 import semver from 'semver';
 import { Commit } from './Github';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 import { hasLintConfig } from './lintWorkspace';
 
 const cw = new LogColorWrapper();
-const logger = new Logger(cw.color('workspace:', primaryLogColor) + cw.color('version', secondaryLogColor));
+const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.color('version', secondaryLogColor) });
 const fixedVersionWorkspacesToVersion: { [workspacePath: string]: boolean } = {};
 
 export async function versionWorkspace() {
@@ -29,7 +29,7 @@ export async function versionWorkspace() {
     );
   });
 
-  logger.info(`> Versioning workspace (${workspacePath})`);
+  logger.info({ message: `> Versioning workspace (${workspacePath})` });
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     const skipBumpingPackageVersion = isInFixedVersionWorkspace(localPackage);
@@ -46,7 +46,9 @@ export async function versionWorkspace() {
     await buildAndTest(localPackage);
     if (isInFixedVersionWorkspace(localPackage) && localPackage.workspace) {
       fixedVersionWorkspacesToVersion[localPackage.workspace.path] = true;
-      logger.info(`(${cw.color(packageName)}) skipping version push for package in a fixed-version workspace`);
+      logger.info({
+        message: `(${cw.color(packageName)}) skipping version push for package in a fixed-version workspace`,
+      });
       continue;
     }
 
@@ -66,7 +68,7 @@ export async function versionWorkspace() {
   );
   await pushMetarepos(workspacePath);
   await symlinkWorkspace(workspacePath, filteredPackageNames, packageMap);
-  logger.info(`> Finished versioning workspace (${workspacePath})`);
+  logger.info({ message: `> Finished versioning workspace (${workspacePath})` });
 }
 
 function isInFixedVersionWorkspace(localPackage: LocalPackage) {
@@ -88,13 +90,13 @@ async function pullWorkspace(workspacePath: string) {
     );
   });
 
-  logger.info(`> Pulling workspace (${workspacePath})`);
+  logger.info({ message: `> Pulling workspace (${workspacePath})` });
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     await pull(localPackage);
   }
 
-  logger.info(`> Finished pulling workspace (${workspacePath})`);
+  logger.info({ message: `> Finished pulling workspace (${workspacePath})` });
 }
 
 async function bumpDependencies(
@@ -139,14 +141,14 @@ async function bumpDependencies(
     if (!skipBumpingPackageVersion) {
       const currentVersion = localPackage.packageJson.version;
       localPackage.packageJson.version = semver.inc(currentVersion, 'patch');
-      logger.info(
-        `(${cw.color(localPackage.name)}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`
-      );
+      logger.info({
+        message: `(${cw.color(localPackage.name)}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`,
+      });
     }
     await Fs.writeFiles([{ path: localPackage.filePath, content: JSON.stringify(localPackage.packageJson, null, 2) }]);
     if (hasLintConfig(localPackage)) {
       const packageDir = path.dirname(localPackage.filePath);
-      logger.info(`Linting ${cw.color(localPackage.name)} (${packageDir})`);
+      logger.info({ message: `Linting ${cw.color(localPackage.name)} (${packageDir})` });
       await cmd(
         'npx',
         ['prettier', localPackage.filePath, '--write'],
@@ -208,9 +210,9 @@ function setDependencyVersion(
   const currentRawVersion = currentVersion.prefix
     ? currentVersion.prefix + currentVersion.version
     : currentVersion.version;
-  logger.info(
-    `(${cw.color(localPackage.name)}) updating dependency version of ${cw.color(dependencyPackageName)} (${currentRawVersion} -> ${newRawVersion})`
-  );
+  logger.info({
+    message: `(${cw.color(localPackage.name)}) updating dependency version of ${cw.color(dependencyPackageName)} (${currentRawVersion} -> ${newRawVersion})`,
+  });
 }
 
 async function syncFixedVersionWorkspaces(
@@ -223,7 +225,7 @@ async function syncFixedVersionWorkspaces(
     return;
   }
 
-  logger.info(`> Syncing fixed-version workspaces`);
+  logger.info({ message: `> Syncing fixed-version workspaces` });
   for (const workspacePath of fixedVersionWorkspacePaths) {
     const workspacePackages = workspaceToPackageMap[workspacePath]
       .filter((packageName) => packageName != 'typescript-parser')
@@ -245,7 +247,7 @@ async function syncFixedVersionWorkspaces(
     await pushAndTagFixedVersionRepo(workspacePath, syncedVersion, skipTagging, skipCi);
   }
 
-  logger.info(`> Synced fixed-version workspaces`);
+  logger.info({ message: `> Synced fixed-version workspaces` });
 }
 
 async function syncFixedVersions(workspacePath: string, localPackages: LocalPackage[]): Promise<string | false> {
@@ -267,13 +269,13 @@ async function syncFixedVersions(workspacePath: string, localPackages: LocalPack
     }
 
     localPackage.packageJson.version = highestVersion;
-    logger.info(
-      `(${cw.color(localPackage.name)}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`
-    );
+    logger.info({
+      message: `(${cw.color(localPackage.name)}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`,
+    });
     await Fs.writeFiles([{ path: localPackage.filePath, content: JSON.stringify(localPackage.packageJson, null, 2) }]);
     if (hasLintConfig(localPackage)) {
       const packageDir = path.dirname(localPackage.filePath);
-      logger.info(`Linting ${cw.color(localPackage.name)} (${packageDir})`);
+      logger.info({ message: `Linting ${cw.color(localPackage.name)} (${packageDir})` });
       await cmd(
         'npx',
         ['prettier', localPackage.filePath, '--write'],
@@ -301,32 +303,36 @@ async function syncFixedVersions(workspacePath: string, localPackages: LocalPack
 
 async function buildAndTest(localPackage: LocalPackage) {
   const packageDir = path.dirname(localPackage.filePath);
-  logger.info(`(${cw.color(localPackage.name)}) cleaning package`);
+  logger.info({ message: `(${cw.color(localPackage.name)}) cleaning package` });
   await cmd('npm', ['run', 'clean'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
-  logger.info(`(${cw.color(localPackage.name)}) cleaned package`);
-  logger.info(`(${cw.color(localPackage.name)}) installing latest dependency versions`);
+  logger.info({ message: `(${cw.color(localPackage.name)}) cleaned package` });
+  logger.info({ message: `(${cw.color(localPackage.name)}) installing latest dependency versions` });
   await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
-  logger.info(`(${cw.color(localPackage.name)}) installed latest dependency versions`);
-  logger.info(`(${cw.color(localPackage.name)}) building version ${localPackage.packageJson.version}`);
+  logger.info({ message: `(${cw.color(localPackage.name)}) installed latest dependency versions` });
+  logger.info({ message: `(${cw.color(localPackage.name)}) building version ${localPackage.packageJson.version}` });
   await cmd('npm', ['run', 'build'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
-  logger.info(`(${cw.color(localPackage.name)}) built version ${localPackage.packageJson.version} (${packageDir})`);
+  logger.info({
+    message: `(${cw.color(localPackage.name)}) built version ${localPackage.packageJson.version} (${packageDir})`,
+  });
   if (localPackage.packageJson.scripts?.test) {
-    logger.info(`(${cw.color(localPackage.name)}) testing version ${localPackage.packageJson.version}`);
+    logger.info({ message: `(${cw.color(localPackage.name)}) testing version ${localPackage.packageJson.version}` });
     await cmd('npm', ['run', 'test'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
-    logger.info(`(${cw.color(localPackage.name)}) tested version ${localPackage.packageJson.version}`);
+    logger.info({ message: `(${cw.color(localPackage.name)}) tested version ${localPackage.packageJson.version}` });
   }
 }
 
 async function pull(localPackage: LocalPackage) {
   const packageDir = path.dirname(localPackage.filePath);
-  logger.info(`(${cw.color(localPackage.name)}) pulling latest changes`);
+  logger.info({ message: `(${cw.color(localPackage.name)}) pulling latest changes` });
   await cmd('git', ['pull'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
-  logger.info(`(${cw.color(localPackage.name)}) pulled latest changes`);
+  logger.info({ message: `(${cw.color(localPackage.name)}) pulled latest changes` });
 }
 
 async function pushAndTag(localPackage: LocalPackage): Promise<Commit> {
   const packageDir = path.dirname(localPackage.filePath);
-  logger.info(`(${cw.color(localPackage.name)}) pushing latest version (${localPackage.packageJson.version})`);
+  logger.info({
+    message: `(${cw.color(localPackage.name)}) pushing latest version (${localPackage.packageJson.version})`,
+  });
   await cmd('git', ['add', '.'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
   await cmd(
     'git',
@@ -335,12 +341,14 @@ async function pushAndTag(localPackage: LocalPackage): Promise<Commit> {
     { logPrefix: `[${cw.color(localPackage.name)}] ` }
   );
   await cmd('git', ['push'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
-  logger.info(`(${cw.color(localPackage.name)}) pushed latest version (${localPackage.packageJson.version})`);
+  logger.info({
+    message: `(${cw.color(localPackage.name)}) pushed latest version (${localPackage.packageJson.version})`,
+  });
   const latestCommitSha = await getLatestCommitSha(packageDir);
   const repoInfo = await getRepoInfo(packageDir);
   const commit = { sha: latestCommitSha, ...repoInfo };
   const tagName = `${localPackage.name}@${localPackage.packageJson.version}`;
-  logger.info(`(${cw.color(localPackage.name)}) pushing tag (${tagName})`);
+  logger.info({ message: `(${cw.color(localPackage.name)}) pushing tag (${tagName})` });
   await cmd(
     'git',
     ['tag', '-a', tagName, '-m', `Release ${tagName}`],
@@ -353,7 +361,7 @@ async function pushAndTag(localPackage: LocalPackage): Promise<Commit> {
     { cwd: packageDir },
     { logPrefix: `[${cw.color(localPackage.name)}] ` }
   );
-  logger.info(`(${cw.color(localPackage.name)}) pushed tag (${tagName})`);
+  logger.info({ message: `(${cw.color(localPackage.name)}) pushed tag (${tagName})` });
   return commit;
 }
 
@@ -365,9 +373,9 @@ async function pushAndTagFixedVersionRepo(
 ): Promise<Commit> {
   const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
   if (version) {
-    logger.info(`(${cw.color(repoName)}) pushing latest version (${version})`);
+    logger.info({ message: `(${cw.color(repoName)}) pushing latest version (${version})` });
   } else {
-    logger.info(`(${cw.color(repoName)}) pushing dependency bumps`);
+    logger.info({ message: `(${cw.color(repoName)}) pushing dependency bumps` });
   }
   await cmd('git', ['add', '.'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
   await cmd(
@@ -378,16 +386,16 @@ async function pushAndTagFixedVersionRepo(
   );
   await cmd('git', ['push'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
   if (version) {
-    logger.info(`(${cw.color(repoName)}) pushed latest version (${version})`);
+    logger.info({ message: `(${cw.color(repoName)}) pushed latest version (${version})` });
   } else {
-    logger.info(`(${cw.color(repoName)}) pushed dependency bumps`);
+    logger.info({ message: `(${cw.color(repoName)}) pushed dependency bumps` });
   }
   const latestCommitSha = await getLatestCommitSha(dir);
   const repoInfo = await getRepoInfo(dir);
   const commit = { sha: latestCommitSha, ...repoInfo };
   if (!skipTagging) {
     const tagName = `v${version}`;
-    logger.info(`(${cw.color(repoName)}) pushing tag (${tagName})`);
+    logger.info({ message: `(${cw.color(repoName)}) pushing tag (${tagName})` });
     await cmd(
       'git',
       ['tag', '-a', tagName, '-m', `Release ${tagName}`],
@@ -395,7 +403,7 @@ async function pushAndTagFixedVersionRepo(
       { logPrefix: `[${cw.color(repoName)}] ` }
     );
     await cmd('git', ['push', 'origin', tagName], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
-    logger.info(`(${cw.color(repoName)}) pushed tag (${tagName})`);
+    logger.info({ message: `(${cw.color(repoName)}) pushed tag (${tagName})` });
   }
 
   return commit;
@@ -412,7 +420,7 @@ async function pushMetarepos(dir: string) {
 
 async function pushMetarepo(dir: string) {
   const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
-  logger.info(`(${cw.color(repoName)}) pushing metarepo (${dir})`);
+  logger.info({ message: `(${cw.color(repoName)}) pushing metarepo (${dir})` });
   await cmd('git', ['add', '.'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
   await cmd(
     'git',
@@ -422,17 +430,17 @@ async function pushMetarepo(dir: string) {
   );
   await cmd('git', ['pull'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
   await cmd('git', ['push'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
-  logger.info(`(${cw.color(repoName)}) pushed metarepo (${dir})`);
+  logger.info({ message: `(${cw.color(repoName)}) pushed metarepo (${dir})` });
 }
 
 async function symlinkWorkspace(workspacePath: string, packageNames: string[], packageMap: LocalPackageMap) {
-  logger.info(`> Symlinking local dependencies in workspace (${workspacePath})`);
+  logger.info({ message: `> Symlinking local dependencies in workspace (${workspacePath})` });
   for (const packageName of packageNames) {
     const localPackage = packageMap[packageName];
-    await PackageUtil.symlinkDependencies(localPackage, packageMap, logger);
+    await PackageUtil.symlinkDependencies(localPackage, packageMap);
   }
 
-  logger.info(`> Symlinked local dependencies in workspace (${workspacePath})`);
+  logger.info({ message: `> Symlinked local dependencies in workspace (${workspacePath})` });
 }
 
 async function getLatestCommitSha(dir: string): Promise<string> {
@@ -480,17 +488,19 @@ async function getRepoInfo(dir: string): Promise<RepoInfo> {
 
 async function publish(localPackage: LocalPackage) {
   if (localPackage.packageJson.private) {
-    logger.info(`Preventing publish of private package: ${cw.color(localPackage.name)}`);
+    logger.info({ message: `Preventing publish of private package: ${cw.color(localPackage.name)}` });
     return;
   }
 
   if (!localPackage.name.startsWith('@proteinjs/')) {
-    logger.warn(`Preventing publish of non-proteinjs package: ${cw.color(localPackage.name)}`);
+    logger.warn({ message: `Preventing publish of non-proteinjs package: ${cw.color(localPackage.name)}` });
     return;
   }
 
   const packageDir = path.dirname(localPackage.filePath);
-  logger.info(`(${cw.color(localPackage.name)}) publishing latest version (${localPackage.packageJson.version})`);
+  logger.info({
+    message: `(${cw.color(localPackage.name)}) publishing latest version (${localPackage.packageJson.version})`,
+  });
   await cmd(
     'npm',
     ['set', `//registry.npmjs.org/:_authToken=${getNpmToken()}`],
@@ -503,7 +513,9 @@ async function publish(localPackage: LocalPackage) {
     { cwd: packageDir },
     { logPrefix: `[${cw.color(localPackage.name)}] ` }
   );
-  logger.info(`(${cw.color(localPackage.name)}) published latest version (${localPackage.packageJson.version})`);
+  logger.info({
+    message: `(${cw.color(localPackage.name)}) published latest version (${localPackage.packageJson.version})`,
+  });
 }
 
 function getNpmToken() {

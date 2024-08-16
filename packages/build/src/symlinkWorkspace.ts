@@ -1,5 +1,5 @@
 import { LogColorWrapper, PackageUtil, parseArgsMap } from '@proteinjs/util-node';
-import { Logger } from '@proteinjs/util';
+import { Logger } from '@proteinjs/logger';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 
 /**
@@ -13,7 +13,7 @@ import { primaryLogColor, secondaryLogColor } from './logColors';
  */
 export const symlinkWorkspace = async () => {
   const cw = new LogColorWrapper();
-  const logger = new Logger(cw.color('workspace:', primaryLogColor) + cw.color('symlink', secondaryLogColor));
+  const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.color('symlink', secondaryLogColor) });
   const args = getArgs();
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
@@ -22,20 +22,20 @@ export const symlinkWorkspace = async () => {
     (packageName) => !(args.skip && args.skip.includes(packageName)) && !skippedPackages.includes(packageName)
   );
   if (filteredPackageNames.length == 0) {
-    logger.info(`> There are no packages to symlink in workspace (${workspacePath})`);
+    logger.info({ message: `> There are no packages to symlink in workspace (${workspacePath})` });
     return;
   }
 
-  logger.info(
-    `> Symlinking ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`
-  );
+  logger.info({
+    message: `> Symlinking ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
+  });
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
-    await PackageUtil.symlinkDependencies(localPackage, packageMap, logger);
+    await PackageUtil.symlinkDependencies(localPackage, packageMap);
   }
-  logger.info(
-    `> Symlinked ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`
-  );
+  logger.info({
+    message: `> Symlinked ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
+  });
 };
 
 type Args = {

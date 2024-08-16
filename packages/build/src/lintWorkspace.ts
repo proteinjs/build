@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { LocalPackage, LocalPackageMap, LogColorWrapper, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node';
-import { Logger } from '@proteinjs/util';
+import { LocalPackage, LogColorWrapper, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node';
+import { Logger } from '@proteinjs/logger';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 
 /**
@@ -13,7 +13,7 @@ import { primaryLogColor, secondaryLogColor } from './logColors';
  */
 export async function lintWorkspace() {
   const cw = new LogColorWrapper();
-  const logger = new Logger(cw.color('workspace:', primaryLogColor) + cw.color('lint', secondaryLogColor));
+  const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.color('lint', secondaryLogColor) });
   const args = getArgs();
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
@@ -26,23 +26,23 @@ export async function lintWorkspace() {
     );
   });
 
-  logger.info(
-    `> Linting ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`
-  );
-  logger.debug(`packageMap:\n${JSON.stringify(packageMap, null, 2)}`, true);
-  logger.debug(`filteredPackageNames:\n${JSON.stringify(filteredPackageNames, null, 2)}`, true);
+  logger.info({
+    message: `> Linting ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
+  });
+  logger.debug({ message: `packageMap:`, obj: packageMap });
+  logger.debug({ message: `filteredPackageNames:`, obj: filteredPackageNames });
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
 
     await cmd('npx', ['prettier', '.', '--write'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
     await cmd('npx', ['eslint', '.', '--fix'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
-    logger.info(`Linted ${cw.color(packageName)} (${packageDir})`);
+    logger.info({ message: `Linted ${cw.color(packageName)} (${packageDir})` });
   }
 
-  logger.info(
-    `> Linted ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`
-  );
+  logger.info({
+    message: `> Linted ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
+  });
 }
 
 type Args = {

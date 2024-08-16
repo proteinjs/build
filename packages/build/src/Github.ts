@@ -1,5 +1,5 @@
 import { Octokit } from '@octokit/core';
-import { Logger } from '@proteinjs/util';
+import { Logger } from '@proteinjs/logger';
 import { LocalPackage } from '@proteinjs/util-node';
 
 export type WorkflowRun = {
@@ -17,7 +17,7 @@ export type Commit = {
 };
 
 export class Github {
-  private logger = new Logger(this.constructor.name);
+  private logger = new Logger({ name: this.constructor.name });
   private authToken: string;
 
   constructor(authToken?: string) {
@@ -48,7 +48,9 @@ export class Github {
       const workflowRun = await this.getWorkflowRun(workflowName, commit);
       if (workflowRun && workflowRun.status === 'completed') {
         if (workflowRun.conclusion === 'success') {
-          this.logger.info(`(${localPackage.name}) ci passed for latest version (${localPackage.packageJson.version})`);
+          this.logger.info({
+            message: `(${localPackage.name}) ci passed for latest version (${localPackage.packageJson.version})`,
+          });
           return true;
         }
 

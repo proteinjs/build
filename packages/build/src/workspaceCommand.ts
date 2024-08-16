@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { LocalPackageMap, LogColorWrapper, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node';
-import { Logger } from '@proteinjs/util';
+import { Logger } from '@proteinjs/logger';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 
 /**
@@ -15,7 +15,7 @@ import { primaryLogColor, secondaryLogColor } from './logColors';
 export const workspaceCommand = async () => {
   const command = process.argv[2];
   const cw = new LogColorWrapper();
-  const logger = new Logger(cw.color('workspace:', primaryLogColor) + cw.color(command, secondaryLogColor));
+  const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.color(command, secondaryLogColor) });
   const args = getArgs();
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
@@ -28,21 +28,21 @@ export const workspaceCommand = async () => {
     );
   });
   if (filteredPackageNames.length == 0) {
-    logger.info(`> There are no packages with the \`${command}\` script in workspace (${workspacePath})`);
+    logger.info({ message: `> There are no packages with the \`${command}\` script in workspace (${workspacePath})` });
     return;
   }
 
-  logger.info(
-    `> Running \`npm run ${command}\` for ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`
-  );
+  logger.info({
+    message: `> Running \`npm run ${command}\` for ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
+  });
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
     await cmd('npm', ['run', command], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
   }
-  logger.info(
-    `> Ran \`npm run ${command}\` for ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`
-  );
+  logger.info({
+    message: `> Ran \`npm run ${command}\` for ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
+  });
 };
 
 type Args = {

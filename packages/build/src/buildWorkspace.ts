@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { LogColorWrapper, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node';
-import { Logger } from '@proteinjs/util';
+import { Logger } from '@proteinjs/logger';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 import { hasLintConfig } from './lintWorkspace';
 
@@ -16,7 +16,9 @@ import { hasLintConfig } from './lintWorkspace';
  */
 export async function buildWorkspace() {
   const cw = new LogColorWrapper();
-  const logger = new Logger(cw.color('workspace:', primaryLogColor) + cw.color('build', secondaryLogColor));
+  const logger = new Logger({
+    name: cw.color('workspace:', primaryLogColor) + cw.color('build', secondaryLogColor),
+  });
   const args = getArgs();
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
@@ -29,36 +31,36 @@ export async function buildWorkspace() {
     );
   });
 
-  logger.info(
-    `> Installing, building, and linting ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`
-  );
-  logger.debug(`packageMap:\n${JSON.stringify(packageMap, null, 2)}`, true);
-  logger.debug(`filteredPackageNames:\n${JSON.stringify(filteredPackageNames, null, 2)}`, true);
+  logger.info({
+    message: `> Installing, building, and linting ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
+  });
+  logger.debug({ message: `packageMap:`, obj: packageMap });
+  logger.debug({ message: `filteredPackageNames:`, obj: filteredPackageNames });
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
 
     if (!args.noInstall || !args.noInstall.includes(packageName)) {
       await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
-      await PackageUtil.symlinkDependencies(localPackage, packageMap, logger);
-      logger.info(`Installed ${cw.color(packageName)} (${packageDir})`);
+      await PackageUtil.symlinkDependencies(localPackage, packageMap);
+      logger.info({ message: `Installed ${cw.color(packageName)} (${packageDir})` });
     }
 
     if (!args.noBuild || !args.noBuild.includes(packageName)) {
       await cmd('npm', ['run', 'build'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
-      logger.info(`Built ${cw.color(packageName)} (${packageDir})`);
+      logger.info({ message: `Built ${cw.color(packageName)} (${packageDir})` });
     }
 
     if (hasLintConfig(packageMap[packageName]) && (!args.noLint || !args.noLint.includes(packageName))) {
       await cmd('npx', ['prettier', '.', '--write'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
       await cmd('npx', ['eslint', '.', '--fix'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
-      logger.info(`Linted ${cw.color(packageName)} (${packageDir})`);
+      logger.info({ message: `Linted ${cw.color(packageName)} (${packageDir})` });
     }
   }
 
-  logger.info(
-    `> Installed, built, and linted ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`
-  );
+  logger.info({
+    message: `> Installed, built, and linted ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
+  });
 }
 
 type Args = {

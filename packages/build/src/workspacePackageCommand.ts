@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { LogColorWrapper, PackageUtil, cmd } from '@proteinjs/util-node';
-import { Logger } from '@proteinjs/util';
+import { Logger } from '@proteinjs/logger';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 
 /**
@@ -14,9 +14,9 @@ export const workspacePackageCommand = async () => {
   const command = process.argv[3];
   const args = process.argv.slice(4);
   const cw = new LogColorWrapper();
-  const logger = new Logger(
-    `${cw.color('workspace-package(', primaryLogColor)}${cw.color(packageName, secondaryLogColor)}${cw.color(')', primaryLogColor)}`
-  );
+  const logger = new Logger({
+    name: `${cw.color('workspace-package(', primaryLogColor)}${cw.color(packageName, secondaryLogColor)}${cw.color(')', primaryLogColor)}`,
+  });
   const workspacePath = process.cwd();
   const { packageMap } = await PackageUtil.getWorkspaceMetadata(workspacePath);
   const localPackage = packageMap[packageName];
@@ -27,14 +27,14 @@ export const workspacePackageCommand = async () => {
   }
 
   const packageDir = path.dirname(localPackage.filePath);
-  logger.info(`Running command: ${cw.color(`${command} ${args.join(' ')}`, secondaryLogColor)}`);
+  logger.info({ message: `Running command: ${cw.color(`${command} ${args.join(' ')}`, secondaryLogColor)}` });
   await cmd(command, args, { cwd: packageDir }, { logPrefix: `[${cw.color(packageName, secondaryLogColor)}] ` });
-  logger.info(`Finished running command: ${cw.color(`${command} ${args.join(' ')}`, secondaryLogColor)}`);
+  logger.info({ message: `Finished running command: ${cw.color(`${command} ${args.join(' ')}`, secondaryLogColor)}` });
   if (command === 'npm') {
-    logger.info(`Symlinking local dependencies`);
+    logger.info({ message: `Symlinking local dependencies` });
     const { packageMap } = await PackageUtil.getWorkspaceMetadata(workspacePath);
     const localPackage = packageMap[packageName];
-    await PackageUtil.symlinkDependencies(localPackage, packageMap, logger);
-    logger.info(`Symlinked local dependencies`);
+    await PackageUtil.symlinkDependencies(localPackage, packageMap);
+    logger.info({ message: `Symlinked local dependencies` });
   }
 };

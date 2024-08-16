@@ -1,11 +1,11 @@
 import * as path from 'path';
 import { PackageUtil, WorkspaceMetadata, cmd, LogColorWrapper } from '@proteinjs/util-node';
-import { Logger } from '@proteinjs/util';
+import { Logger } from '@proteinjs/logger';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 
 export const watchWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
   const cw = new LogColorWrapper();
-  const logger = new Logger(cw.color('workspace:', primaryLogColor) + cw.color('watch', secondaryLogColor));
+  const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.color('watch', secondaryLogColor) });
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = workspaceMetadata
     ? workspaceMetadata
@@ -15,9 +15,9 @@ export const watchWorkspace = async (workspaceMetadata?: WorkspaceMetadata) => {
     (packageName) => !!packageMap[packageName].packageJson.scripts?.watch && !skippedPackages.includes(packageName)
   );
 
-  logger.info(
-    `> Watching ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`
-  );
+  logger.info({
+    message: `> Watching ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
+  });
   const loggingStartDelay = 0;
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
