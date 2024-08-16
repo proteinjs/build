@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.5.9](https://github.com/proteinjs/build/compare/@proteinjs/build@1.5.8...@proteinjs/build@1.5.9) (2024-08-16)
+
+
+### Bug Fixes
+
+* refactored to implement new @proteinjs/logger/Logger api ([e381956](https://github.com/proteinjs/build/commit/e38195639a38d7dfed2fdea1b0d712eafba5f8ea))
+
+
+
+
+
 ## [1.5.4](https://github.com/proteinjs/build/compare/@proteinjs/build@1.5.3...@proteinjs/build@1.5.4) (2024-05-18)
 
 
