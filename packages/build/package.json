@@ -1,6 +1,6 @@
 {
   "name": "@proteinjs/build",
-  "version": "1.5.10",
+  "version": "1.5.11",
   "description": "Workspace build tools",
   "main": "./dist/generated/index.js",
   "types": "./dist/generated/index.d.ts",
@@ -36,7 +36,7 @@
   },
   "dependencies": {
     "@octokit/core": "6.1.2",
-    "@proteinjs/logger": "1.0.5",
+    "@proteinjs/logger": "1.0.6",
     "@proteinjs/util-node": "1.4.1",
     "semver": "7.6.0"
   },
