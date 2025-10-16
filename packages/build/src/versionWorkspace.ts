@@ -11,19 +11,9 @@ const cw = new LogColorWrapper();
 const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.color('version', secondaryLogColor) });
 const fixedVersionWorkspacesToVersion: { [workspacePath: string]: boolean } = {};
 
-type VersionWorkspaceOptions = {
-  dryRun?: boolean;
-};
+export async function versionWorkspace() {
+  const dryRun = isDryRun();
 
-type VersionWorkspaceRuntimeOptions = {
-  dryRun: boolean;
-};
-
-export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
-  const runtimeOptions: VersionWorkspaceRuntimeOptions = {
-    dryRun: !!options.dryRun,
-  };
-  const { dryRun } = runtimeOptions;
   if (dryRun) {
     logger.info({ message: 'Dry run mode enabled. Publish and push operations will be skipped.' });
   }
@@ -70,10 +60,10 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
     }
 
     if (shouldPublishPackage(localPackage)) {
-      await publish(localPackage, runtimeOptions);
+      await publish(localPackage);
     }
 
-    await pushAndTag(localPackage, runtimeOptions);
+    await pushAndTag(localPackage);
   }
 
   const pushWithoutSync = true;
@@ -81,12 +71,25 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
     Object.keys(fixedVersionWorkspacesToVersion),
     packageMap,
     workspaceToPackageMap,
-    pushWithoutSync,
-    runtimeOptions
+    pushWithoutSync
   );
-  await pushMetarepos(workspacePath, runtimeOptions);
+  await pushMetarepos(workspacePath);
   await symlinkWorkspace(workspacePath, filteredPackageNames, packageMap);
   logger.info({ message: `> Finished versioning workspace (${workspacePath})` });
+}
+
+function isDryRun() {
+  const args = process.argv.slice(2);
+  if (args.includes('--dry-run') || args.includes('--dryrun')) {
+    return true;
+  }
+
+  const envFlag = process.env.VERSION_WORKSPACE_DRY_RUN ?? process.env.DRY_RUN;
+  if (envFlag) {
+    return envFlag === 'true' || envFlag === '1';
+  }
+
+  return false;
 }
 
 function isInFixedVersionWorkspace(localPackage: LocalPackage) {
@@ -237,8 +240,7 @@ async function syncFixedVersionWorkspaces(
   fixedVersionWorkspacePaths: string[],
   packageMap: LocalPackageMap,
   workspaceToPackageMap: { [workspacePath: string]: string[] },
-  pushWithoutSync = false,
-  options: VersionWorkspaceRuntimeOptions
+  pushWithoutSync = false
 ) {
   if (fixedVersionWorkspacePaths.length == 0) {
     return;
@@ -263,7 +265,7 @@ async function syncFixedVersionWorkspaces(
 
     const skipTagging = pushWithoutSync;
     const skipCi = !pushWithoutSync;
-    await pushAndTagFixedVersionRepo(workspacePath, syncedVersion, skipTagging, skipCi, options);
+    await pushAndTagFixedVersionRepo(workspacePath, syncedVersion, skipTagging, skipCi);
   }
 
   logger.info({ message: `> Synced fixed-version workspaces` });
@@ -347,11 +349,10 @@ async function pull(localPackage: LocalPackage) {
   logger.info({ message: `(${cw.color(localPackage.name)}) pulled latest changes` });
 }
 
-async function pushAndTag(
-  localPackage: LocalPackage,
-  options: VersionWorkspaceRuntimeOptions
-): Promise<Commit | undefined> {
-  if (options.dryRun) {
+async function pushAndTag(localPackage: LocalPackage): Promise<Commit | undefined> {
+  const dryRun = isDryRun();
+
+  if (dryRun) {
     logger.info({
       message: `(${cw.color(localPackage.name)}) Dry run: skipping git add/commit/push/tag for version ${localPackage.packageJson.version}`,
     });
@@ -398,10 +399,11 @@ async function pushAndTagFixedVersionRepo(
   dir: string,
   version: string | false,
   skipTagging = false,
-  skipCi = true,
-  options: VersionWorkspaceRuntimeOptions
+  skipCi = true
 ): Promise<Commit | undefined> {
-  if (options.dryRun) {
+  const dryRun = isDryRun();
+
+  if (dryRun) {
     const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
     logger.info({
       message: `(${cw.color(repoName)}) Dry run: skipping git add/commit/push${version ? ` for version ${version}` : ''}`,
@@ -447,17 +449,19 @@ async function pushAndTagFixedVersionRepo(
   return commit;
 }
 
-async function pushMetarepos(dir: string, options: VersionWorkspaceRuntimeOptions) {
+async function pushMetarepos(dir: string) {
   const metarepoPaths = (await Fs.getFilePathsMatchingGlob(dir, '**/.gitmodules', ['**/node_modules/**', '**/dist/**']))
     .map((gitmodulesPath) => path.dirname(gitmodulesPath))
     .sort((a, b) => b.localeCompare(a));
   for (const metarepoPath of metarepoPaths) {
-    await pushMetarepo(metarepoPath, options);
+    await pushMetarepo(metarepoPath);
   }
 }
 
-async function pushMetarepo(dir: string, options: VersionWorkspaceRuntimeOptions) {
-  if (options.dryRun) {
+async function pushMetarepo(dir: string) {
+  const dryRun = isDryRun();
+
+  if (dryRun) {
     const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
     logger.info({
       message: `(${cw.color(repoName)}) Dry run: skipping metarepo commit/push for ${dir}`,
@@ -532,13 +536,15 @@ async function getRepoInfo(dir: string): Promise<RepoInfo> {
   });
 }
 
-async function publish(localPackage: LocalPackage, options: VersionWorkspaceRuntimeOptions) {
+async function publish(localPackage: LocalPackage) {
+  const dryRun = isDryRun();
+
   if (localPackage.packageJson.private) {
     logger.info({ message: `Preventing publish of private package: ${cw.color(localPackage.name)}` });
     return;
   }
 
-  if (options.dryRun) {
+  if (dryRun) {
     logger.info({
       message: `(${cw.color(localPackage.name)}) Dry run: would publish version ${localPackage.packageJson.version}`,
     });
@@ -551,7 +557,7 @@ async function publish(localPackage: LocalPackage, options: VersionWorkspaceRunt
   const access = publishConfig.access;
   const accessLogValue = access ?? 'n/a';
   const packageDir = path.dirname(localPackage.filePath);
-  if (!options.dryRun) {
+  if (!dryRun) {
     await assertRegistryAuth(registry, localPackage);
   }
 
