@@ -3,6 +3,23 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.6.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.5.16...@proteinjs/build@1.6.0) (2025-10-16)
+
+
+### Bug Fixes
+
+* check npm auth during dryRun ([4e65dc7](https://github.com/proteinjs/build/commit/4e65dc7d6c4a3e835ea118dff157ccab237c6f1f))
+* use dedicated function to evaluate dryRun ([dde43d1](https://github.com/proteinjs/build/commit/dde43d18f39cb636474e66cc73007fab53fd7dfb))
+
+
+### Features
+
+* **version-workspace:** support for private npm packages ([b8d57a9](https://github.com/proteinjs/build/commit/b8d57a90de861408b6724557301d314e5f4b9497))
+
+
+
+
+
 ## [1.5.9](https://github.com/proteinjs/build/compare/@proteinjs/build@1.5.8...@proteinjs/build@1.5.9) (2024-08-16)
 
 
