@@ -12,11 +12,18 @@ const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.c
 const fixedVersionWorkspacesToVersion: { [workspacePath: string]: boolean } = {};
 
 export async function versionWorkspace() {
-  // fail fast if npm token is not available
-  getNpmToken();
+  const dryRun = isDryRun();
 
+  if (dryRun) {
+    logger.info({ message: 'Dry run mode enabled. Publish and push operations will be skipped.' });
+  }
   const workspacePath = process.cwd();
-  await pullWorkspace(workspacePath);
+  if (dryRun) {
+    logger.info({ message: `> Dry run: skipping pullWorkspace for (${workspacePath})` });
+  } else {
+    await pullWorkspace(workspacePath);
+  }
+
   const { packageMap, packageGraph, sortedPackageNames, workspaceToPackageMap } =
     await PackageUtil.getWorkspaceMetadata(workspacePath);
   const skippedPackages = ['root', 'typescript-parser'];
@@ -52,7 +59,7 @@ export async function versionWorkspace() {
       continue;
     }
 
-    if (!localPackage.packageJson.private && localPackage.packageJson.publishConfig?.access === 'public') {
+    if (shouldPublishPackage(localPackage)) {
       await publish(localPackage);
     }
 
@@ -69,6 +76,20 @@ export async function versionWorkspace() {
   await pushMetarepos(workspacePath);
   await symlinkWorkspace(workspacePath, filteredPackageNames, packageMap);
   logger.info({ message: `> Finished versioning workspace (${workspacePath})` });
+}
+
+function isDryRun() {
+  const args = process.argv.slice(2);
+  if (args.includes('--dry-run') || args.includes('--dryrun')) {
+    return true;
+  }
+
+  const envFlag = process.env.VERSION_WORKSPACE_DRY_RUN ?? process.env.DRY_RUN;
+  if (envFlag) {
+    return envFlag === 'true' || envFlag === '1';
+  }
+
+  return false;
 }
 
 function isInFixedVersionWorkspace(localPackage: LocalPackage) {
@@ -328,7 +349,16 @@ async function pull(localPackage: LocalPackage) {
   logger.info({ message: `(${cw.color(localPackage.name)}) pulled latest changes` });
 }
 
-async function pushAndTag(localPackage: LocalPackage): Promise<Commit> {
+async function pushAndTag(localPackage: LocalPackage): Promise<Commit | undefined> {
+  const dryRun = isDryRun();
+
+  if (dryRun) {
+    logger.info({
+      message: `(${cw.color(localPackage.name)}) Dry run: skipping git add/commit/push/tag for version ${localPackage.packageJson.version}`,
+    });
+    return undefined;
+  }
+
   const packageDir = path.dirname(localPackage.filePath);
   logger.info({
     message: `(${cw.color(localPackage.name)}) pushing latest version (${localPackage.packageJson.version})`,
@@ -370,7 +400,17 @@ async function pushAndTagFixedVersionRepo(
   version: string | false,
   skipTagging = false,
   skipCi = true
-): Promise<Commit> {
+): Promise<Commit | undefined> {
+  const dryRun = isDryRun();
+
+  if (dryRun) {
+    const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
+    logger.info({
+      message: `(${cw.color(repoName)}) Dry run: skipping git add/commit/push${version ? ` for version ${version}` : ''}`,
+    });
+    return undefined;
+  }
+
   const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
   if (version) {
     logger.info({ message: `(${cw.color(repoName)}) pushing latest version (${version})` });
@@ -419,6 +459,16 @@ async function pushMetarepos(dir: string) {
 }
 
 async function pushMetarepo(dir: string) {
+  const dryRun = isDryRun();
+
+  if (dryRun) {
+    const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
+    logger.info({
+      message: `(${cw.color(repoName)}) Dry run: skipping metarepo commit/push for ${dir}`,
+    });
+    return;
+  }
+
   const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
   logger.info({ message: `(${cw.color(repoName)}) pushing metarepo (${dir})` });
   await cmd('git', ['add', '.'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
@@ -487,41 +537,95 @@ async function getRepoInfo(dir: string): Promise<RepoInfo> {
 }
 
 async function publish(localPackage: LocalPackage) {
+  const dryRun = isDryRun();
+
   if (localPackage.packageJson.private) {
     logger.info({ message: `Preventing publish of private package: ${cw.color(localPackage.name)}` });
     return;
   }
 
-  if (!localPackage.name.startsWith('@proteinjs/')) {
-    logger.warn({ message: `Preventing publish of non-proteinjs package: ${cw.color(localPackage.name)}` });
+  const publishConfig = localPackage.packageJson.publishConfig ?? {};
+  const registry = getPublishRegistry(publishConfig);
+  const tag = publishConfig.tag ?? 'latest';
+  const access = publishConfig.access;
+  const accessLogValue = access ?? 'n/a';
+  const packageDir = path.dirname(localPackage.filePath);
+  await assertRegistryAuth(registry, localPackage);
+
+  if (dryRun) {
+    logger.info({
+      message: `(${cw.color(localPackage.name)}) Dry run: would publish version ${localPackage.packageJson.version}`,
+    });
     return;
   }
 
-  const packageDir = path.dirname(localPackage.filePath);
   logger.info({
-    message: `(${cw.color(localPackage.name)}) publishing latest version (${localPackage.packageJson.version})`,
+    message: `(${cw.color(localPackage.name)}) publishing latest version (${localPackage.packageJson.version}) [access=${accessLogValue}, registry=${registry}]`,
   });
-  await cmd(
-    'npm',
-    ['set', `//registry.npmjs.org/:_authToken=${getNpmToken()}`],
-    { cwd: packageDir },
-    { logPrefix: `[${cw.color(localPackage.name)}] ` }
-  );
-  await cmd(
-    'npm',
-    ['publish', '--tag', 'latest', '--access', 'public'],
-    { cwd: packageDir },
-    { logPrefix: `[${cw.color(localPackage.name)}] ` }
-  );
+  const publishArgs = ['publish', '--tag', tag];
+  if (access) {
+    publishArgs.push('--access', access);
+  }
+  if (publishConfig.registry) {
+    publishArgs.push('--registry', registry);
+  }
+  await cmd('npm', publishArgs, { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
   logger.info({
     message: `(${cw.color(localPackage.name)}) published latest version (${localPackage.packageJson.version})`,
   });
 }
 
-function getNpmToken() {
-  if (process.env.NPM_TOKEN) {
-    return process.env.NPM_TOKEN;
+const registryAuthCheckCache: { [registry: string]: boolean } = {};
+
+async function assertRegistryAuth(registry: string, localPackage: LocalPackage) {
+  if (!registry || registryAuthCheckCache[registry]) {
+    return;
   }
 
-  throw new Error(`NPM_TOKEN env variable not set`);
+  try {
+    await cmd(
+      'npm',
+      ['whoami', '--registry', registry],
+      { cwd: process.cwd() },
+      { logPrefix: `[${cw.color(localPackage.name)}] ` }
+    );
+    registryAuthCheckCache[registry] = true;
+  } catch (error) {
+    throw new Error(
+      `Failed npm authentication check for registry (${registry}) while publishing ${localPackage.name}. Ensure credentials in .npmrc are valid. \nOriginal error: ${error}`
+    );
+  }
+}
+
+function shouldPublishPackage(localPackage: LocalPackage) {
+  if (localPackage.packageJson.private) {
+    return false;
+  }
+
+  const publishConfig = localPackage.packageJson.publishConfig;
+  if (!publishConfig) {
+    logger.info({
+      message: `(${cw.color(localPackage.name)}) skipping publish – package missing publishConfig`,
+    });
+    return false;
+  }
+
+  const hasAccess = typeof publishConfig.access === 'string' && publishConfig.access.length > 0;
+  const hasRegistry = typeof publishConfig.registry === 'string' && publishConfig.registry.length > 0;
+  if (!hasAccess && !hasRegistry) {
+    logger.info({
+      message: `(${cw.color(localPackage.name)}) skipping publish – publishConfig requires an access or registry value`,
+    });
+    return false;
+  }
+
+  return true;
+}
+
+function getPublishRegistry(publishConfig: { registry?: string }) {
+  if (publishConfig.registry) {
+    return publishConfig.registry;
+  }
+
+  return 'https://registry.npmjs.org/';
 }

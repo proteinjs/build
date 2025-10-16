@@ -2,4 +2,4 @@
 
 import { versionWorkspace } from '../versionWorkspace';
 
-versionWorkspace();
+void versionWorkspace();
