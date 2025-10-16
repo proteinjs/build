@@ -544,21 +544,19 @@ async function publish(localPackage: LocalPackage) {
     return;
   }
 
-  if (dryRun) {
-    logger.info({
-      message: `(${cw.color(localPackage.name)}) Dry run: would publish version ${localPackage.packageJson.version}`,
-    });
-    return;
-  }
-
   const publishConfig = localPackage.packageJson.publishConfig ?? {};
   const registry = getPublishRegistry(publishConfig);
   const tag = publishConfig.tag ?? 'latest';
   const access = publishConfig.access;
   const accessLogValue = access ?? 'n/a';
   const packageDir = path.dirname(localPackage.filePath);
-  if (!dryRun) {
-    await assertRegistryAuth(registry, localPackage);
+  await assertRegistryAuth(registry, localPackage);
+
+  if (dryRun) {
+    logger.info({
+      message: `(${cw.color(localPackage.name)}) Dry run: would publish version ${localPackage.packageJson.version}`,
+    });
+    return;
   }
 
   logger.info({
