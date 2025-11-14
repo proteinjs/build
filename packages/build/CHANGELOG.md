@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.6.2](https://github.com/proteinjs/build/compare/@proteinjs/build@1.6.1...@proteinjs/build@1.6.2) (2025-11-14)
+
+
+### Bug Fixes
+
+* `version-workspace` should use `.npmrc` in the package for publishing. ([459df52](https://github.com/proteinjs/build/commit/459df523051db7ca906f3cd9412fe4b1b85b0cd7))
+
+
+
+
+
 # [1.6.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.5.16...@proteinjs/build@1.6.0) (2025-10-16)
 
 
