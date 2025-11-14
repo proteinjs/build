@@ -538,20 +538,18 @@ async function getRepoInfo(dir: string): Promise<RepoInfo> {
 
 async function publish(localPackage: LocalPackage) {
   const dryRun = isDryRun();
-
   if (localPackage.packageJson.private) {
     logger.info({ message: `Preventing publish of private package: ${cw.color(localPackage.name)}` });
     return;
   }
 
   const publishConfig = localPackage.packageJson.publishConfig ?? {};
-  const registry = getPublishRegistry(publishConfig);
+  const registry = getPublishRegistry(publishConfig); // uses publishConfig.registry or falls back to npmjs
   const tag = publishConfig.tag ?? 'latest';
   const access = publishConfig.access;
-  const accessLogValue = access ?? 'n/a';
   const packageDir = path.dirname(localPackage.filePath);
-  await assertRegistryAuth(registry, localPackage);
 
+  await assertRegistryAuth(registry, localPackage);
   if (dryRun) {
     logger.info({
       message: `(${cw.color(localPackage.name)}) Dry run: would publish version ${localPackage.packageJson.version}`,
@@ -560,41 +558,50 @@ async function publish(localPackage: LocalPackage) {
   }
 
   logger.info({
-    message: `(${cw.color(localPackage.name)}) publishing latest version (${localPackage.packageJson.version}) [access=${accessLogValue}, registry=${registry}]`,
+    message: `(${cw.color(localPackage.name)}) publishing latest version (${localPackage.packageJson.version}) [registry=${registry}]`,
   });
-  const publishArgs = ['publish', '--tag', tag];
-  if (access) {
-    publishArgs.push('--access', access);
+
+  // Use publishConfig as the source of truth
+  const args = ['publish', '--tag', tag, ...(await npmUserconfigArgs(packageDir))];
+  // Only include --access when publishing to the public npm registry
+  try {
+    const host = new URL(registry).hostname;
+    if (host.endsWith('npmjs.org') && access) {
+      args.push('--access', access);
+    }
+  } catch {
+    /* ignore malformed URL */
   }
-  if (publishConfig.registry) {
-    publishArgs.push('--registry', registry);
-  }
-  await cmd('npm', publishArgs, { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
-  logger.info({
-    message: `(${cw.color(localPackage.name)}) published latest version (${localPackage.packageJson.version})`,
-  });
+
+  await cmd(
+    'npm',
+    args,
+    { cwd: packageDir, env: { ...process.env } },
+    { logPrefix: `[${cw.color(localPackage.name)}] ` }
+  );
+
+  logger.info({ message: `(${cw.color(localPackage.name)}) published ${localPackage.packageJson.version}` });
 }
 
 const registryAuthCheckCache: { [registry: string]: boolean } = {};
+
+async function npmUserconfigArgs(packageDir: string): Promise<string[]> {
+  const rc = path.join(packageDir, '.npmrc');
+  return (await Fs.exists(rc)) ? ['--userconfig', rc] : [];
+}
 
 async function assertRegistryAuth(registry: string, localPackage: LocalPackage) {
   if (!registry || registryAuthCheckCache[registry]) {
     return;
   }
-
-  try {
-    await cmd(
-      'npm',
-      ['whoami', '--registry', registry],
-      { cwd: process.cwd() },
-      { logPrefix: `[${cw.color(localPackage.name)}] ` }
-    );
-    registryAuthCheckCache[registry] = true;
-  } catch (error) {
-    throw new Error(
-      `Failed npm authentication check for registry (${registry}) while publishing ${localPackage.name}. Ensure credentials in .npmrc are valid. \nOriginal error: ${error}`
-    );
-  }
+  const packageDir = path.dirname(localPackage.filePath);
+  await cmd(
+    'npm',
+    ['whoami', '--registry', registry, ...(await npmUserconfigArgs(packageDir))],
+    { cwd: packageDir, env: { ...process.env } },
+    { logPrefix: `[${cw.color(localPackage.name)}] ` }
+  );
+  registryAuthCheckCache[registry] = true;
 }
 
 function shouldPublishPackage(localPackage: LocalPackage) {
