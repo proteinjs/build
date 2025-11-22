@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.6.3](https://github.com/proteinjs/build/compare/@proteinjs/build@1.6.2...@proteinjs/build@1.6.3) (2025-11-22)
+
+
+### Bug Fixes
+
+* `version-workspace` only lint after installing. ([c38e39d](https://github.com/proteinjs/build/commit/c38e39d1f1360e32559cf47154c71c56cc29bcc5))
+
+
+
+
+
 ## [1.6.2](https://github.com/proteinjs/build/compare/@proteinjs/build@1.6.1...@proteinjs/build@1.6.2) (2025-11-14)
 
 
