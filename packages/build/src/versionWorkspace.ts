@@ -167,22 +167,6 @@ async function bumpDependencies(
       });
     }
     await Fs.writeFiles([{ path: localPackage.filePath, content: JSON.stringify(localPackage.packageJson, null, 2) }]);
-    if (hasLintConfig(localPackage)) {
-      const packageDir = path.dirname(localPackage.filePath);
-      logger.info({ message: `Linting ${cw.color(localPackage.name)} (${packageDir})` });
-      await cmd(
-        'npx',
-        ['prettier', localPackage.filePath, '--write'],
-        { cwd: packageDir },
-        { logPrefix: `[${cw.color(localPackage.name)}] ` }
-      );
-      await cmd(
-        'npx',
-        ['eslint', localPackage.filePath, '--fix'],
-        { cwd: packageDir },
-        { logPrefix: `[${cw.color(localPackage.name)}] ` }
-      );
-    }
   }
 
   return dependenciesChanged;
@@ -294,22 +278,6 @@ async function syncFixedVersions(workspacePath: string, localPackages: LocalPack
       message: `(${cw.color(localPackage.name)}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`,
     });
     await Fs.writeFiles([{ path: localPackage.filePath, content: JSON.stringify(localPackage.packageJson, null, 2) }]);
-    if (hasLintConfig(localPackage)) {
-      const packageDir = path.dirname(localPackage.filePath);
-      logger.info({ message: `Linting ${cw.color(localPackage.name)} (${packageDir})` });
-      await cmd(
-        'npx',
-        ['prettier', localPackage.filePath, '--write'],
-        { cwd: packageDir },
-        { logPrefix: `[${cw.color(localPackage.name)}] ` }
-      );
-      await cmd(
-        'npx',
-        ['eslint', localPackage.filePath, '--fix'],
-        { cwd: packageDir },
-        { logPrefix: `[${cw.color(localPackage.name)}] ` }
-      );
-    }
     syncedFixedVersions = true;
   }
 
@@ -330,6 +298,21 @@ async function buildAndTest(localPackage: LocalPackage) {
   logger.info({ message: `(${cw.color(localPackage.name)}) installing latest dependency versions` });
   await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
   logger.info({ message: `(${cw.color(localPackage.name)}) installed latest dependency versions` });
+  if (hasLintConfig(localPackage)) {
+    logger.info({ message: `Linting ${cw.color(localPackage.name)} (${packageDir})` });
+    await cmd(
+      'npx',
+      ['prettier', localPackage.filePath, '--write'],
+      { cwd: packageDir },
+      { logPrefix: `[${cw.color(localPackage.name)}] ` }
+    );
+    await cmd(
+      'npx',
+      ['eslint', localPackage.filePath, '--fix'],
+      { cwd: packageDir },
+      { logPrefix: `[${cw.color(localPackage.name)}] ` }
+    );
+  }
   logger.info({ message: `(${cw.color(localPackage.name)}) building version ${localPackage.packageJson.version}` });
   await cmd('npm', ['run', 'build'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
   logger.info({
