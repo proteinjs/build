@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.7.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.6.6...@proteinjs/build@1.7.0) (2026-04-09)
+
+
+### Features
+
+* **version:** retry npm install on registry propagation delays, deduplicate git pulls ([5d0c516](https://github.com/proteinjs/build/commit/5d0c516eaa124f3236a70e801c16818ebac2cae4))
+
+
+
+
+
 ## [1.6.3](https://github.com/proteinjs/build/compare/@proteinjs/build@1.6.2...@proteinjs/build@1.6.3) (2025-11-22)
 
 
