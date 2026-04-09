@@ -100,6 +100,18 @@ function isInFixedVersionWorkspace(localPackage: LocalPackage) {
   );
 }
 
+async function getGitRepoRoot(dir: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec('git rev-parse --show-toplevel', { cwd: dir }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stdout.trim());
+    });
+  });
+}
+
 async function pullWorkspace(workspacePath: string) {
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
   const filteredPackageNames = sortedPackageNames.filter((packageName) => {
@@ -111,10 +123,21 @@ async function pullWorkspace(workspacePath: string) {
     );
   });
 
+  // Deduplicate: pull once per unique leaf git repo (repos that directly contain packages)
+  const pulledRepoRoots = new Set<string>();
   logger.info({ message: `> Pulling workspace (${workspacePath})` });
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
-    await pull(localPackage);
+    const packageDir = path.dirname(localPackage.filePath);
+    const repoRoot = await getGitRepoRoot(packageDir);
+    if (pulledRepoRoots.has(repoRoot)) {
+      continue;
+    }
+    pulledRepoRoots.add(repoRoot);
+    const repoName = path.basename(repoRoot);
+    logger.info({ message: `(${cw.color(repoName)}) pulling latest changes` });
+    await cmd('git', ['pull'], { cwd: repoRoot }, { logPrefix: `[${cw.color(repoName)}] ` });
+    logger.info({ message: `(${cw.color(repoName)}) pulled latest changes` });
   }
 
   logger.info({ message: `> Finished pulling workspace (${workspacePath})` });
@@ -290,13 +313,35 @@ async function syncFixedVersions(workspacePath: string, localPackages: LocalPack
   return syncedFixedVersions ? highestVersion : false;
 }
 
+async function installWithRetry(localPackage: LocalPackage, packageDir: string) {
+  const maxRetries = 10;
+  const retryDelayMs = 90_000;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+      return;
+    } catch (error: any) {
+      const output = `${error.stdout ?? ''}${error.stderr ?? ''}`;
+      const isRegistryPropagationError =
+        /No matching version found/i.test(output) || /ETARGET/i.test(output) || /404 Not Found/i.test(output);
+      if (!isRegistryPropagationError || attempt === maxRetries) {
+        throw error;
+      }
+      logger.info({
+        message: `(${cw.color(localPackage.name)}) dependency not yet available on registry, retrying install (attempt ${attempt}/${maxRetries}, next retry in ${retryDelayMs / 1000}s)`,
+      });
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  }
+}
+
 async function buildAndTest(localPackage: LocalPackage) {
   const packageDir = path.dirname(localPackage.filePath);
   logger.info({ message: `(${cw.color(localPackage.name)}) cleaning package` });
   await cmd('npm', ['run', 'clean'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
   logger.info({ message: `(${cw.color(localPackage.name)}) cleaned package` });
   logger.info({ message: `(${cw.color(localPackage.name)}) installing latest dependency versions` });
-  await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+  await installWithRetry(localPackage, packageDir);
   logger.info({ message: `(${cw.color(localPackage.name)}) installed latest dependency versions` });
   if (hasLintConfig(localPackage)) {
     logger.info({ message: `Linting ${cw.color(localPackage.name)} (${packageDir})` });
