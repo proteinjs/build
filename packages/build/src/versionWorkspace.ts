@@ -146,7 +146,9 @@ async function pullWorkspace(workspacePath: string, skipRootRepo = false) {
     }
     const repoName = path.basename(repoRoot);
     logger.info({ message: `(${cw.color(repoName)}) pulling latest changes` });
-    await cmd('git', ['pull'], { cwd: repoRoot }, { logPrefix: `[${cw.color(repoName)}] ` });
+    await cmd('git', ['fetch'], { cwd: repoRoot }, { logPrefix: `[${cw.color(repoName)}] ` });
+    const branch = await getCurrentBranch(repoRoot);
+    await cmd('git', ['rebase', `origin/${branch}`], { cwd: repoRoot }, { logPrefix: `[${cw.color(repoName)}] ` });
     logger.info({ message: `(${cw.color(repoName)}) pulled latest changes` });
   }
 
@@ -683,6 +685,18 @@ function getPublishRegistry(publishConfig: { registry?: string }) {
   }
 
   return 'https://registry.npmjs.org/';
+}
+
+async function getCurrentBranch(dir: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec('git rev-parse --abbrev-ref HEAD', { cwd: dir }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stdout.trim());
+    });
+  });
 }
 
 async function isRepoDirty(dir: string): Promise<boolean> {
