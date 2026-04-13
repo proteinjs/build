@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.8.1](https://github.com/proteinjs/build/compare/@proteinjs/build@1.8.0...@proteinjs/build@1.8.1) (2026-04-13)
+
+
+### Bug Fixes
+
+* replace git pull with fetch + rebase to avoid pull.rebase config issues ([b923e06](https://github.com/proteinjs/build/commit/b923e062277d91a192a493043d4f3a13e1808d50))
+
+
+
+
+
 # [1.8.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.7.0...@proteinjs/build@1.8.0) (2026-04-13)
 
 
