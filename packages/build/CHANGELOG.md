@@ -3,6 +3,23 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.8.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.7.0...@proteinjs/build@1.8.0) (2026-04-13)
+
+
+### Bug Fixes
+
+* use Promise<any> for retryOnNetworkError fn param to match cmd return type ([b843193](https://github.com/proteinjs/build/commit/b843193252062142c009e3116b19f4666355c252))
+
+
+### Features
+
+* add git lock eviction, feature-aware minor bumps, and dirty root repo skip ([678720a](https://github.com/proteinjs/build/commit/678720a9efc2c9ccdd73534033f913d965ee6f43))
+* retry npm install and publish on transient network errors ([d1e9502](https://github.com/proteinjs/build/commit/d1e9502fe4e57dfe661724a6aae41fa40584f86f))
+
+
+
+
+
 # [1.7.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.6.6...@proteinjs/build@1.7.0) (2026-04-09)
 
 
