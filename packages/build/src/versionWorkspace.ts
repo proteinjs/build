@@ -337,11 +337,13 @@ async function installWithRetry(localPackage: LocalPackage, packageDir: string) 
       const output = `${error.stdout ?? ''}${error.stderr ?? ''}`;
       const isRegistryPropagationError =
         /No matching version found/i.test(output) || /ETARGET/i.test(output) || /404 Not Found/i.test(output);
-      if (!isRegistryPropagationError || attempt === maxRetries) {
+      const isRetryable = isRegistryPropagationError || isNetworkError(error);
+      if (!isRetryable || attempt === maxRetries) {
         throw error;
       }
+      const reason = isRegistryPropagationError ? 'dependency not yet available on registry' : 'network error';
       logger.info({
-        message: `(${cw.color(localPackage.name)}) dependency not yet available on registry, retrying install (attempt ${attempt}/${maxRetries}, next retry in ${retryDelayMs / 1000}s)`,
+        message: `(${cw.color(localPackage.name)}) ${reason}, retrying install (attempt ${attempt}/${maxRetries}, next retry in ${retryDelayMs / 1000}s)`,
       });
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     }
@@ -619,11 +621,11 @@ async function publish(localPackage: LocalPackage) {
     /* ignore malformed URL */
   }
 
-  await cmd(
-    'npm',
-    args,
-    { cwd: packageDir, env: { ...process.env } },
-    { logPrefix: `[${cw.color(localPackage.name)}] ` }
+  await retryOnNetworkError(
+    () => cmd('npm', args, { cwd: packageDir, env: { ...process.env } }, { logPrefix: `[${cw.color(localPackage.name)}] ` }),
+    localPackage.name,
+    3,
+    15_000
   );
 
   logger.info({ message: `(${cw.color(localPackage.name)}) published ${localPackage.packageJson.version}` });
@@ -718,4 +720,35 @@ export async function evictGitLocks(workspacePath: string) {
   logger.info({ message: `> Evicting ${lockFiles.length} git lock file(s) from workspace` });
   await Fs.deleteFiles(lockFiles);
   logger.info({ message: `> Evicted git lock files` });
+}
+
+function isNetworkError(error: any): boolean {
+  const output = `${error.stdout ?? ''}${error.stderr ?? ''}`;
+  return (
+    /ECONNRESET/i.test(output) || /ETIMEDOUT/i.test(output) || /ENOTFOUND/i.test(output) ||
+    /EAI_AGAIN/i.test(output) || /ECONNREFUSED/i.test(output) || /socket hang up/i.test(output) ||
+    /network/i.test(output)
+  );
+}
+
+async function retryOnNetworkError(
+  fn: () => Promise<void>,
+  label: string,
+  maxRetries = 3,
+  retryDelayMs = 15_000
+): Promise<void> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await fn();
+      return;
+    } catch (error: any) {
+      if (!isNetworkError(error) || attempt === maxRetries) {
+        throw error;
+      }
+      logger.info({
+        message: `(${cw.color(label)}) network error, retrying (attempt ${attempt}/${maxRetries}, next retry in ${retryDelayMs / 1000}s)`,
+      });
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  }
 }
