@@ -18,10 +18,15 @@ export async function versionWorkspace() {
     logger.info({ message: 'Dry run mode enabled. Publish and push operations will be skipped.' });
   }
   const workspacePath = process.cwd();
+  await evictGitLocks(workspacePath);
+  const workspaceRootDirty = await isRepoDirty(workspacePath);
+  if (workspaceRootDirty) {
+    logger.info({ message: `> Workspace root is dirty, will skip pull/push for root repo` });
+  }
   if (dryRun) {
     logger.info({ message: `> Dry run: skipping pullWorkspace for (${workspacePath})` });
   } else {
-    await pullWorkspace(workspacePath);
+    await pullWorkspace(workspacePath, workspaceRootDirty);
   }
 
   const { packageMap, packageGraph, sortedPackageNames, workspaceToPackageMap } =
@@ -73,7 +78,7 @@ export async function versionWorkspace() {
     workspaceToPackageMap,
     pushWithoutSync
   );
-  await pushMetarepos(workspacePath);
+  await pushMetarepos(workspacePath, workspaceRootDirty);
   await symlinkWorkspace(workspacePath, filteredPackageNames, packageMap);
   logger.info({ message: `> Finished versioning workspace (${workspacePath})` });
 }
@@ -112,7 +117,7 @@ async function getGitRepoRoot(dir: string): Promise<string> {
   });
 }
 
-async function pullWorkspace(workspacePath: string) {
+async function pullWorkspace(workspacePath: string, skipRootRepo = false) {
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
   const filteredPackageNames = sortedPackageNames.filter((packageName) => {
     const localPackage = packageMap[packageName];
@@ -134,6 +139,11 @@ async function pullWorkspace(workspacePath: string) {
       continue;
     }
     pulledRepoRoots.add(repoRoot);
+    if (skipRootRepo && path.resolve(repoRoot) === path.resolve(workspacePath)) {
+      const repoName = path.basename(repoRoot);
+      logger.info({ message: `(${cw.color(repoName)}) skipping pull for dirty workspace root repo` });
+      continue;
+    }
     const repoName = path.basename(repoRoot);
     logger.info({ message: `(${cw.color(repoName)}) pulling latest changes` });
     await cmd('git', ['pull'], { cwd: repoRoot }, { logPrefix: `[${cw.color(repoName)}] ` });
@@ -184,9 +194,11 @@ async function bumpDependencies(
   if (dependenciesChanged) {
     if (!skipBumpingPackageVersion) {
       const currentVersion = localPackage.packageJson.version;
-      localPackage.packageJson.version = semver.inc(currentVersion, 'patch');
+      const packageDir = path.dirname(localPackage.filePath);
+      const bump = (await hasFeatureCommits(packageDir)) ? 'minor' : 'patch';
+      localPackage.packageJson.version = semver.inc(currentVersion, bump);
       logger.info({
-        message: `(${cw.color(localPackage.name)}) bumping version from ${currentVersion} -> ${localPackage.packageJson.version}`,
+        message: `(${cw.color(localPackage.name)}) bumping version (${bump}) from ${currentVersion} -> ${localPackage.packageJson.version}`,
       });
     }
     await Fs.writeFiles([{ path: localPackage.filePath, content: JSON.stringify(localPackage.packageJson, null, 2) }]);
@@ -284,7 +296,8 @@ async function syncFixedVersions(workspacePath: string, localPackages: LocalPack
     throw new Error(`Cannot find lerna.json for workspace: ${workspacePath}`);
   }
 
-  const highestVersion = semver.inc(lernaJson.version, 'patch');
+  const bump = (await hasFeatureCommits(workspacePath)) ? 'minor' : 'patch';
+  const highestVersion = semver.inc(lernaJson.version, bump);
   if (!highestVersion) {
     throw new Error(`Lerna version not specified for workspace: ${workspacePath}`);
   }
@@ -477,11 +490,16 @@ async function pushAndTagFixedVersionRepo(
   return commit;
 }
 
-async function pushMetarepos(dir: string) {
+async function pushMetarepos(dir: string, skipRootRepo = false) {
   const metarepoPaths = (await Fs.getFilePathsMatchingGlob(dir, '**/.gitmodules', ['**/node_modules/**', '**/dist/**']))
     .map((gitmodulesPath) => path.dirname(gitmodulesPath))
     .sort((a, b) => b.localeCompare(a));
   for (const metarepoPath of metarepoPaths) {
+    if (skipRootRepo && path.resolve(metarepoPath) === path.resolve(dir)) {
+      const repoName = path.basename(metarepoPath);
+      logger.info({ message: `(${cw.color(repoName)}) skipping dirty workspace root repo` });
+      continue;
+    }
     await pushMetarepo(metarepoPath);
   }
 }
@@ -663,4 +681,41 @@ function getPublishRegistry(publishConfig: { registry?: string }) {
   }
 
   return 'https://registry.npmjs.org/';
+}
+
+async function isRepoDirty(dir: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    exec('git diff --ignore-submodules HEAD', { cwd: dir }, (error, stdout) => {
+      if (error) {
+        resolve(false);
+        return;
+      }
+      resolve(stdout.trim().length > 0);
+    });
+  });
+}
+
+async function hasFeatureCommits(dir: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    exec('git log @{u}..HEAD --oneline', { cwd: dir }, (error, stdout) => {
+      if (error || !stdout.trim()) {
+        resolve(false);
+        return;
+      }
+      const hasFeature = stdout.split('\n').some((line) => /^[a-f0-9]+\s+feat[\s(:]/i.test(line));
+      resolve(hasFeature);
+    });
+  });
+}
+
+export async function evictGitLocks(workspacePath: string) {
+  const gitDir = path.join(workspacePath, '.git');
+  const lockFiles = await Fs.getFilePathsMatchingGlob(gitDir, '**/*.lock');
+  if (lockFiles.length === 0) {
+    return;
+  }
+
+  logger.info({ message: `> Evicting ${lockFiles.length} git lock file(s) from workspace` });
+  await Fs.deleteFiles(lockFiles);
+  logger.info({ message: `> Evicted git lock files` });
 }
