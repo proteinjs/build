@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.9.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.8.2...@proteinjs/build@1.9.0) (2026-04-13)
+
+
+### Features
+
+* bump @proteinjs/util-node to ^1.8.0 for bin chmod fix ([3e306c8](https://github.com/proteinjs/build/commit/3e306c83739401bc4f6c5107bf8d3a97984297fd))
+
+
+
+
+
 ## [1.8.1](https://github.com/proteinjs/build/compare/@proteinjs/build@1.8.0...@proteinjs/build@1.8.1) (2026-04-13)
 
 
