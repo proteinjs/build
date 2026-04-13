@@ -37,7 +37,7 @@
   "dependencies": {
     "@octokit/core": "6.1.2",
     "@proteinjs/logger": "^1.0.17",
-    "@proteinjs/util-node": "^1.7.3",
+    "@proteinjs/util-node": "^1.8.0",
     "semver": "7.6.0"
   },
   "devDependencies": {
