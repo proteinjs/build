@@ -732,7 +732,7 @@ function isNetworkError(error: any): boolean {
 }
 
 async function retryOnNetworkError(
-  fn: () => Promise<void>,
+  fn: () => Promise<any>,
   label: string,
   maxRetries = 3,
   retryDelayMs = 15_000
