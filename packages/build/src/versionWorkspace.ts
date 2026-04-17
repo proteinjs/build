@@ -457,23 +457,31 @@ async function pushAndTagFixedVersionRepo(
   }
 
   const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
-  if (version) {
-    logger.info({ message: `(${cw.color(repoName)}) pushing latest version (${version})` });
+  // Same guard as pushMetarepo: if nothing is pending, `git commit` exits 1
+  // and kills the run. Skip commit/push in that case; fall through to the
+  // tagging block below so that if the caller still wanted a tag (which is
+  // orthogonal to whether there were file changes) it still happens.
+  if (!(await hasPendingChanges(dir))) {
+    logger.info({ message: `(${cw.color(repoName)}) fixed-version repo has no pending changes, skipping commit/push` });
   } else {
-    logger.info({ message: `(${cw.color(repoName)}) pushing dependency bumps` });
-  }
-  await cmd('git', ['add', '.'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
-  await cmd(
-    'git',
-    ['commit', '-m', `chore(version): bumping dependency versions${skipCi ? ' [skip ci]' : ''}`],
-    { cwd: dir },
-    { logPrefix: `[${cw.color(repoName)}] ` }
-  );
-  await cmd('git', ['push'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
-  if (version) {
-    logger.info({ message: `(${cw.color(repoName)}) pushed latest version (${version})` });
-  } else {
-    logger.info({ message: `(${cw.color(repoName)}) pushed dependency bumps` });
+    if (version) {
+      logger.info({ message: `(${cw.color(repoName)}) pushing latest version (${version})` });
+    } else {
+      logger.info({ message: `(${cw.color(repoName)}) pushing dependency bumps` });
+    }
+    await cmd('git', ['add', '.'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
+    await cmd(
+      'git',
+      ['commit', '-m', `chore(version): bumping dependency versions${skipCi ? ' [skip ci]' : ''}`],
+      { cwd: dir },
+      { logPrefix: `[${cw.color(repoName)}] ` }
+    );
+    await cmd('git', ['push'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
+    if (version) {
+      logger.info({ message: `(${cw.color(repoName)}) pushed latest version (${version})` });
+    } else {
+      logger.info({ message: `(${cw.color(repoName)}) pushed dependency bumps` });
+    }
   }
   const latestCommitSha = await getLatestCommitSha(dir);
   const repoInfo = await getRepoInfo(dir);
@@ -520,6 +528,14 @@ async function pushMetarepo(dir: string) {
   }
 
   const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
+  // Nothing to commit means `git commit` would exit 1 and blow up the whole
+  // run. This happens routinely — e.g. the proteinjs metarepo has no pending
+  // submodule pointer bumps on a run that only touched unrelated packages.
+  // Silently skip those repos instead of aborting.
+  if (!(await hasPendingChanges(dir))) {
+    logger.info({ message: `(${cw.color(repoName)}) metarepo has no pending changes, skipping commit/push` });
+    return;
+  }
   logger.info({ message: `(${cw.color(repoName)}) pushing metarepo (${dir})` });
   await cmd('git', ['add', '.'], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
   await cmd(
@@ -702,6 +718,27 @@ async function getCurrentBranch(dir: string): Promise<string> {
 async function isRepoDirty(dir: string): Promise<boolean> {
   return new Promise((resolve) => {
     exec('git diff --ignore-submodules HEAD', { cwd: dir }, (error, stdout) => {
+      if (error) {
+        resolve(false);
+        return;
+      }
+      resolve(stdout.trim().length > 0);
+    });
+  });
+}
+
+/**
+ * True iff there is anything staged or unstaged that a `git commit` would
+ * capture. Used to guard commit/push steps in the metarepo and fixed-version
+ * flows — without this, a repo with no pending changes (e.g. a parent
+ * metarepo whose submodule pointers were already bumped in a prior run, or
+ * the proteinjs metarepo on a run that only bumped unrelated packages) will
+ * fail `git commit` with "nothing to commit, working tree clean" and the
+ * entire version-workspace run throws.
+ */
+async function hasPendingChanges(dir: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    exec('git status --porcelain', { cwd: dir }, (error, stdout) => {
       if (error) {
         resolve(false);
         return;
