@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.9.2](https://github.com/proteinjs/build/compare/@proteinjs/build@1.9.1...@proteinjs/build@1.9.2) (2026-04-17)
+
+
+### Bug Fixes
+
+* **versionWorkspace:** skip commit/push when repo has no pending changes ([68b43ba](https://github.com/proteinjs/build/commit/68b43ba9cc0c5cf33f4bf1e224f098b00b08486a))
+
+
+
+
+
 # [1.9.0](https://github.com/proteinjs/build/compare/@proteinjs/build@1.8.2...@proteinjs/build@1.9.0) (2026-04-13)
 
 
