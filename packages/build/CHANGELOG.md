@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.0.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.0.0...@proteinjs/build@2.0.1) (2026-05-21)
+
+
+### Performance Improvements
+
+* **watch-workspace:** invoke watch scripts directly; clean up stale watchers ([e28d0a5](https://github.com/proteinjs/build/commit/e28d0a57fe258b3d0490dd492603d52cab4527fd))
+
+
+
+
+
 ## [1.9.2](https://github.com/proteinjs/build/compare/@proteinjs/build@1.9.1...@proteinjs/build@1.9.2) (2026-04-17)
 
 
