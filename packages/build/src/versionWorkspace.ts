@@ -37,7 +37,17 @@ export async function versionWorkspace() {
 
   const { packageMap, packageGraph, sortedPackageNames, workspaceToPackageMap } =
     await PackageUtil.getWorkspaceMetadata(workspacePath);
-  const skippedPackages = ['root', 'typescript-parser'];
+  const userSkippedPackages = getUserSkippedPackages();
+  if (userSkippedPackages.size > 0) {
+    logger.info({
+      message: `> Skipping packages this run (no version/build/publish; dependents keep their current dep versions): ${Array.from(
+        userSkippedPackages
+      )
+        .map((n) => cw.color(n))
+        .join(', ')}`,
+    });
+  }
+  const skippedPackages = ['root', 'typescript-parser', ...Array.from(userSkippedPackages)];
   const filteredPackageNames = sortedPackageNames.filter((packageName) => {
     const localPackage = packageMap[packageName];
     return (
@@ -85,7 +95,12 @@ export async function versionWorkspace() {
     const localPackage = packageMap[packageName];
     const skipBumpingPackageVersion = isInFixedVersionWorkspace(localPackage);
     const ownBump = skipBumpingPackageVersion ? undefined : commitBumps.get(packageName);
-    const dependenciesChanged = await applyDependencyVersionRewrites(localPackage, packageMap, packageGraph);
+    const dependenciesChanged = await applyDependencyVersionRewrites(
+      localPackage,
+      packageMap,
+      packageGraph,
+      userSkippedPackages
+    );
     const cascadeBump: CommitBump | undefined = dependenciesChanged ? 'patch' : undefined;
     const effectiveBump = maxBump(ownBump, cascadeBump);
 
@@ -208,6 +223,46 @@ function isPlanOnly() {
   return false;
 }
 
+/**
+ * Packages to exclude from this run entirely: not versioned, built, or
+ * published, and — critically — dependents' references to them are NOT
+ * rewritten to the on-disk version (see `applyDependencyVersionRewrites`).
+ *
+ * Use case: a package in the workspace has shipped a breaking new major
+ * (already published and checked out locally) but its consumers haven't been
+ * migrated yet. Skipping it lets the rest of the workspace version and deploy
+ * while consumers stay pinned to the version they were built against.
+ *
+ * Accepts `--skip=<name>[,<name>...]` (repeatable) or the
+ * VERSION_WORKSPACE_SKIP env var, e.g.:
+ *   version-workspace --skip=@proteinjs/conversation
+ */
+function getUserSkippedPackages(): Set<string> {
+  const skipped = new Set<string>();
+  const args = process.argv.slice(2);
+  for (const arg of args) {
+    const match = arg.match(/^--skip=(.+)$/);
+    if (match) {
+      match[1]
+        .split(',')
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0)
+        .forEach((name) => skipped.add(name));
+    }
+  }
+
+  const envFlag = process.env.VERSION_WORKSPACE_SKIP;
+  if (envFlag) {
+    envFlag
+      .split(',')
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0)
+      .forEach((name) => skipped.add(name));
+  }
+
+  return skipped;
+}
+
 function isInFixedVersionWorkspace(localPackage: LocalPackage) {
   return (
     localPackage.workspace &&
@@ -280,7 +335,8 @@ async function pullWorkspace(workspacePath: string, skipRootRepo = false) {
 async function applyDependencyVersionRewrites(
   localPackage: LocalPackage,
   packageMap: LocalPackageMap,
-  packageGraph: any
+  packageGraph: any,
+  userSkippedPackages: Set<string> = new Set()
 ): Promise<boolean> {
   const localDependencies = packageGraph.successors(localPackage.name);
   if (!localDependencies || localDependencies.length == 0) {
@@ -303,6 +359,16 @@ async function applyDependencyVersionRewrites(
     }
 
     if (currentDependencyVersion?.version == localDependencyVersion) {
+      continue;
+    }
+
+    if (userSkippedPackages.has(localDependency)) {
+      // The dep was skipped via --skip: leave this package's reference at its
+      // current (published, known-compatible) version instead of rewriting to
+      // the on-disk version of the skipped package.
+      logger.info({
+        message: `(${cw.color(localPackage.name)}) keeping dependency version of ${cw.color(localDependency)} at ${currentDependencyVersion.prefix ?? ''}${currentDependencyVersion.version} (skipped via --skip; on-disk is ${localDependencyVersion})`,
+      });
       continue;
     }
 
