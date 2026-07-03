@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.1.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.0.2...@proteinjs/build@2.1.0) (2026-07-03)
+
+
+### Features
+
+* build-workspace lints on CI only (CI=true) or behind an explicit --lint ([6c8d25b](https://github.com/proteinjs/build/commit/6c8d25b030ebe3cfc61daf911e34783c11d9afac))
+* **version-workspace:** add --skip flag to freeze a package for a run [skip ci] ([803d1d0](https://github.com/proteinjs/build/commit/803d1d09e74fdc89564d1f06ab6e936923385924))
+
+
+
+
+
 ## [2.0.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.0.0...@proteinjs/build@2.0.1) (2026-05-21)
 
 
