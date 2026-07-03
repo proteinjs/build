@@ -7,11 +7,16 @@ import { hasLintConfig } from './lintWorkspace';
 /**
  * Install and build workspace, in dependency order.
  *
+ * Linting (prettier --write + eslint --fix) runs on CI ONLY (CI=true, set by GitHub Actions) or
+ * locally behind an explicit `--lint`. A default local lint --fix reformats files across the whole
+ * workspace and strands them unstaged on top of unrelated work; CI commits its own lint fallout.
+ *
  * Optional args:
  *
+ * --lint (force linting locally)
  * --no-install=@some/package,@another/package
  * --no-build=@some/package,@another/package
- * --no-lint=@some/package,@another/package
+ * --no-lint=@some/package,@another/package (CI: skip linting these packages)
  * --skip=@some/package,@another/package
  */
 export async function buildWorkspace() {
@@ -20,6 +25,8 @@ export async function buildWorkspace() {
     name: cw.color('workspace:', primaryLogColor) + cw.color('build', secondaryLogColor),
   });
   const args = getArgs();
+  // CI=true is set by GitHub Actions; locally, linting is opt-in via --lint.
+  const lintEnabled = process.env.CI === 'true' || !!args.lint;
   const workspacePath = process.cwd();
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
   const skippedPackages = ['root'];
@@ -51,7 +58,7 @@ export async function buildWorkspace() {
       logger.info({ message: `Built ${cw.color(packageName)} (${packageDir})` });
     }
 
-    if (hasLintConfig(packageMap[packageName]) && (!args.noLint || !args.noLint.includes(packageName))) {
+    if (lintEnabled && hasLintConfig(packageMap[packageName]) && (!args.noLint || !args.noLint.includes(packageName))) {
       await cmd('npx', ['prettier', '.', '--write'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
       await cmd('npx', ['eslint', '.', '--fix'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
       logger.info({ message: `Linted ${cw.color(packageName)} (${packageDir})` });
@@ -68,6 +75,7 @@ type Args = {
   noBuild?: string[];
   noLint?: string[];
   skip?: string[];
+  lint?: boolean;
 };
 
 function getArgs() {
@@ -83,6 +91,8 @@ function getArgs() {
       args.noLint = argValue.split(',');
     } else if (argName == 'skip' && typeof argValue === 'string') {
       args.skip = argValue.split(',');
+    } else if (argName == 'lint') {
+      args.lint = true;
     }
   }
 
