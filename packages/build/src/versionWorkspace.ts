@@ -6,6 +6,7 @@ import semver from 'semver';
 import { Commit } from './Github';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 import { hasLintConfig } from './lintWorkspace';
+import { mergeToMain, parseMergeToMainSpec } from './mergeToMain';
 
 const cw = new LogColorWrapper();
 const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.color('version', secondaryLogColor) });
@@ -25,6 +26,13 @@ export async function versionWorkspace() {
   }
   const workspacePath = process.cwd();
   await evictGitLocks(workspacePath);
+
+  // Opt-in pre-phase: merge feature-branch work into main per leaf repo before versioning (see
+  // mergeToMain.ts). Default (no flag) is unchanged: version in place on each repo's current
+  // branch. Repos this phase touches are left ON MAIN; feature branches are never modified.
+  const mergeSpec = parseMergeToMainSpec(process.argv.slice(2), process.env.VERSION_WORKSPACE_MERGE_TO_MAIN);
+  await mergeToMain(workspacePath, mergeSpec, planOnly);
+
   const workspaceRootDirty = await isRepoDirty(workspacePath);
   if (workspaceRootDirty) {
     logger.info({ message: `> Workspace root is dirty, will skip pull/push for root repo` });
@@ -113,11 +121,7 @@ export async function versionWorkspace() {
       // In-memory version mutation runs in plan-only too so downstream
       // packages see the right dep versions when we simulate cascades.
       localPackage.packageJson.version = semver.inc(currentVersion, effectiveBump);
-      const sourceNote = ownBump
-        ? cascadeBump
-          ? `own+cascade, own=${ownBump}`
-          : `own=${ownBump}`
-        : 'dep cascade';
+      const sourceNote = ownBump ? (cascadeBump ? `own+cascade, own=${ownBump}` : `own=${ownBump}`) : 'dep cascade';
       const planPrefix = planOnly ? 'would bump' : 'bumping';
       logger.info({
         message: `(${cw.color(packageName)}) ${planPrefix} version (${effectiveBump}; ${sourceNote}) from ${currentVersion} -> ${localPackage.packageJson.version}`,
@@ -392,10 +396,7 @@ async function applyDependencyVersionRewrites(
  * This is the input to `computeCommitLeaves` and to the per-package bump-level
  * combine in the main loop.
  */
-async function scanCommitBumps(
-  packageNames: string[],
-  packageMap: LocalPackageMap
-): Promise<Map<string, CommitBump>> {
+async function scanCommitBumps(packageNames: string[], packageMap: LocalPackageMap): Promise<Map<string, CommitBump>> {
   const result = new Map<string, CommitBump>();
   for (const packageName of packageNames) {
     const localPackage = packageMap[packageName];
@@ -911,7 +912,13 @@ async function publish(localPackage: LocalPackage) {
   }
 
   await retryOnNetworkError(
-    () => cmd('npm', args, { cwd: packageDir, env: { ...process.env } }, { logPrefix: `[${cw.color(localPackage.name)}] ` }),
+    () =>
+      cmd(
+        'npm',
+        args,
+        { cwd: packageDir, env: { ...process.env } },
+        { logPrefix: `[${cw.color(localPackage.name)}] ` }
+      ),
     localPackage.name,
     3,
     15_000
@@ -1057,7 +1064,10 @@ export async function classifyUnpushedCommits(dir: string): Promise<CommitBump |
         resolve(undefined);
         return;
       }
-      const commits = stdout.split('\x00').map((s) => s.trim()).filter((s) => s.length > 0);
+      const commits = stdout
+        .split('\x00')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
       let result: CommitBump | undefined;
       for (const commit of commits) {
         result = maxBump(result, classifyCommitMessage(commit));
@@ -1114,8 +1124,12 @@ export async function evictGitLocks(workspacePath: string) {
 function isNetworkError(error: any): boolean {
   const output = `${error.stdout ?? ''}${error.stderr ?? ''}`;
   return (
-    /ECONNRESET/i.test(output) || /ETIMEDOUT/i.test(output) || /ENOTFOUND/i.test(output) ||
-    /EAI_AGAIN/i.test(output) || /ECONNREFUSED/i.test(output) || /socket hang up/i.test(output) ||
+    /ECONNRESET/i.test(output) ||
+    /ETIMEDOUT/i.test(output) ||
+    /ENOTFOUND/i.test(output) ||
+    /EAI_AGAIN/i.test(output) ||
+    /ECONNREFUSED/i.test(output) ||
+    /socket hang up/i.test(output) ||
     /network/i.test(output)
   );
 }
