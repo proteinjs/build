@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.3.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.3.0...@proteinjs/build@2.3.1) (2026-07-21)
+
+
+### Bug Fixes
+
+* pullWorkspace fast-forwards, never rebases — a repo ahead of upstream (e.g. --merge-to-main's unpushed merge on main) no longer gets its merge linearized into conflicts ([89d7c16](https://github.com/proteinjs/build/commit/89d7c16a9a9fac2f5c008977b626a3f10f183207))
+
+
+
+
+
 # [2.3.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.2.0...@proteinjs/build@2.3.0) (2026-07-21)
 
 
