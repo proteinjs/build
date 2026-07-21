@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.2.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.1.0...@proteinjs/build@2.2.0) (2026-07-21)
+
+
+### Features
+
+* version-workspace --merge-to-main — opt-in pre-phase merging feature branches into main before versioning ([1eda265](https://github.com/proteinjs/build/commit/1eda2655ce752d1ecd36baa4d5c76540f9a31369))
+
+
+
+
+
 # [2.1.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.0.2...@proteinjs/build@2.1.0) (2026-07-03)
 
 
