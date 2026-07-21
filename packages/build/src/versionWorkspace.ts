@@ -6,7 +6,7 @@ import semver from 'semver';
 import { Commit } from './Github';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 import { hasLintConfig } from './lintWorkspace';
-import { mergeToMain, parseMergeToMainSpec } from './mergeToMain';
+import { mergeToMain, parseMergeToMainSpec, assertNoLeftoverVersionState } from './mergeToMain';
 
 const cw = new LogColorWrapper();
 const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.color('version', secondaryLogColor) });
@@ -32,6 +32,13 @@ export async function versionWorkspace() {
   // branch. Repos this phase touches are left ON MAIN; feature branches are never modified.
   const mergeSpec = parseMergeToMainSpec(process.argv.slice(2), process.env.VERSION_WORKSPACE_MERGE_TO_MAIN);
   await mergeToMain(workspacePath, mergeSpec, planOnly);
+
+  // Release-flow idempotency guard: after clean merges, uncommitted package.json/lock can only be
+  // leftovers from a prior interrupted versioning run — stop before the loop reads bad disk state.
+  // Release mode = --merge-to-main; skip in preview/dry modes (which legitimately leave writes).
+  if (mergeSpec.enabled && !planOnly && !dryRun) {
+    await assertNoLeftoverVersionState(workspacePath);
+  }
 
   const workspaceRootDirty = await isRepoDirty(workspacePath);
   if (workspaceRootDirty) {

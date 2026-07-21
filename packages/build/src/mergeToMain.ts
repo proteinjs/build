@@ -165,6 +165,48 @@ export async function mergeToMain(workspacePath: string, spec: MergeToMainSpec, 
   }
 }
 
+/**
+ * Idempotency guard for the release flow. The versioning loop writes a package's bumped
+ * package.json to disk (versionWorkspace.ts) BEFORE it commits + pushes that package; an
+ * interruption in that window (a flaky release-build/test failure, a publish/push error) leaves an
+ * uncommitted bumped package.json. A blind re-run would then read the already-bumped DISK version
+ * as its base and double-bump it — or, for a partially-pushed multi-package repo, fail to re-flag
+ * the un-pushed package and silently SKIP it. Both produce a wrong release.
+ *
+ * So, before the versioning loop (release mode only), STOP if any leaf repo carries uncommitted
+ * package.json / package-lock.json — those can only be leftovers from a prior interrupted run
+ * (a clean merge phase commits its resolutions). Non-destructive: it names the files and the
+ * one-line reset, and never mutates — the operator resets to committed (source-of-truth) state and
+ * re-runs. On a fresh run after clean merges there is nothing uncommitted, so this is a no-op.
+ */
+export async function assertNoLeftoverVersionState(workspacePath: string): Promise<void> {
+  const repoRoots = await leafRepoRoots(workspacePath);
+  const dirty: string[] = [];
+  for (const repoRoot of repoRoots) {
+    const out = await git(repoRoot, 'status --porcelain').catch(() => '');
+    for (const line of out
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)) {
+      const file = line.replace(/^.. /, '');
+      const base = path.basename(file);
+      if (base === 'package.json' || base === 'package-lock.json') {
+        dirty.push(`${path.basename(repoRoot)}: ${line}`);
+      }
+    }
+  }
+  if (dirty.length > 0) {
+    throw new Error(
+      `Refusing to version: uncommitted package.json/package-lock.json detected — almost certainly ` +
+        `leftovers from a PRIOR INTERRUPTED release run. Re-running blindly could double-bump or skip ` +
+        `these packages. Reset each to its committed (source-of-truth) state and re-run:\n` +
+        dirty.map((d) => `  ${d}`).join('\n') +
+        `\n  (per repo: git checkout -- <file>, or git checkout -- . after confirming there is no ` +
+        `unrelated work)`
+    );
+  }
+}
+
 /** Unique git-repo roots that directly contain workspace packages — never the workspace root. */
 async function leafRepoRoots(workspacePath: string): Promise<string[]> {
   const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
