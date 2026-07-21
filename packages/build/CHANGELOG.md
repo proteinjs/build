@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.3.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.2.0...@proteinjs/build@2.3.0) (2026-07-21)
+
+
+### Features
+
+* version-workspace release-flow idempotency guard — stop on leftover uncommitted package versions ([35aa57f](https://github.com/proteinjs/build/commit/35aa57fc0dcc3e676393dd262810b9be89b20453))
+
+
+
+
+
 # [2.2.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.1.0...@proteinjs/build@2.2.0) (2026-07-21)
 
 
