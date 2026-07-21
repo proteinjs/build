@@ -325,8 +325,33 @@ async function pullWorkspace(workspacePath: string, skipRootRepo = false) {
     logger.info({ message: `(${cw.color(repoName)}) pulling latest changes` });
     await cmd('git', ['fetch'], { cwd: repoRoot }, { logPrefix: `[${cw.color(repoName)}] ` });
     const branch = await getCurrentBranch(repoRoot);
-    await cmd('git', ['rebase', `origin/${branch}`], { cwd: repoRoot }, { logPrefix: `[${cw.color(repoName)}] ` });
-    logger.info({ message: `(${cw.color(repoName)}) pulled latest changes` });
+    // FAST-FORWARD-ONLY, never rebase: a repo may legitimately be AHEAD of its upstream with
+    // unpushed commits — e.g. the `--merge-to-main` pre-phase leaves a main with an unpushed merge
+    // commit. Rebasing linearizes that merge, replaying every branch commit into conflicts (the
+    // failure this replaced). Ahead-of-upstream is a no-op here (versioning pushes it); a true
+    // divergence (local unpushed AND upstream moved) stops loudly rather than silently rewriting.
+    try {
+      await cmd(
+        'git',
+        ['merge', '--ff-only', `origin/${branch}`],
+        { cwd: repoRoot },
+        { logPrefix: `[${cw.color(repoName)}] ` }
+      );
+      logger.info({ message: `(${cw.color(repoName)}) pulled latest changes` });
+    } catch {
+      const upstreamIsAncestor = await new Promise<boolean>((resolve) => {
+        exec(`git merge-base --is-ancestor origin/${branch} HEAD`, { cwd: repoRoot }, (error) => resolve(!error));
+      });
+      if (!upstreamIsAncestor) {
+        throw new Error(
+          `(${repoName}) local ${branch} and origin/${branch} have DIVERGED (local holds unpushed commits AND upstream moved). ` +
+            `Reconcile manually, then re-run.`
+        );
+      }
+      logger.info({
+        message: `(${cw.color(repoName)}) local ${branch} is ahead of origin (unpushed commits) — nothing to pull`,
+      });
+    }
   }
 
   logger.info({ message: `> Finished pulling workspace (${workspacePath})` });
