@@ -13,7 +13,9 @@
     "version-workspace": "dist/src/bin/runVersionWorkspace.js",
     "workspace-package": "dist/src/bin/runWorkspacePackageCommand.js",
     "symlink-workspace": "dist/src/bin/runSymlinkWorkspace.js",
-    "lint-workspace": "dist/src/bin/runLintWorkspace.js"
+    "lint-workspace": "dist/src/bin/runLintWorkspace.js",
+    "verify-workspace": "dist/src/bin/runVerifyWorkspace.js",
+    "sync-workspace": "dist/src/bin/runSyncWorkspace.js"
   },
   "publishConfig": {
     "access": "public"
