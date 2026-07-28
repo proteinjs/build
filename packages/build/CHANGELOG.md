@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.4.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.3.2...@proteinjs/build@2.4.0) (2026-07-28)
+
+
+### Features
+
+* WorkspaceDoctor — verify-workspace + sync-workspace (workspace coherence as a guarantee) ([2e2bd71](https://github.com/proteinjs/build/commit/2e2bd7197b308a81a037657853b8e6001890070e))
+
+
+
+
+
 ## [2.3.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.3.0...@proteinjs/build@2.3.1) (2026-07-21)
 
 
