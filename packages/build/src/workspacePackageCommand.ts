@@ -2,6 +2,7 @@ import * as path from 'path';
 import { LogColorWrapper, PackageUtil, cmd } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
 import { primaryLogColor, secondaryLogColor } from './logColors';
+import { ServePackageSupervisor } from './ServePackageSupervisor';
 
 /**
  * Run a command in the directory of the specified package.
@@ -36,5 +37,19 @@ export const workspacePackageCommand = async () => {
     const localPackage = packageMap[packageName];
     await PackageUtil.symlinkDependencies(localPackage, packageMap);
     logger.info({ message: `Symlinked local dependencies` });
+    // A watcher inside a running supervised child (webpack dev middleware) may have compiled
+    // against node_modules mid-op and baked ENOENTs into its bundle — and the re-symlink
+    // restores identical mtimes, so that watcher never re-fires on its own. File a hold- and
+    // coherence-gated restart request with every live supervisor so serving state is rebuilt
+    // from the settled workspace.
+    const requested = await ServePackageSupervisor.requestWorkspaceRestarts(
+      packageMap,
+      `workspace-package(${packageName}) ${command} ${args.join(' ')}`
+    );
+    if (requested.length > 0) {
+      logger.info({
+        message: `Requested supervised restart of ${cw.color(requested.join(', '), secondaryLogColor)} (gated on holds + workspace coherence)`,
+      });
+    }
   }
 };

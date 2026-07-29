@@ -139,6 +139,31 @@ describe('ServePackageSupervisor', () => {
     await waitFor(async () => (await childPid()) !== firstPid, 5000, 'restart after hold expiry');
   });
 
+  it('requestRestart files a request a live supervisor absorbs — restart without any dist change', async () => {
+    const firstPid = await startSupervisor();
+    const accepted = await ServePackageSupervisor.requestRestart(
+      consumerDir,
+      'workspace-package(@test/consumer) npm i'
+    );
+    expect(accepted).toBe(true);
+    await waitFor(async () => (await childPid()) !== firstPid, 5000, 'restart after request');
+    // The request lease was consumed, not left to re-trigger forever.
+    await expect(fs.readFile(path.join(consumerDir, '.serve-package', 'restart-request'), 'utf-8')).rejects.toThrow();
+  });
+
+  it('requestRestart respects an active hold (unlike SIGUSR2) and returns false with no live supervisor', async () => {
+    // No supervisor: nothing to ask.
+    expect(await ServePackageSupervisor.requestRestart(consumerDir, 'nobody-home')).toBe(false);
+    const firstPid = await startSupervisor();
+    await writeHold('mid-chat-turn', 1200);
+    expect(await ServePackageSupervisor.requestRestart(consumerDir, 'workspace-package npm update')).toBe(true);
+    // Well past poll+quiet, still held: the request never bulldozes the hold.
+    await sleep(800);
+    expect(await childPid()).toBe(firstPid);
+    // Lease expiry releases the requested restart.
+    await waitFor(async () => (await childPid()) !== firstPid, 5000, 'requested restart after hold expiry');
+  });
+
   it('restart() forces through an active hold, and the spawn clears stale leases', async () => {
     const firstPid = await startSupervisor();
     await writeHold('long-holder', 60_000);

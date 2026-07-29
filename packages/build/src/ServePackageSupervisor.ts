@@ -57,6 +57,9 @@ type Hold = {
  * the supervisor owns only process freshness.
  */
 export class ServePackageSupervisor {
+  /** Cross-process restart-request lease consumed by the poll loop (see requestRestart). */
+  private static readonly RESTART_REQUEST_FILE = 'restart-request';
+
   private logger: Logger;
   private packageDir!: string;
   private closure: string[] = [];
@@ -97,6 +100,8 @@ export class ServePackageSupervisor {
     await this.assertSingleInstance();
     await fs.mkdir(path.join(this.ipcDir, 'holds'), { recursive: true });
     await fs.writeFile(path.join(this.ipcDir, 'pid'), `${process.pid}\n`);
+    // A request left behind for a dead supervisor is already satisfied by this fresh boot.
+    await fs.rm(path.join(this.ipcDir, ServePackageSupervisor.RESTART_REQUEST_FILE), { force: true });
     this.logger.info({
       message: `> Watching dists of ${this.closure.length} workspace packages (closure of ${this.options.packageName}); restart triggers: dist change + quiet ${this.quietMs()}ms + no holds, or 'rs' / SIGUSR2`,
     });
@@ -134,6 +139,70 @@ export class ServePackageSupervisor {
       // permanently disable every future restart, including rs/SIGUSR2.
       this.restarting = false;
     }
+  }
+
+  /**
+   * Ask the supervisor of `packageDir` (if one is alive) for a HOLD- and COHERENCE-GATED
+   * restart by dropping a `restart-request` lease in its ipc dir; the poll loop absorbs it
+   * like a dist change (quiet window, holds, boot coherence all apply — unlike SIGUSR2,
+   * this never bulldozes an active hold such as a chat turn).
+   *
+   * Exists for package-manager operations: npm tears node_modules down and rebuilds it, and
+   * a watcher inside the running child (webpack dev middleware) can compile DURING that hole
+   * and bake ENOENTs into its bundle. The post-op re-symlink restores identical mtimes, so
+   * nothing the watcher watches ever changes again — the broken bundle sticks until the next
+   * unrelated edit (observed 2026-07-29: /space dead on :3002 after a lockfile regen). A
+   * settled-state restart is the categorical cure.
+   *
+   * Returns true when a live supervisor was found and the request was filed.
+   */
+  static async requestRestart(packageDir: string, requester: string): Promise<boolean> {
+    const ipcDir = path.join(packageDir, '.serve-package');
+    const raw = await fs.readFile(path.join(ipcDir, 'state.json'), 'utf-8').catch(() => undefined);
+    if (!raw) {
+      return false;
+    }
+    let snapshot: { supervisorPid?: number; state?: string };
+    try {
+      snapshot = JSON.parse(raw);
+    } catch {
+      return false; // partial write mid-update; the next op can retry
+    }
+    if (
+      !snapshot.supervisorPid ||
+      snapshot.state === 'stopped' ||
+      !ServePackageSupervisor.processAlive(snapshot.supervisorPid)
+    ) {
+      return false;
+    }
+    await fs.writeFile(path.join(ipcDir, ServePackageSupervisor.RESTART_REQUEST_FILE), requester);
+    return true;
+  }
+
+  /**
+   * File a restart request with every live supervisor in the workspace (see requestRestart).
+   * Unscoped on purpose: mapping "which supervised closure consumes the touched package"
+   * requires app-specific server/ui closure knowledge; a spurious settled-state restart is
+   * cheap and safe, a missed one is a silently broken dev server. Returns the packageNames
+   * of supervisors that accepted a request.
+   */
+  static async requestWorkspaceRestarts(
+    packageMap: Record<string, { filePath: string }>,
+    requester: string
+  ): Promise<string[]> {
+    const requested: string[] = [];
+    const seenDirs = new Set<string>();
+    for (const [packageName, localPackage] of Object.entries(packageMap)) {
+      const packageDir = path.dirname(localPackage.filePath);
+      if (seenDirs.has(packageDir)) {
+        continue;
+      }
+      seenDirs.add(packageDir);
+      if (await ServePackageSupervisor.requestRestart(packageDir, requester)) {
+        requested.push(packageName);
+      }
+    }
+    return requested;
   }
 
   /** Stop the child and the poll loop (idempotent). Process exit is the caller's concern. */
@@ -175,6 +244,25 @@ export class ServePackageSupervisor {
       return;
     }
     const now = Date.now();
+    // Absorb a cross-process restart request (workspace-package after an npm op) as staleness:
+    // it rides the same quiet window, holds, and coherence gate as a dist change.
+    const requestPath = path.join(this.ipcDir, ServePackageSupervisor.RESTART_REQUEST_FILE);
+    const requester = await fs.readFile(requestPath, 'utf-8').catch(() => undefined);
+    if (requester !== undefined) {
+      await fs.rm(requestPath, { force: true });
+      this.lastChangeAt = now;
+      const token = `requested by ${requester.trim() || 'unknown'}`;
+      if (!this.stalePackages.has(token)) {
+        this.stalePackages.add(token);
+        if (this.state === 'running') {
+          this.staleSince = now;
+        }
+        this.setState('stale');
+        this.logger.warn({
+          message: `> STALE — restart ${token} (node_modules were rebuilt under the running child; its watcher may serve a bundle compiled mid-op)`,
+        });
+      }
+    }
     const newlyStale: string[] = [];
     for (const packageName of this.closure) {
       const current = await this.newestMtime(this.distDirs[packageName]);
@@ -284,7 +372,7 @@ export class ServePackageSupervisor {
     if (await this.settled(exited, 2000)) {
       return;
     }
-    if (!this.processAlive(pid)) {
+    if (!ServePackageSupervisor.processAlive(pid)) {
       this.logger.warn({
         message: `> Child pid ${pid} is dead but its exit event never fired — proceeding with shutdown`,
       });
@@ -335,7 +423,7 @@ export class ServePackageSupervisor {
     return result;
   }
 
-  private processAlive(pid: number): boolean {
+  private static processAlive(pid: number): boolean {
     try {
       process.kill(pid, 0);
       return true;
