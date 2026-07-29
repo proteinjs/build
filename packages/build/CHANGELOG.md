@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.5.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.4.0...@proteinjs/build@2.5.0) (2026-07-29)
+
+
+### Features
+
+* serve-package — hold-gated dev process supervisor ([4d31c7f](https://github.com/proteinjs/build/commit/4d31c7f4e2188fac18c461b9669a929cca618d1d))
+
+
+
+
+
 # [2.4.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.3.2...@proteinjs/build@2.4.0) (2026-07-28)
 
 
