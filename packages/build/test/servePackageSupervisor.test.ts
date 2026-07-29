@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
+import { PackageUtil } from '@proteinjs/util-node';
 import { ServePackageSupervisor } from '../src/ServePackageSupervisor';
 
 /**
@@ -96,6 +97,11 @@ describe('ServePackageSupervisor', () => {
         'setInterval(() => {}, 1000);',
       ].join('\n')
     );
+
+    // Link the workspace the same way symlink-workspace does — the supervisor's
+    // wait-for-coherence gate (WorkspaceDoctor) refuses to spawn into a clobbered workspace.
+    const { packageMap } = await PackageUtil.getWorkspaceMetadata(workspacePath);
+    await PackageUtil.symlinkDependencies(packageMap['@test/consumer'], packageMap);
   });
 
   afterEach(async () => {
@@ -188,6 +194,38 @@ describe('ServePackageSupervisor', () => {
       quietMs: 200,
     });
     await expect(second.start()).rejects.toThrow(/already supervises/);
+  });
+
+  it('stop() completes in bounded time against a SIGTERM-ignoring child (SIGKILL escalation)', async () => {
+    // The 2026-07-29 wedge class: shutdown must never await child exit unbounded. This child
+    // traps SIGTERM and lives on; stop() must escalate to SIGKILL and finish within
+    // grace + escalation bounds.
+    await fs.writeFile(
+      path.join(consumerDir, 'server.js'),
+      [
+        "const fs = require('fs');",
+        "fs.writeFileSync('child.pid', String(process.pid));",
+        "process.on('SIGTERM', () => {});",
+        'setInterval(() => {}, 1000);',
+      ].join('\n')
+    );
+    const firstPid = await startSupervisor();
+    const started = Date.now();
+    await supervisor!.stop();
+    supervisor = undefined;
+    expect(Date.now() - started).toBeLessThan(6000); // grace 1500 + kill escalation + margin
+    await waitFor(
+      async () => {
+        try {
+          process.kill(firstPid, 0);
+          return false;
+        } catch {
+          return true;
+        }
+      },
+      3000,
+      'stubborn child terminated'
+    );
   });
 
   it('stop() terminates the child', async () => {

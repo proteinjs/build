@@ -73,6 +73,7 @@ export class ServePackageSupervisor {
   private lastHoldReport = '';
   private lastHoldAnnounceAt = 0;
   private ipcDir!: string;
+  private workspacePathResolved!: string;
 
   constructor(private options: ServePackageOptions) {
     this.logger = new Logger({ name: `serve:${options.packageName.split('/').pop()}` });
@@ -81,6 +82,7 @@ export class ServePackageSupervisor {
   /** Resolve the workspace, snapshot dist baselines, spawn the child, and start the poll loop. */
   async start(): Promise<void> {
     const workspacePath = this.options.workspacePath ?? (await WorkspaceDoctor.findWorkspaceRoot(process.cwd()));
+    this.workspacePathResolved = workspacePath;
     const metadata = await PackageUtil.getWorkspaceMetadata(workspacePath);
     const localPackage = metadata.packageMap[this.options.packageName];
     if (!localPackage) {
@@ -115,6 +117,14 @@ export class ServePackageSupervisor {
       await this.killChild();
       // stop() may have raced in while the child was dying — respawning after stop() resolved
       // would leak a live, unsupervised child.
+      if (this.stopping) {
+        return;
+      }
+      // Never spawn into an incoherent workspace: a restart triggered mid-BUILD would boot a
+      // child whose own verify gate exits 1, and mirroring that exit killed the supervisor —
+      // a rebuild-in-progress became permanent downtime (observed 2026-07-29). Coherence is
+      // moments away by definition (a build is running); wait for it.
+      await this.waitForCoherence();
       if (this.stopping) {
         return;
       }
@@ -252,16 +262,86 @@ export class ServePackageSupervisor {
     });
   }
 
+  /**
+   * Bounded kill: SIGTERM the group, escalate to SIGKILL after the grace period, and treat the
+   * process table — not the 'exit' event — as the truth. Observed in the wild (2026-07-29): an
+   * npm-wrapped child's whole group died on the group signal but the direct child's 'exit'
+   * event never fired, wedging shutdown on an unbounded await and leaving a zombie supervisor
+   * holding the pid file. Every stage here has a deadline.
+   */
   private async killChild(): Promise<void> {
     const child = this.child;
     if (!child || child.exitCode !== null || child.signalCode !== null) {
       return;
     }
+    const pid = child.pid!;
     const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-    this.signalChildGroup(child.pid!, 'SIGTERM');
-    const killTimer = setTimeout(() => this.signalChildGroup(child.pid!, 'SIGKILL'), this.graceMs());
-    await exited;
-    clearTimeout(killTimer);
+    this.signalChildGroup(pid, 'SIGTERM');
+    if (await this.settled(exited, this.graceMs())) {
+      return;
+    }
+    this.signalChildGroup(pid, 'SIGKILL');
+    if (await this.settled(exited, 2000)) {
+      return;
+    }
+    if (!this.processAlive(pid)) {
+      this.logger.warn({
+        message: `> Child pid ${pid} is dead but its exit event never fired — proceeding with shutdown`,
+      });
+      return;
+    }
+    this.logger.error({
+      message: `> Child pid ${pid} survived SIGKILL (uninterruptible?) — proceeding; the next spawn will surface any port conflict`,
+    });
+  }
+
+  /**
+   * Poll the workspace doctor (scoped to this package's closure) until no findings remain,
+   * announcing every 30s. Unbounded by design: the operator is mid-rebuild; the wait ends
+   * when their build does. stop() interrupts it.
+   */
+  private async waitForCoherence(): Promise<void> {
+    const doctor = new WorkspaceDoctor(this.workspacePathResolved);
+    let lastAnnounceAt = 0;
+    for (;;) {
+      if (this.stopping) {
+        return;
+      }
+      const findings = await doctor.diagnose([this.options.packageName]);
+      if (findings.length === 0) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastAnnounceAt >= 30_000) {
+        lastAnnounceAt = now;
+        this.logger.warn({
+          message: `> Holding restart: workspace incoherent (${findings.length} finding${findings.length !== 1 ? 's' : ''}: ${findings
+            .map((f) => `${f.packageName} ${f.kind}`)
+            .join(', ')}) — waiting for the build to finish`,
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+
+  /** Await a promise with a deadline; true if it settled in time. */
+  private async settled(promise: Promise<void>, ms: number): Promise<boolean> {
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), ms);
+    });
+    const result = await Promise.race([promise.then(() => true), timedOut]);
+    clearTimeout(timer);
+    return result;
+  }
+
+  private processAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Signal the child's whole process group (it is spawned detached into its own group). */

@@ -45,7 +45,11 @@ export const servePackage = async () => {
 
   // Process wiring lives here so the supervisor class stays a pure, testable mechanism.
   process.on('SIGUSR2', () => void supervisor.restart('SIGUSR2'));
-  const shutdown = () => void supervisor.stop().then(() => process.exit(0));
+  const shutdown = () =>
+    void supervisor.stop().then(
+      () => process.exit(0),
+      () => process.exit(1)
+    );
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
   const rl = readline.createInterface({ input: process.stdin });
