@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.5.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.5.0...@proteinjs/build@2.5.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* serve-package bounded shutdown + boot-time workspace coherence wait ([1818b68](https://github.com/proteinjs/build/commit/1818b6889fa9e60770fad28365bec04f8e9ecfcc))
+
+
+
+
+
 # [2.5.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.4.0...@proteinjs/build@2.5.0) (2026-07-29)
 
 
