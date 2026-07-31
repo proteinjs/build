@@ -12,6 +12,21 @@ export type ServePackageOptions = {
   command: string[];
   /** Override workspace root discovery (default: outermost ancestor of cwd with a package.json). */
   workspacePath?: string;
+  /**
+   * Packages whose closures must be COHERENT before a (re)spawn — set to the SAME scope the
+   * child's own verify gate checks. A dev server that also webpack-builds a sibling UI package
+   * verifies BOTH (e.g. --for=app-server,app-ui); if the supervisor only waits on the server
+   * closure, a restart landing mid-UI-build spawns a child whose verify gate exits 1 (observed
+   * 2026-07-29: thought-server build finished, restart fired, thought-ui build still running →
+   * child died, supervisor mirrored the exit). Defaults to [packageName].
+   */
+  coherencePackages?: string[];
+  /**
+   * How long a freshly-spawned child must stay alive to count as BOOTED (default 90s). A child
+   * that dies nonzero inside this window after a RESTART spawn is treated as a mid-churn boot
+   * failure and retried through the coherence gate instead of killing the supervisor.
+   */
+  bootFailWindowMs?: number;
   /** Dist mtime poll interval. */
   pollMs?: number;
   /** Quiet period after the last dist change before a restart is considered (builds settle). */
@@ -77,6 +92,13 @@ export class ServePackageSupervisor {
   private lastHoldAnnounceAt = 0;
   private ipcDir!: string;
   private workspacePathResolved!: string;
+  // Boot-retry accounting for RESTART-spawned children (see the exit handler): whether the
+  // current child came from restart(), when it was spawned, how many consecutive spawns died
+  // inside the boot window, and the timer that declares a child successfully booted.
+  private spawnedByRestart = false;
+  private spawnedAt = 0;
+  private consecutiveBootFailures = 0;
+  private bootSettleTimer?: NodeJS.Timeout;
 
   constructor(private options: ServePackageOptions) {
     this.logger = new Logger({ name: `serve:${options.packageName.split('/').pop()}` });
@@ -133,7 +155,7 @@ export class ServePackageSupervisor {
       if (this.stopping) {
         return;
       }
-      await this.spawnChild();
+      await this.spawnChild(true);
     } finally {
       // Without this, one throw in kill/spawn would leave restarting=true forever and
       // permanently disable every future restart, including rs/SIGUSR2.
@@ -210,6 +232,9 @@ export class ServePackageSupervisor {
     this.stopping = true;
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
+    }
+    if (this.bootSettleTimer) {
+      clearTimeout(this.bootSettleTimer);
     }
     await this.killChild();
     await fs.rm(path.join(this.ipcDir, 'pid'), { force: true });
@@ -317,11 +342,13 @@ export class ServePackageSupervisor {
 
   // ── Child lifecycle ───────────────────────────────────────────────────────
 
-  private async spawnChild(): Promise<void> {
+  private async spawnChild(viaRestart = false): Promise<void> {
     await this.clearHolds();
     await this.snapshotBaseline();
     this.stalePackages.clear();
     this.staleSince = 0;
+    this.spawnedByRestart = viaRestart;
+    this.spawnedAt = Date.now();
     const [cmd, ...args] = this.options.command;
     this.child = spawn(cmd, args, {
       cwd: this.packageDir,
@@ -334,6 +361,13 @@ export class ServePackageSupervisor {
     });
     this.setState('running');
     this.logger.info({ message: `> Started: ${this.options.command.join(' ')} (pid ${this.child.pid})` });
+    // Surviving the boot window resets the retry budget — failures only count consecutively.
+    if (this.bootSettleTimer) {
+      clearTimeout(this.bootSettleTimer);
+    }
+    this.bootSettleTimer = setTimeout(() => {
+      this.consecutiveBootFailures = 0;
+    }, this.bootFailWindowMs());
     const child = this.child;
     child.on('error', (error) => {
       this.logger.error({ message: `> Failed to spawn '${this.options.command.join(' ')}'`, error });
@@ -342,6 +376,27 @@ export class ServePackageSupervisor {
     child.on('exit', (code, signal) => {
       if (this.restarting || this.stopping) {
         return; // we initiated it
+      }
+      // A RESTART-spawned child dying nonzero inside the boot window is almost always a
+      // mid-churn boot (a build landed between the coherence check and the child's own verify
+      // gate — check-then-spawn is inherently racy). Killing the supervisor for that turns one
+      // race into permanent downtime (observed 2026-07-29 11:30: server build settled, restart
+      // fired, the sibling UI build was still running, child verify exited 1, supervisor died).
+      // Retry through the coherence gate, bounded to 2 consecutive attempts — a genuinely
+      // broken child still surfaces as the mirrored exit below.
+      const bootAgeMs = Date.now() - this.spawnedAt;
+      if (
+        this.spawnedByRestart &&
+        (code ?? 1) !== 0 &&
+        bootAgeMs < this.bootFailWindowMs() &&
+        this.consecutiveBootFailures < 2
+      ) {
+        this.consecutiveBootFailures += 1;
+        this.logger.warn({
+          message: `> Child failed to boot after a restart (code ${code}, ${Math.round(bootAgeMs / 1000)}s in) — likely a build landed mid-spawn; waiting for coherence and retrying (attempt ${this.consecutiveBootFailures}/2)`,
+        });
+        void this.restart('retry after failed post-restart boot').catch((e) => this.logger.error({ error: e }));
+        return;
       }
       this.logger.error({
         message: `> Child exited on its own (${signal ?? `code ${code}`}) — mirroring plain-run semantics`,
@@ -395,7 +450,7 @@ export class ServePackageSupervisor {
       if (this.stopping) {
         return;
       }
-      const findings = await doctor.diagnose([this.options.packageName]);
+      const findings = await doctor.diagnose(this.options.coherencePackages ?? [this.options.packageName]);
       if (findings.length === 0) {
         return;
       }
@@ -532,5 +587,9 @@ export class ServePackageSupervisor {
 
   private graceMs(): number {
     return this.options.graceMs ?? 10000;
+  }
+
+  private bootFailWindowMs(): number {
+    return this.options.bootFailWindowMs ?? 90_000;
   }
 }

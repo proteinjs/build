@@ -20,6 +20,9 @@ import { primaryLogColor, secondaryLogColor } from './logColors';
  * --poll=2000       dist mtime poll interval (ms)
  * --quiet=1500      quiet period after the last dist change before restarting (ms)
  * --grace=10000     SIGTERM→SIGKILL grace when stopping the child (ms)
+ * --coherence=@a,@b packages whose closures must be coherent before a (re)spawn — match the
+ *                   child's own verify scope (e.g. server+ui when the server webpack-builds
+ *                   the ui). Defaults to the supervised package alone.
  * --root=/path      override workspace root discovery (default: outermost ancestor of cwd
  *                   with a package.json)
  */
@@ -40,6 +43,7 @@ export const servePackage = async () => {
     pollMs: args.poll,
     quietMs: args.quiet,
     graceMs: args.grace,
+    coherencePackages: args.coherence,
     onChildExit: (code) => process.exit(code),
   });
 
@@ -68,6 +72,7 @@ type Args = {
   poll?: number;
   quiet?: number;
   grace?: number;
+  coherence?: string[];
   root?: string;
 };
 
@@ -88,6 +93,15 @@ function getArgs() {
       args.quiet = parseMs('quiet', argValue);
     } else if (argName == 'grace' && typeof argValue === 'string') {
       args.grace = parseMs('grace', argValue);
+    } else if (argName == 'coherence' && typeof argValue === 'string') {
+      const names = argValue
+        .split(',')
+        .map((n) => n.trim())
+        .filter(Boolean);
+      if (names.length === 0) {
+        throw new Error(`--coherence must be a comma-separated list of package names, got: ${argValue}`);
+      }
+      args.coherence = names;
     } else if (argName == 'root' && typeof argValue === 'string') {
       args.root = argValue;
     }

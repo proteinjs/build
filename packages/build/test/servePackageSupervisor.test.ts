@@ -209,6 +209,50 @@ describe('ServePackageSupervisor', () => {
     );
   });
 
+  it('a restart-spawned child that dies at boot is retried through the coherence gate, not mirrored (2026-07-29 11:30 class)', async () => {
+    // The child exits 1 while boot-fail.marker exists — standing in for a verify gate that
+    // fails because a sibling build landed between the supervisor's coherence check and the
+    // child's own verify. The retry must keep the supervisor alive and boot the next child
+    // once the marker clears; a FIRST-boot failure still mirrors (plain-run semantics).
+    // SELF-CLEARING marker: the failing boot consumes it, so exactly ONE spawn dies and the
+    // bounded retry's next spawn succeeds — deterministic, no sleep-based marker juggling.
+    const marker = path.join(consumerDir, 'boot-fail.marker');
+    await fs.writeFile(
+      path.join(consumerDir, 'server.js'),
+      [
+        "const fs = require('fs');",
+        "if (fs.existsSync('boot-fail.marker')) { fs.unlinkSync('boot-fail.marker'); process.exit(1); }",
+        "fs.writeFileSync('child.pid', String(process.pid));",
+        'setInterval(() => {}, 1000);',
+      ].join('\n')
+    );
+    const exits: number[] = [];
+    supervisor = new ServePackageSupervisor({
+      packageName: '@test/consumer',
+      command: ['node', 'server.js'],
+      workspacePath,
+      pollMs: 100,
+      quietMs: 200,
+      graceMs: 1500,
+      bootFailWindowMs: 3000,
+      onChildExit: (code) => exits.push(code),
+    });
+    await supervisor.start();
+    await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
+    const firstPid = (await childPid())!;
+    // Arm the marker and trigger a staleness restart: the restart's spawn dies at boot,
+    // the retry's spawn boots clean.
+    await fs.writeFile(marker, '');
+    await touchLibDist();
+    await waitFor(async () => (await childPid()) !== firstPid, 10000, 'retried child booted');
+    expect(exits).toEqual([]); // the supervisor never mirrored an exit — it stayed alive through the retry
+    const markerGone = await fs
+      .access(marker)
+      .then(() => false)
+      .catch(() => true);
+    expect(markerGone).toBe(true); // the failing boot really ran
+  });
+
   it('refuses to start while another live supervisor owns the package dir', async () => {
     await startSupervisor();
     const second = new ServePackageSupervisor({
