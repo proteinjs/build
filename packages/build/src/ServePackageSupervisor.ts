@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import { ChildProcess, spawn } from 'child_process';
 import { PackageUtil, WorkspaceMetadata } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
-import { WorkspaceDoctor } from './WorkspaceDoctor';
+import { WorkspaceDoctor, WorkspaceFinding } from './WorkspaceDoctor';
 
 export type ServePackageOptions = {
   /** Workspace package whose process this supervises (e.g. @n3xa/app-server). */
@@ -40,7 +40,7 @@ export type ServePackageOptions = {
   onChildExit?: (code: number) => void;
 };
 
-type SupervisorState = 'running' | 'stale' | 'waiting-holds' | 'restarting' | 'stopped';
+type SupervisorState = 'running' | 'stale' | 'waiting-holds' | 'waiting-coherence' | 'restarting' | 'stopped';
 
 type Hold = {
   holder: string;
@@ -53,14 +53,17 @@ type Hold = {
  * cannot cover itself (server-side dists land only on process restart).
  *
  * One rule, no modes: stale → announce; restart only once the change burst is quiet AND no
- * active HOLDS exist; `rs` on stdin or SIGUSR2 forces a restart regardless. The supervisor is
- * therefore "attended" exactly while something is attending (a hold is alive) and automatic
- * otherwise.
+ * active HOLDS exist AND the workspace is coherent (the kill is gated on the same coherence the
+ * spawn requires — killing first and waiting after turned "stale but serving" into unbounded
+ * downtime); `rs` on stdin or SIGUSR2 forces a restart regardless. The supervisor is therefore
+ * "attended" exactly while something is attending (a hold is alive) and automatic otherwise.
  *
  * Holds protocol (app-agnostic, portless): the child is spawned with SERVE_PACKAGE_IPC set to
  * a directory; anything may write TTL lease files under `<SERVE_PACKAGE_IPC>/holds/<name>.json`
  * shaped `{ "holder": string, "expiresAt": epochMs }` and refresh them while work is in flight
- * (an in-progress chat turn, a focused browser tab's dev heartbeat). Expired leases are ignored
+ * (an in-progress chat turn, a focused browser tab's dev heartbeat, the child's own
+ * request-activity high-water lease — any real HTTP request defers restarts until the server
+ * has been request-quiet for the lease's TTL). Expired leases are ignored
  * and reaped, so a crashed holder can never wedge the lane. Processes that never write holds
  * get plain announce-then-restart semantics. The holds dir is cleared on every spawn — leases
  * belong to the child that wrote them.
@@ -90,6 +93,8 @@ export class ServePackageSupervisor {
   private pollTimer?: NodeJS.Timeout;
   private lastHoldReport = '';
   private lastHoldAnnounceAt = 0;
+  private lastCoherenceAnnounceAt = 0;
+  private coherenceCheckInFlight = false;
   private ipcDir!: string;
   private workspacePathResolved!: string;
   // Boot-retry accounting for RESTART-spawned children (see the exit handler): whether the
@@ -125,7 +130,7 @@ export class ServePackageSupervisor {
     // A request left behind for a dead supervisor is already satisfied by this fresh boot.
     await fs.rm(path.join(this.ipcDir, ServePackageSupervisor.RESTART_REQUEST_FILE), { force: true });
     this.logger.info({
-      message: `> Watching dists of ${this.closure.length} workspace packages (closure of ${this.options.packageName}); restart triggers: dist change + quiet ${this.quietMs()}ms + no holds, or 'rs' / SIGUSR2`,
+      message: `> Watching dists of ${this.closure.length} workspace packages (closure of ${this.options.packageName}); restart triggers: dist change + quiet ${this.quietMs()}ms + no holds + coherent workspace, or 'rs' / SIGUSR2`,
     });
     await this.spawnChild();
     this.pollTimer = setInterval(() => void this.poll().catch((e) => this.logger.error({ error: e })), this.pollMs());
@@ -337,6 +342,40 @@ export class ServePackageSupervisor {
       return;
     }
     this.lastHoldReport = '';
+    // Gate the KILL on the same coherence the spawn requires. restart() only re-checks
+    // coherence AFTER the child is dead, so an automatic restart firing mid-rebuild (or into
+    // an agent-clobbered workspace) turned "stale but serving" into unbounded downtime
+    // (observed 2026-08-01: child killed at 1:08 AM, workspace incoherent until 11:03 AM —
+    // dead server for ~10 hours). A stale child that keeps serving old code is strictly
+    // better than no child; rs/SIGUSR2 still bypass via restart() directly.
+    if (this.coherenceCheckInFlight) {
+      return; // diagnose from the previous tick is still running — don't stack fs scans
+    }
+    this.coherenceCheckInFlight = true;
+    let findings: WorkspaceFinding[] = [];
+    try {
+      findings = await new WorkspaceDoctor(this.workspacePathResolved).diagnose(
+        this.options.coherencePackages ?? [this.options.packageName]
+      );
+    } finally {
+      this.coherenceCheckInFlight = false;
+    }
+    if (this.restarting || this.stopping) {
+      return; // a forced restart or stop raced in while diagnosing
+    }
+    if (findings.length > 0) {
+      this.setState('waiting-coherence');
+      if (Date.now() - this.lastCoherenceAnnounceAt >= 30_000) {
+        this.lastCoherenceAnnounceAt = Date.now();
+        this.logger.warn({
+          message: `> STALE ${Math.round((Date.now() - this.staleSince) / 1000)}s, restart blocked: workspace incoherent (${findings.length} finding${findings.length !== 1 ? 's' : ''}: ${findings
+            .map((f) => `${f.packageName} ${f.kind}`)
+            .join(', ')}) — keeping the running child alive until the build finishes`,
+        });
+      }
+      return;
+    }
+    this.lastCoherenceAnnounceAt = 0;
     await this.restart(`stale: ${Array.from(this.stalePackages).join(', ')}`);
   }
 
@@ -534,7 +573,15 @@ export class ServePackageSupervisor {
       stalePackages: Array.from(this.stalePackages),
       staleSince: this.staleSince || undefined,
     };
-    void fs.writeFile(path.join(this.ipcDir, 'state.json'), JSON.stringify(snapshot, null, 2)).catch(() => undefined);
+    // Write-then-rename: state.json is read cross-process (requestRestart) and a plain
+    // truncate+write racing a concurrent write — or the process's own exit during shutdown's
+    // fire-and-forget 'stopped' write — leaves a 0-byte file behind (observed 2026-08-02).
+    const statePath = path.join(this.ipcDir, 'state.json');
+    const tmpPath = `${statePath}.tmp-${process.pid}`;
+    void fs
+      .writeFile(tmpPath, JSON.stringify(snapshot, null, 2))
+      .then(() => fs.rename(tmpPath, statePath))
+      .catch(() => undefined);
   }
 
   // ── Staleness ─────────────────────────────────────────────────────────────

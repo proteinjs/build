@@ -253,6 +253,29 @@ describe('ServePackageSupervisor', () => {
     expect(markerGone).toBe(true); // the failing boot really ran
   });
 
+  it('an automatic stale restart never kills the child while the workspace is incoherent (keeps serving, restarts on coherence)', async () => {
+    const firstPid = await startSupervisor();
+    // Clobber the consumer's workspace symlink: @test/lib becomes a real directory — the
+    // incoherence class agents leave behind (a bare npm install replacing the link). Pre-fix,
+    // the supervisor killed the child FIRST and only then waited for coherence, so a rebuild
+    // window (or a wedged workspace) meant a dead server for its whole duration.
+    const linkPath = path.join(consumerDir, 'node_modules', '@test', 'lib');
+    await fs.rm(linkPath, { recursive: true, force: true });
+    await fs.mkdir(linkPath, { recursive: true });
+    await fs.copyFile(path.join(libDir, 'package.json'), path.join(linkPath, 'package.json'));
+    await touchLibDist();
+    // Well past poll+quiet: stale and unheld, but incoherent — the child must STAY ALIVE.
+    await sleep(800);
+    expect(() => process.kill(firstPid, 0)).not.toThrow();
+    expect(await childPid()).toBe(firstPid);
+    // Heal the workspace: the deferred restart lands and the old child dies.
+    await fs.rm(linkPath, { recursive: true, force: true });
+    const { packageMap } = await PackageUtil.getWorkspaceMetadata(workspacePath);
+    await PackageUtil.symlinkDependencies(packageMap['@test/consumer'], packageMap);
+    await waitFor(async () => (await childPid()) !== firstPid, 10000, 'restart after coherence restored');
+    expect(() => process.kill(firstPid, 0)).toThrow();
+  });
+
   it('refuses to start while another live supervisor owns the package dir', async () => {
     await startSupervisor();
     const second = new ServePackageSupervisor({
