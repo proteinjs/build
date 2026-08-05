@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as os from 'os';
+import { execSync } from 'child_process';
 import { PackageUtil } from '@proteinjs/util-node';
 import { ServePackageSupervisor } from '../src/ServePackageSupervisor';
 import { WorkspaceDoctor } from '../src/WorkspaceDoctor';
@@ -120,6 +121,58 @@ describe('ServePackageSupervisor', () => {
     expect(supervisorPid).toBe(process.pid);
     const state = JSON.parse(await fs.readFile(path.join(ipc, 'state.json'), 'utf-8'));
     expect(state).toMatchObject({ state: 'running', packageName: '@test/consumer' });
+  });
+
+  it('daemonize launches a DETACHED process logging to .serve-package/serve.log, rotating the previous log', async () => {
+    const { pid, logPath } = await ServePackageSupervisor.daemonize({
+      packageName: '@test/consumer',
+      argv: ['-e', "console.log('daemon-alive'); setInterval(() => {}, 1000);"],
+      workspacePath,
+    });
+    try {
+      expect(logPath).toBe(path.join(consumerDir, '.serve-package', 'serve.log'));
+      expect(() => process.kill(pid, 0)).not.toThrow();
+      // Detachment is the point: the daemon leads its own process group (pgid === its pid),
+      // so the launching shell/session dying cannot reap it.
+      const pgid = execSync(`ps -o pgid= -p ${pid}`).toString().trim();
+      expect(Number(pgid)).toBe(pid);
+      await waitFor(
+        async () => (await fs.readFile(logPath, 'utf-8').catch(() => '')).includes('daemon-alive'),
+        5000,
+        'daemon output in serve.log'
+      );
+      const second = await ServePackageSupervisor.daemonize({
+        packageName: '@test/consumer',
+        argv: ['-e', 'setInterval(() => {}, 1000);'],
+        workspacePath,
+      });
+      try {
+        expect(await fs.readFile(`${logPath}.prev`, 'utf-8')).toContain('daemon-alive');
+      } finally {
+        process.kill(second.pid);
+      }
+    } finally {
+      process.kill(pid);
+    }
+  });
+
+  it('writes state.json atomically: a burst of transitions lands the last state, complete, with no temp remnant', async () => {
+    await startSupervisor();
+    const internals = supervisor as unknown as {
+      setState: (state: string) => void;
+      stateWriteChain: Promise<void>;
+    };
+    // Rapid-fire transitions like a real restart storm; the serialized temp+rename chain
+    // must land exactly the final snapshot (a kill mid-write previously truncated the file).
+    for (let i = 0; i < 25; i++) {
+      internals.setState(i % 2 === 0 ? 'restarting' : 'running');
+    }
+    internals.setState('running');
+    await internals.stateWriteChain;
+    const ipc = path.join(consumerDir, '.serve-package');
+    const state = JSON.parse(await fs.readFile(path.join(ipc, 'state.json'), 'utf-8'));
+    expect(state).toMatchObject({ state: 'running', packageName: '@test/consumer' });
+    await expect(fs.stat(path.join(ipc, 'state.json.tmp'))).rejects.toThrow();
   });
 
   it('restarts the child when an upstream closure dist changes (quiet period respected)', async () => {

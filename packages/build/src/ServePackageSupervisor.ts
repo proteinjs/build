@@ -192,7 +192,7 @@ export class ServePackageSupervisor {
   private spawnedAt = 0;
   private consecutiveBootFailures = 0;
   private bootSettleTimer?: NodeJS.Timeout;
-  // Restart-requested respawn accounting (see the class doc's RESTART-REQUESTED EXITS
+// Restart-requested respawn accounting (see the class doc's RESTART-REQUESTED EXITS
   // paragraph): the consecutive-request streak (reset by a healthy period, measured off
   // spawnedAt so no timer is load-bearing), when the pending respawn is due, and the backoff
   // timer that normally runs it — the poll chain is the backstop when that timer dies.
@@ -303,6 +303,46 @@ export class ServePackageSupervisor {
    *
    * Returns true when a live supervisor was found and the request was filed.
    */
+  /**
+   * Re-launch a serve-package invocation as a DETACHED daemon so the supervisor survives its
+   * launching shell/session (a terminal closing, an agent harness reaping its background task
+   * tree — observed 2026-08-05: a session ending SIGKILLed the supervisor mid-state-write).
+   * The daemon logs to `<packageDir>/.serve-package/serve.log` (previous log rotated to
+   * `serve.log.prev`), discoverable next to `pid`/`state.json`. Returns the daemon's pid and
+   * log path; the caller (the CLI's --daemon branch) prints them and exits.
+   */
+  static async daemonize(options: {
+    packageName: string;
+    /** argv to re-run detached (script path + args, WITHOUT --daemon), passed to process.execPath. */
+    argv: string[];
+    workspacePath?: string;
+  }): Promise<{ pid: number; logPath: string }> {
+    const workspacePath = options.workspacePath ?? (await WorkspaceDoctor.findWorkspaceRoot(process.cwd()));
+    const metadata = await PackageUtil.getWorkspaceMetadata(workspacePath);
+    const localPackage = metadata.packageMap[options.packageName];
+    if (!localPackage) {
+      throw new Error(`Package (${options.packageName}) does not exist in workspace: ${workspacePath}`);
+    }
+    const ipcDir = path.join(path.dirname(localPackage.filePath), '.serve-package');
+    await fs.mkdir(ipcDir, { recursive: true });
+    const logPath = path.join(ipcDir, 'serve.log');
+    await fs.rename(logPath, `${logPath}.prev`).catch(() => undefined);
+    const log = await fs.open(logPath, 'a');
+    try {
+      const daemon = spawn(process.execPath, options.argv, {
+        detached: true,
+        stdio: ['ignore', log.fd, log.fd],
+        cwd: process.cwd(),
+        env: process.env,
+      });
+      daemon.unref();
+      return { pid: daemon.pid!, logPath };
+    } finally {
+      // The daemon holds its own dup of the fd from spawn; ours must not leak.
+      await log.close();
+    }
+  }
+
   static async requestRestart(packageDir: string, requester: string): Promise<boolean> {
     const ipcDir = path.join(packageDir, '.serve-package');
     const raw = await fs.readFile(path.join(ipcDir, 'state.json'), 'utf-8').catch(() => undefined);
@@ -1056,7 +1096,7 @@ export class ServePackageSupervisor {
       stalePackages: Array.from(this.stalePackages),
       staleSince: this.staleSince || undefined,
     };
-    // SYNCHRONOUS write-then-rename. state.json is the one artifact an operator inspects when
+// SYNCHRONOUS write-then-rename. state.json is the one artifact an operator inspects when
     // things are wrong, so it must not be able to lie: the async version left the file
     // advertising `running` with a dead childPid through the entire 2026-08-04 wedge (the
     // transition was issued, but its completion callback needed an event loop that had stopped

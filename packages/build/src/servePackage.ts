@@ -25,6 +25,9 @@ import { primaryLogColor, secondaryLogColor } from './logColors';
  *                   the ui). Defaults to the supervised package alone.
  * --root=/path      override workspace root discovery (default: outermost ancestor of cwd
  *                   with a package.json)
+ * --daemon          detach: re-launch this invocation as a daemon that survives the launching
+ *                   shell/session, logging to <packageDir>/.serve-package/serve.log, then exit.
+ *                   (`rs` stdin input doesn't reach a daemon — use SIGUSR2 to force restarts.)
  */
 export const servePackage = async () => {
   const cw = new LogColorWrapper();
@@ -35,6 +38,15 @@ export const servePackage = async () => {
       message: `Usage: serve-package <packageName> [--poll=ms] [--quiet=ms] [--grace=ms] [--root=path] -- <command...>`,
     });
     process.exit(1);
+  }
+  if (args.daemon) {
+    const { pid, logPath } = await ServePackageSupervisor.daemonize({
+      packageName: args.packageName,
+      argv: [process.argv[1], ...process.argv.slice(2).filter((a) => a !== '--daemon')],
+      workspacePath: args.root,
+    });
+    logger.info({ message: `> Daemonized (pid ${pid}); log: ${logPath}` });
+    process.exit(0);
   }
   const supervisor = new ServePackageSupervisor({
     packageName: args.packageName,
@@ -74,6 +86,7 @@ type Args = {
   grace?: number;
   coherence?: string[];
   root?: string;
+  daemon?: boolean;
 };
 
 function getArgs() {
@@ -104,6 +117,8 @@ function getArgs() {
       args.coherence = names;
     } else if (argName == 'root' && typeof argValue === 'string') {
       args.root = argValue;
+    } else if (argName == 'daemon') {
+      args.daemon = true;
     }
   }
 
