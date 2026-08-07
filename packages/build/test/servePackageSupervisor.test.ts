@@ -264,6 +264,32 @@ describe('ServePackageSupervisor', () => {
     );
   });
 
+  it("records the truth on self-exit: state.json says {state: 'exited', exitCode} with no childPid (2026-08-06 wedge #6)", async () => {
+    await fs.writeFile(
+      path.join(consumerDir, 'server.js'),
+      ["const fs = require('fs');", "fs.writeFileSync('child.pid', String(process.pid));", 'process.exit(3);'].join(
+        '\n'
+      )
+    );
+    const exits: number[] = [];
+    supervisor = new ServePackageSupervisor({
+      packageName: '@test/consumer',
+      command: ['node', 'server.js'],
+      workspacePath,
+      pollMs: 100,
+      quietMs: 200,
+      onChildExit: (code) => exits.push(code),
+    });
+    await supervisor.start();
+    await waitFor(async () => exits.length > 0, 5000, 'onChildExit');
+    // The overnight incident left state.json claiming 'running' with a dead childPid because
+    // the final state write raced process.exit. onChildExit firing is the contract that the
+    // truth has already LANDED on disk — read it right now, no settling allowed.
+    const state = JSON.parse(await fs.readFile(path.join(consumerDir, '.serve-package', 'state.json'), 'utf-8'));
+    expect(state).toMatchObject({ state: 'exited', exitCode: 3 });
+    expect(state.childPid).toBeUndefined();
+  });
+
   it('a restart-spawned child that dies at boot is retried through the coherence gate, not mirrored (2026-07-29 11:30 class)', async () => {
     // The child exits 1 while boot-fail.marker exists — standing in for a verify gate that
     // fails because a sibling build landed between the supervisor's coherence check and the
@@ -661,6 +687,82 @@ describe('ServePackageSupervisor', () => {
       }
       expect(observed).toEqual([{ code: 3, pidFileGone: true, state: 'exited' }]);
     }, 15000);
+  });
+
+  it("daemon posture: a dead child parks as 'exited' (no mirror) and a SIGUSR2 restart respawns a fresh child (2026-08-06 wedge #5)", async () => {
+    // First boot crashes (consuming the marker); with a respawn budget of 0 the supervisor
+    // must park as 'exited' — alive and signal-responsive — instead of mirroring the exit.
+    const marker = path.join(consumerDir, 'boot-fail.marker');
+    await fs.writeFile(marker, '');
+    await fs.writeFile(
+      path.join(consumerDir, 'server.js'),
+      [
+        "const fs = require('fs');",
+        "if (fs.existsSync('boot-fail.marker')) { fs.unlinkSync('boot-fail.marker'); process.exit(1); }",
+        "fs.writeFileSync('child.pid', String(process.pid));",
+        'setInterval(() => {}, 1000);',
+      ].join('\n')
+    );
+    const exits: number[] = [];
+    supervisor = new ServePackageSupervisor({
+      packageName: '@test/consumer',
+      command: ['node', 'server.js'],
+      workspacePath,
+      pollMs: 100,
+      quietMs: 200,
+      graceMs: 1500,
+      daemon: true,
+      crashRespawnLimit: 0,
+      onChildExit: (code) => exits.push(code),
+    });
+    await supervisor.start();
+    const statePath = path.join(consumerDir, '.serve-package', 'state.json');
+    const readState = async () => JSON.parse(await fs.readFile(statePath, 'utf-8').catch(() => '{}'));
+    await waitFor(async () => (await readState()).state === 'exited', 5000, "parked as 'exited'");
+    expect(await readState()).toMatchObject({ state: 'exited', exitCode: 1 });
+    expect(exits).toEqual([]); // the supervisor outlived the child — no plain-run mirror
+    // What the CLI's SIGUSR2 handler invokes: a restart with NO live child must still spawn.
+    await supervisor.restart('SIGUSR2');
+    await waitFor(async () => (await childPid()) !== undefined, 5000, 'respawn after SIGUSR2');
+    await waitFor(async () => (await readState()).state === 'running', 2000, "state back to 'running'");
+    expect((await readState()).exitCode).toBeUndefined(); // the old exit is history, not ambient truth
+  });
+
+  it("daemon posture: crash respawns are budgeted — at the ceiling the supervisor parks as 'exited' instead of crash-looping", async () => {
+    // The child always crashes, recording each boot. Budget 2 → exactly 1 initial boot +
+    // 2 respawns, then parked. bootFailWindowMs=1 keeps the boot-retry branch (a different
+    // mechanism for restart-spawned children) out of this test's way.
+    await fs.writeFile(
+      path.join(consumerDir, 'server.js'),
+      ["const fs = require('fs');", "fs.appendFileSync('boots.log', 'boot\\n');", 'process.exit(5);'].join('\n')
+    );
+    const boots = async () =>
+      (await fs.readFile(path.join(consumerDir, 'boots.log'), 'utf-8').catch(() => '')).split('\n').filter(Boolean)
+        .length;
+    const exits: number[] = [];
+    supervisor = new ServePackageSupervisor({
+      packageName: '@test/consumer',
+      command: ['node', 'server.js'],
+      workspacePath,
+      pollMs: 100,
+      quietMs: 200,
+      graceMs: 1500,
+      bootFailWindowMs: 1,
+      daemon: true,
+      crashRespawnLimit: 2,
+      crashRespawnWindowMs: 60_000,
+      onChildExit: (code) => exits.push(code),
+    });
+    await supervisor.start();
+    const statePath = path.join(consumerDir, '.serve-package', 'state.json');
+    const readState = async () => JSON.parse(await fs.readFile(statePath, 'utf-8').catch(() => '{}'));
+    await waitFor(async () => (await readState()).state === 'exited', 10000, 'parked at the respawn ceiling');
+    expect(await readState()).toMatchObject({ state: 'exited', exitCode: 5 });
+    expect(await boots()).toBe(3); // 1 initial + 2 budgeted respawns
+    // The ceiling holds: no further respawns dribble out after parking.
+    await sleep(700);
+    expect(await boots()).toBe(3);
+    expect(exits).toEqual([]); // parked, not mirrored — SIGUSR2/SIGTERM still live
   });
 
   it('refuses to start while another live supervisor owns the package dir', async () => {

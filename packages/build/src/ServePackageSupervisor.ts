@@ -60,9 +60,26 @@ export type ServePackageOptions = {
   maxConsecutiveRespawns?: number;
   /**
    * Called when the child exits on its own (not via a supervisor restart/stop). The CLI wires
-   * this to process.exit(code) so plain-run semantics are preserved.
+   * this to process.exit(code) so plain-run semantics are preserved. Not called in daemon
+   * posture — the daemon supervisor outlives its child (see `daemon`).
    */
   onChildExit?: (code: number) => void;
+  /**
+   * Daemon posture (the CLI sets this when the invocation was re-launched via --daemon): the
+   * supervisor OUTLIVES a self-exiting child instead of mirroring its exit. A nonzero child
+   * exit respawns through the coherence gate under an expiring budget (`crashRespawnLimit` per
+   * `crashRespawnWindowMs`); a clean exit — or an exhausted budget — parks as state 'exited'
+   * (exit code recorded in state.json) with the poll loop, SIGUSR2 (respawn), and SIGTERM
+   * (clean shutdown) all still live. Plain-run mirroring made sense foregrounded; a daemon
+   * that stays down all night — dead to SIGUSR2, state.json still claiming 'running' — does
+   * not (observed 2026-08-06: the child OOM'd at 9:14 AM and recovery took SIGKILL + a manual
+   * relaunch).
+   */
+  daemon?: boolean;
+  /** Daemon posture: max crash respawns within `crashRespawnWindowMs` before parking as 'exited' (default 3). */
+  crashRespawnLimit?: number;
+  /** Daemon posture: rolling window for the crash-respawn budget (default 10 minutes). */
+  crashRespawnWindowMs?: number;
 };
 
 type SupervisorState =
@@ -162,12 +179,19 @@ export class ServePackageSupervisor {
   private lastChangeAt = 0;
   private restarting = false;
   private stopping = false;
-  // Tick chain + its independent cross-check (see the class doc's LANE LIVENESS paragraph):
+// Tick chain + its independent cross-check (see the class doc's LANE LIVENESS paragraph):
   // tickTimer is re-armed at the START of every tick; lastTickAt is the chain's heartbeat; the
   // ipc watchers revive the chain from lease/request writes when that heartbeat goes stale.
   private tickTimer?: NodeJS.Timeout;
   private lastTickAt = 0;
   private ipcWatchers: fsSync.FSWatcher[] = [];
+  // start() has run: signals may act. Before it there is nothing to restart into; after a
+  // child self-exit there is no live child, but a restart must still be able to spawn one.
+  private started = false;
+  /** Last self-exit of a child (cleared on spawn); surfaces as exitCode/exitSignal in state.json. */
+  private lastChildExit?: { code: number | null; signal: NodeJS.Signals | null };
+  /** Timestamps of daemon-posture crash respawns inside the rolling budget window. */
+  private crashRespawnAt: number[] = [];
   private lastHoldReport = '';
   private lastHoldAnnounceAt = 0;
   private lastCoherenceAnnounceAt = 0;
@@ -227,6 +251,7 @@ export class ServePackageSupervisor {
     this.logger.info({
       message: `> Watching dists of ${this.closure.length} workspace packages (closure of ${this.options.packageName}); restart triggers: dist change + quiet ${this.quietMs()}ms + no holds + coherent workspace, or 'rs' / SIGUSR2`,
     });
+    this.started = true;
     await this.spawnChild();
     this.lastTickAt = Date.now();
     this.startIpcWatchers();
@@ -235,8 +260,11 @@ export class ServePackageSupervisor {
 
   /** Force a restart now, regardless of staleness or holds. */
   async restart(reason: string): Promise<void> {
-    // !this.child also rejects signals delivered before start() has spawned anything.
-    if (this.restarting || this.stopping || !this.child) {
+    // !this.started rejects signals delivered before start() has spawned anything. A DEAD
+    // child is no reason to refuse: post-self-exit (daemon posture parks as 'exited') a
+    // SIGUSR2 restart is exactly how a fresh child gets spawned — killChild guards on child
+    // liveness itself, so this path never awaits a stop that cannot complete.
+    if (this.restarting || this.stopping || !this.started) {
       return;
     }
     this.restarting = true;
@@ -313,7 +341,12 @@ export class ServePackageSupervisor {
    */
   static async daemonize(options: {
     packageName: string;
-    /** argv to re-run detached (script path + args, WITHOUT --daemon), passed to process.execPath. */
+    /**
+     * argv to re-run detached (script path + args), passed to process.execPath — with
+     * `--daemon` replaced by `--daemonized` so the re-launched supervisor adopts the daemon
+     * posture (crash respawns, signal-responsive after child death) instead of daemonizing
+     * again or mirroring child exits plain-run style.
+     */
     argv: string[];
     workspacePath?: string;
   }): Promise<{ pid: number; logPath: string }> {
@@ -412,6 +445,8 @@ export class ServePackageSupervisor {
     await this.killChild();
     // Sync, like every exit path: no exit may leave a pid file behind (zombie-shape guard).
     fsSync.rmSync(path.join(this.ipcDir, 'pid'), { force: true });
+    // Callers exit the process right after stop() resolves — setState writes synchronously, so
+    // the final state is on disk by then (wedge #6 class).
     this.setState('stopped');
   }
 
@@ -871,6 +906,7 @@ export class ServePackageSupervisor {
     this.staleSince = 0;
     this.spawnedByRestart = viaRestart;
     this.spawnedAt = Date.now();
+    this.lastChildExit = undefined;
     const [cmd, ...args] = this.options.command;
     this.child = spawn(cmd, args, {
       cwd: this.packageDir,
@@ -903,6 +939,10 @@ export class ServePackageSupervisor {
       if (this.restarting || this.stopping) {
         return; // we initiated it
       }
+// The child is gone: drop the handle so state.json never advertises a dead childPid,
+      // and so restart paths (killChild) see there is nothing to stop.
+      this.child = undefined;
+      this.lastChildExit = { code, signal };
       // A deliberate restart-requested exit is never a crash and never a boot failure — it is
       // the child invoking the respawn contract. Checked FIRST so the boot-fail heuristic below
       // can't misread it.
@@ -931,12 +971,53 @@ export class ServePackageSupervisor {
         void this.restart('retry after failed post-restart boot').catch((e) => this.logger.error({ error: e }));
         return;
       }
+      if (this.options.daemon) {
+        this.handleDaemonChildExit(code, signal);
+        return;
+      }
       this.logger.error({
         message: `> Child exited on its own (${signal ?? `code ${code}`}) — mirroring plain-run semantics`,
       });
-      this.endSupervision(code ?? 1);
+this.endSupervision(code ?? 1);
     });
   }
+
+  /**
+   * Daemon posture: the supervisor OUTLIVES a self-exiting child. A crash (nonzero/signal
+   * exit) respawns through the coherence gate under the expiring budget; a clean exit or an
+   * exhausted budget parks as 'exited' (exit recorded in state.json) with the poll loop and
+   * SIGUSR2/SIGTERM still live — recovery is one signal (or one fresh build) away instead of
+   * SIGKILL + a manual relaunch.
+   */
+  private handleDaemonChildExit(code: number | null, signal: NodeJS.Signals | null): void {
+    const description = signal ?? `code ${code}`;
+    const crashed = (code ?? 1) !== 0;
+    if (crashed && this.consumeCrashRespawnBudget()) {
+      this.logger.warn({
+        message: `> Child crashed (${description}) — respawning (${this.crashRespawnAt.length}/${this.crashRespawnLimit()} respawns in the last ${Math.round(this.crashRespawnWindowMs() / 60_000)}m)`,
+      });
+      void this.restart(`respawn after child crash (${description})`).catch((e) => this.logger.error({ error: e }));
+      return;
+    }
+    this.logger.error({
+      message: crashed
+        ? `> Child crashed (${description}) and the respawn budget (${this.crashRespawnLimit()} per ${Math.round(this.crashRespawnWindowMs() / 60_000)}m) is exhausted — parked as 'exited'; SIGUSR2 respawns, SIGTERM shuts down`
+        : `> Child exited cleanly (${description}) — parked as 'exited'; SIGUSR2 respawns, SIGTERM shuts down`,
+    });
+    this.setState('exited');
+  }
+
+  /** True when a crash respawn is still inside the rolling budget (and consumes one slot). */
+  private consumeCrashRespawnBudget(): boolean {
+    const now = Date.now();
+    this.crashRespawnAt = this.crashRespawnAt.filter((at) => now - at < this.crashRespawnWindowMs());
+    if (this.crashRespawnAt.length >= this.crashRespawnLimit()) {
+      return false;
+    }
+    this.crashRespawnAt.push(now);
+    return true;
+  }
+
 
   /**
    * Bounded kill: SIGTERM the group, escalate to SIGKILL after the grace period, and treat the
@@ -952,6 +1033,13 @@ export class ServePackageSupervisor {
     }
     const pid = child.pid!;
     const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    // Child already dead at the OS level but its 'exit' event hasn't been delivered yet (a
+    // self-exit racing this restart/stop): nothing to signal, no grace cycle to serve on a
+    // corpse — absorb the imminent event briefly and move on.
+    if (!ServePackageSupervisor.processAlive(pid)) {
+      await this.settled(exited, 2000);
+      return;
+    }
     this.signalChildGroup(pid, 'SIGTERM');
     if (await this.settled(exited, this.graceMs())) {
       return;
@@ -1092,6 +1180,10 @@ export class ServePackageSupervisor {
       state,
       supervisorPid: process.pid,
       childPid: this.child?.pid,
+      // Truth about the last self-exit (wedge #6): present while state is 'exited', cleared on
+      // the next spawn. `?? undefined` folds a null code (signal death) out of the JSON.
+      exitCode: this.lastChildExit?.code ?? undefined,
+      exitSignal: this.lastChildExit?.signal ?? undefined,
       packageName: this.options.packageName,
       stalePackages: Array.from(this.stalePackages),
       staleSince: this.staleSince || undefined,
@@ -1172,7 +1264,7 @@ export class ServePackageSupervisor {
     return this.options.bootFailWindowMs ?? 90_000;
   }
 
-  /** Initial restart-requested respawn backoff; doubles per consecutive request. */
+/** Initial restart-requested respawn backoff; doubles per consecutive request. */
   private respawnBackoffMs(): number {
     return this.options.respawnBackoffMs ?? 1000;
   }
@@ -1185,6 +1277,16 @@ export class ServePackageSupervisor {
   /** How long a restart may make NO progress while childless before the watchdog replaces it. */
   private restartStallMs(): number {
     return this.options.restartStallMs ?? 60_000;
+  }
+
+  /** Crash respawns granted inside the rolling window in daemon posture before mirroring. */
+  private crashRespawnLimit(): number {
+    return this.options.crashRespawnLimit ?? 3;
+  }
+
+  /** The daemon crash-respawn budget window. */
+  private crashRespawnWindowMs(): number {
+    return this.options.crashRespawnWindowMs ?? 600_000;
   }
 
   /** Deadline for a single workspace diagnosis inside the childless coherence wait. */
