@@ -179,7 +179,7 @@ export class ServePackageSupervisor {
   private lastChangeAt = 0;
   private restarting = false;
   private stopping = false;
-// Tick chain + its independent cross-check (see the class doc's LANE LIVENESS paragraph):
+  // Tick chain + its independent cross-check (see the class doc's LANE LIVENESS paragraph):
   // tickTimer is re-armed at the START of every tick; lastTickAt is the chain's heartbeat; the
   // ipc watchers revive the chain from lease/request writes when that heartbeat goes stale.
   private tickTimer?: NodeJS.Timeout;
@@ -216,7 +216,7 @@ export class ServePackageSupervisor {
   private spawnedAt = 0;
   private consecutiveBootFailures = 0;
   private bootSettleTimer?: NodeJS.Timeout;
-// Restart-requested respawn accounting (see the class doc's RESTART-REQUESTED EXITS
+  // Restart-requested respawn accounting (see the class doc's RESTART-REQUESTED EXITS
   // paragraph): the consecutive-request streak (reset by a healthy period, measured off
   // spawnedAt so no timer is load-bearing), when the pending respawn is due, and the backoff
   // timer that normally runs it — the poll chain is the backstop when that timer dies.
@@ -939,7 +939,7 @@ export class ServePackageSupervisor {
       if (this.restarting || this.stopping) {
         return; // we initiated it
       }
-// The child is gone: drop the handle so state.json never advertises a dead childPid,
+      // The child is gone: drop the handle so state.json never advertises a dead childPid,
       // and so restart paths (killChild) see there is nothing to stop.
       this.child = undefined;
       this.lastChildExit = { code, signal };
@@ -978,7 +978,7 @@ export class ServePackageSupervisor {
       this.logger.error({
         message: `> Child exited on its own (${signal ?? `code ${code}`}) — mirroring plain-run semantics`,
       });
-this.endSupervision(code ?? 1);
+      this.endSupervision(code ?? 1);
     });
   }
 
@@ -1017,7 +1017,6 @@ this.endSupervision(code ?? 1);
     this.crashRespawnAt.push(now);
     return true;
   }
-
 
   /**
    * Bounded kill: SIGTERM the group, escalate to SIGKILL after the grace period, and treat the
@@ -1188,7 +1187,7 @@ this.endSupervision(code ?? 1);
       stalePackages: Array.from(this.stalePackages),
       staleSince: this.staleSince || undefined,
     };
-// SYNCHRONOUS write-then-rename. state.json is the one artifact an operator inspects when
+    // SYNCHRONOUS write-then-rename. state.json is the one artifact an operator inspects when
     // things are wrong, so it must not be able to lie: the async version left the file
     // advertising `running` with a dead childPid through the entire 2026-08-04 wedge (the
     // transition was issued, but its completion callback needed an event loop that had stopped
@@ -1264,7 +1263,7 @@ this.endSupervision(code ?? 1);
     return this.options.bootFailWindowMs ?? 90_000;
   }
 
-/** Initial restart-requested respawn backoff; doubles per consecutive request. */
+  /** Initial restart-requested respawn backoff; doubles per consecutive request. */
   private respawnBackoffMs(): number {
     return this.options.respawnBackoffMs ?? 1000;
   }
