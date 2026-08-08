@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.9.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.9.0...@proteinjs/build@2.9.1) (2026-08-08)
+
+
+### Bug Fixes
+
+* evictGitLocks resolves submodule .git pointer files (ENOTDIR on nested-workspace train) ([a462d55](https://github.com/proteinjs/build/commit/a462d55b2a84004e0f837b6a02b7447458865684))
+
+
+
+
+
 # [2.9.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.8.0...@proteinjs/build@2.9.0) (2026-08-08)
 
 
