@@ -1173,7 +1173,25 @@ function declaresBreakingChange(message: string): boolean {
 }
 
 export async function evictGitLocks(workspacePath: string) {
-  const gitDir = path.join(workspacePath, '.git');
+  // `.git` is a DIRECTORY only for a standalone checkout; a submodule's `.git` is a pointer
+  // FILE ("gitdir: <path>") — globbing into it throws ENOTDIR (2026-08-08 train: the nested
+  // proteinjs workspace inside the n3xa metarepo). Resolve the pointer; skip when absent.
+  const gitPath = path.join(workspacePath, '.git');
+  let gitDir = gitPath;
+  try {
+    const fsp = await import('fs/promises');
+    const stat = await fsp.stat(gitPath);
+    if (!stat.isDirectory()) {
+      const pointer = await fsp.readFile(gitPath, 'utf-8');
+      const match = pointer.match(/^gitdir:\s*(.+)\s*$/m);
+      if (!match) {
+        return;
+      }
+      gitDir = path.resolve(workspacePath, match[1].trim());
+    }
+  } catch {
+    return; // no .git at all — nothing to evict
+  }
   const lockFiles = await Fs.getFilePathsMatchingGlob(gitDir, '**/*.lock');
   if (lockFiles.length === 0) {
     return;
