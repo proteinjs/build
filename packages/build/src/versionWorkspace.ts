@@ -1076,9 +1076,9 @@ function maxBump(a: CommitBump | undefined, b: CommitBump | undefined): CommitBu
  * Classify the net semver bump implied by the set of commits in HEAD that
  * aren't yet on the tracked upstream branch (`git log @{u}..HEAD`).
  *
- *   - `major`: any commit declares `BREAKING CHANGE` in subject/body, or
- *              uses the conventional-commits `!` marker (`feat!:`,
- *              `fix(scope)!:`, etc.).
+ *   - `major`: any commit declares a breaking change — either the
+ *              conventional-commits `!` marker on the header (`feat!:`,
+ *              `fix(scope)!:`, etc.) or a `BREAKING CHANGE:` footer.
  *   - `minor`: any commit is a `feat` (type, optionally scoped, no `!`).
  *   - `patch`: any other commit is present (fix/chore/refactor/docs/…).
  *   - `undefined`: no unpushed commits, OR no tracked upstream (the `@{u}`
@@ -1115,30 +1115,61 @@ export async function classifyUnpushedCommits(dir: string): Promise<CommitBump |
 /**
  * Classify a single commit message by conventional-commits rules. Exported
  * so unit tests can exercise it without spawning git.
+ *
+ * Every signal is positional, never "appears somewhere in the text":
+ *   - the `!` marker and the `feat` type are read off the header (first line)
+ *     only, so prose in the body can't change the bump;
+ *   - `BREAKING CHANGE:` counts only as a footer — at the start of a line, at
+ *     column 0, outside code (see `declaresBreakingChange`).
+ * Without that, a commit that merely *documents* these rules declares a
+ * breaking change against itself (this repo's 0cd9b2b did, shipping a bogus
+ * 1.9.2 -> 2.0.0).
  */
 export function classifyCommitMessage(message: string): CommitBump | undefined {
   if (!message.trim()) {
     return undefined;
   }
-  const [subject, ...rest] = message.split('\n');
-  const body = rest.join('\n');
+  const header = message.split('\n')[0];
 
-  // Breaking-change markers. `type!:` / `type(scope)!:` on the subject,
-  // or `BREAKING CHANGE:` / `BREAKING-CHANGE:` anywhere (subject or body/footer).
-  if (/^\w+(\([^)]*\))?!:/.test(subject)) {
-    return 'major';
-  }
-  if (/BREAKING[ -]CHANGE\s*:/i.test(`${subject}\n${body}`)) {
+  // Breaking change: `type!:` / `type(scope)!:` on the header, or a footer.
+  if (/^\w+(\([^)]*\))?!:/.test(header) || declaresBreakingChange(message)) {
     return 'major';
   }
 
-  // `feat` type (optionally scoped) on the subject → minor.
-  if (/^feat(\([^)]*\))?:/i.test(subject)) {
+  // `feat` type (optionally scoped) on the header → minor.
+  if (/^feat(\([^)]*\))?:/i.test(header)) {
     return 'minor';
   }
 
   // Any other commit counts as patch.
   return 'patch';
+}
+
+/**
+ * True when the message carries a `BREAKING CHANGE:` / `BREAKING-CHANGE:`
+ * footer. Per the spec a footer token begins its own line at column 0, so
+ * that's what we require. That one rule covers prose (the token is mid-line),
+ * list items and quotes (indented), and inline-backticked mentions (the line
+ * starts with a backtick) — only fenced blocks, which can hold a verbatim
+ * sample commit at column 0, need to be skipped explicitly.
+ *
+ * We deliberately do NOT also require a blank line above the token: plenty of
+ * real commits append the footer directly under the body, and a line that
+ * starts with the token is a declaration either way. The blank line would only
+ * cost us true positives, not buy us protection from false ones.
+ */
+function declaresBreakingChange(message: string): boolean {
+  let inCodeFence = false;
+  for (const line of message.split('\n')) {
+    if (/^\s*```/.test(line)) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+    if (!inCodeFence && /^BREAKING[ -]CHANGE\s*:/i.test(line)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export async function evictGitLocks(workspacePath: string) {

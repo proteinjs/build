@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import { ChildProcess, spawn } from 'child_process';
 import { PackageUtil, WorkspaceMetadata } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
@@ -27,6 +28,18 @@ export type ServePackageOptions = {
    * failure and retried through the coherence gate instead of killing the supervisor.
    */
   bootFailWindowMs?: number;
+  /**
+   * How long an in-flight restart may make NO progress while no child is running before the
+   * liveness watchdog abandons it and spawns a fresh child (default 60s). Measured against a
+   * progress heartbeat, not elapsed time, so a legitimately long coherence wait never trips it.
+   */
+  restartStallMs?: number;
+  /**
+   * Deadline for one workspace diagnosis (default 30s) — applied everywhere the poll chain
+   * diagnoses: the pre-kill coherence gate, the childless coherence wait, and recovery. A scan
+   * that exceeds it is abandoned loudly and retried; it must never own the lane.
+   */
+  coherenceDeadlineMs?: number;
   /** Dist mtime poll interval. */
   pollMs?: number;
   /** Quiet period after the last dist change before a restart is considered (builds settle). */
@@ -34,13 +47,33 @@ export type ServePackageOptions = {
   /** Grace period between SIGTERM and SIGKILL when stopping the child. */
   graceMs?: number;
   /**
+   * Initial delay before respawning a child that exited with RESTART_REQUEST_EXIT_CODE
+   * (default 1s). Doubles per consecutive restart-requested exit, capped at 30s — the child is
+   * deliberately down (waiting out a dependency outage), so respawns must pace themselves.
+   */
+  respawnBackoffMs?: number;
+  /**
+   * Consecutive restart-requested respawns granted WITHOUT a healthy period (a child alive
+   * longer than bootFailWindowMs) before the supervisor mirrors the exit instead (default 5) —
+   * a hot-crash loop must not spin forever.
+   */
+  maxConsecutiveRespawns?: number;
+  /**
    * Called when the child exits on its own (not via a supervisor restart/stop). The CLI wires
    * this to process.exit(code) so plain-run semantics are preserved.
    */
   onChildExit?: (code: number) => void;
 };
 
-type SupervisorState = 'running' | 'stale' | 'waiting-holds' | 'waiting-coherence' | 'restarting' | 'stopped';
+type SupervisorState =
+  | 'running'
+  | 'stale'
+  | 'waiting-holds'
+  | 'waiting-coherence'
+  | 'restarting'
+  | 'failed'
+  | 'stopped'
+  | 'exited';
 
 type Hold = {
   holder: string;
@@ -71,12 +104,51 @@ type Hold = {
  * Also written under SERVE_PACKAGE_IPC: `pid` (supervisor pid, for `kill -USR2 $(cat pid)`)
  * and `state.json` (queryable status: state, child pid, stale packages, active holds).
  *
+ * LANE LIVENESS: the poll cadence is a self-re-arming timer chain (every tick arms the next
+ * BEFORE doing any work) cross-checked against ipc filesystem activity — fs.watch on the ipc
+ * and holds dirs revives the chain whenever a lease/request write lands while ticks are
+ * overdue. Two independent continuation sources, because one is not enough: observed
+ * 2026-08-04, the process-wide JS timer subsystem stopped scheduling (event loop and I/O
+ * healthy, every timer dead), and the single poll interval this class then hung off died
+ * silently mid waiting-holds — no reap, no announce, no restart for 7 hours while holders
+ * kept writing leases. A watchdog timer would have died with it; the fs.watch channel does
+ * not ride timers, and one fresh setTimeout from it restores the whole chain. For the same
+ * reason no await in the poll chain may be unbounded: every workspace diagnosis is deadlined.
+ *
+ * RESTART-REQUESTED EXITS: a child that exits with RESTART_REQUEST_EXIT_CODE (86) is asking
+ * for a supervised respawn — the contract for liveness monitors inside the child that give up
+ * on a dependency (db, cache) and want a fresh process once it heals. The supervisor respawns
+ * it with bounded backoff (respawnBackoffMs doubling per consecutive request, capped at 30s)
+ * and gives up honestly after maxConsecutiveRespawns requests without a healthy period
+ * (bootFailWindowMs alive), so a hot-crash loop cannot spin. The pending respawn is carried by
+ * BOTH a timer and the poll chain (a due respawn runs from enforceChildLiveness), so it
+ * survives the observed timer-subsystem death like every other lane.
+ *
+ * Every OTHER self-exit mirrors plain-run semantics ATOMICALLY: endSupervision is synchronous
+ * end-to-end — pid file removed, state.json finalized ('exited'), THEN the exit code is
+ * mirrored — because the mirror path runs exactly when things are already wrong (dead child,
+ * dead timers, wedged event loop) and must not depend on any async machinery completing.
+ * Observed 2026-08-06/07: the async version logged the mirror, parked in cleanup, and lingered
+ * as a zombie holding the pid file with state.json stale-claiming `running` — which then made
+ * the next relaunch silently fail on the single-instance guard.
+ *
  * The child owns its own coherence gate (chain verify-workspace in the package's serve script);
  * the supervisor owns only process freshness.
  */
 export class ServePackageSupervisor {
+  /**
+   * Exit-code contract for DELIBERATE child restarts: a child exiting with this code is asking
+   * its supervisor for a respawn (see the class doc's RESTART-REQUESTED EXITS paragraph). 86 is
+   * far from the codes node and shells reserve (1–13, 126–128+n) and reads as intent ("86 it").
+   * Children hard-code the number — the contract crosses a process boundary, like a signal.
+   */
+  static readonly RESTART_REQUEST_EXIT_CODE = 86;
   /** Cross-process restart-request lease consumed by the poll loop (see requestRestart). */
   private static readonly RESTART_REQUEST_FILE = 'restart-request';
+  /** Respawn attempts after a failed restart before supervision honestly gives up. */
+  private static readonly MAX_RECOVERY_ATTEMPTS = 3;
+  /** Ceiling for the doubling restart-requested respawn backoff. */
+  private static readonly MAX_RESPAWN_BACKOFF_MS = 30_000;
 
   private logger: Logger;
   private packageDir!: string;
@@ -90,11 +162,27 @@ export class ServePackageSupervisor {
   private lastChangeAt = 0;
   private restarting = false;
   private stopping = false;
-  private pollTimer?: NodeJS.Timeout;
+  // Tick chain + its independent cross-check (see the class doc's LANE LIVENESS paragraph):
+  // tickTimer is re-armed at the START of every tick; lastTickAt is the chain's heartbeat; the
+  // ipc watchers revive the chain from lease/request writes when that heartbeat goes stale.
+  private tickTimer?: NodeJS.Timeout;
+  private lastTickAt = 0;
+  private ipcWatchers: fsSync.FSWatcher[] = [];
   private lastHoldReport = '';
   private lastHoldAnnounceAt = 0;
   private lastCoherenceAnnounceAt = 0;
   private coherenceCheckInFlight = false;
+  // Liveness invariant (see enforceChildLiveness): a restart chain stamps its generation and
+  // heartbeats its progress, so a chain that stalls between kill and spawn is detectable —
+  // and recoverable — instead of silently owning the lane forever.
+  private restartGeneration = 0;
+  private restartProgressAt = 0;
+  private childlessSince = 0;
+  // Set when OUR OWN restart ended with no child (the spawn threw). The watchdog reads it to
+  // tell "we lost our child" (retry) from "someone killed our child" (mirror, never resurrect) —
+  // the `restarting` flag alone can't: it is already false by the time the watchdog next ticks.
+  private lostChildToFailedRestart = false;
+  private recoveryAttempts = 0;
   private ipcDir!: string;
   private workspacePathResolved!: string;
   // Boot-retry accounting for RESTART-spawned children (see the exit handler): whether the
@@ -104,6 +192,13 @@ export class ServePackageSupervisor {
   private spawnedAt = 0;
   private consecutiveBootFailures = 0;
   private bootSettleTimer?: NodeJS.Timeout;
+  // Restart-requested respawn accounting (see the class doc's RESTART-REQUESTED EXITS
+  // paragraph): the consecutive-request streak (reset by a healthy period, measured off
+  // spawnedAt so no timer is load-bearing), when the pending respawn is due, and the backoff
+  // timer that normally runs it — the poll chain is the backstop when that timer dies.
+  private consecutiveRespawns = 0;
+  private respawnDueAt = 0;
+  private respawnTimer?: NodeJS.Timeout;
 
   constructor(private options: ServePackageOptions) {
     this.logger = new Logger({ name: `serve:${options.packageName.split('/').pop()}` });
@@ -133,7 +228,9 @@ export class ServePackageSupervisor {
       message: `> Watching dists of ${this.closure.length} workspace packages (closure of ${this.options.packageName}); restart triggers: dist change + quiet ${this.quietMs()}ms + no holds + coherent workspace, or 'rs' / SIGUSR2`,
     });
     await this.spawnChild();
-    this.pollTimer = setInterval(() => void this.poll().catch((e) => this.logger.error({ error: e })), this.pollMs());
+    this.lastTickAt = Date.now();
+    this.startIpcWatchers();
+    this.armTick();
   }
 
   /** Force a restart now, regardless of staleness or holds. */
@@ -143,13 +240,20 @@ export class ServePackageSupervisor {
       return;
     }
     this.restarting = true;
-    this.setState('restarting');
-    this.logger.info({ message: `> Restarting (${reason})` });
+    // Generation stamp: if the liveness watchdog gives up on this chain and starts a fresh one,
+    // this (possibly still-parked) chain must never spawn a second child behind its back.
+    const generation = ++this.restartGeneration;
+    this.touchRestartProgress();
     try {
+      // Inside the try so nothing that runs after the latch can escape the finally that clears
+      // it — a throw between latch and try would disable every future restart, permanently.
+      this.setState('restarting');
+      this.logger.info({ message: `> Restarting (${reason})` });
       await this.killChild();
+      this.touchRestartProgress();
       // stop() may have raced in while the child was dying — respawning after stop() resolved
       // would leak a live, unsupervised child.
-      if (this.stopping) {
+      if (this.stopping || this.restartGeneration !== generation) {
         return;
       }
       // Never spawn into an incoherent workspace: a restart triggered mid-BUILD would boot a
@@ -157,14 +261,30 @@ export class ServePackageSupervisor {
       // a rebuild-in-progress became permanent downtime (observed 2026-07-29). Coherence is
       // moments away by definition (a build is running); wait for it.
       await this.waitForCoherence();
-      if (this.stopping) {
+      if (this.stopping || this.restartGeneration !== generation) {
         return;
       }
       await this.spawnChild(true);
+      this.touchRestartProgress();
+    } catch (error) {
+      // The child is already dead at this point: an escaping error means NOTHING IS SERVING.
+      // Pre-2026-08-04 this rejected into the caller's `void supervisor.restart(...)` — no log,
+      // no honest state — and the watchdog below is what now recovers it.
+      this.logger.error({
+        message: `> Restart FAILED after the child was stopped — no child is running; recovering on the next poll`,
+        error: error as Error,
+      });
+      if (this.restartGeneration === generation) {
+        this.lostChildToFailedRestart = true; // OUR failure — the watchdog must retry, not mirror
+        this.setState('failed');
+      }
     } finally {
       // Without this, one throw in kill/spawn would leave restarting=true forever and
-      // permanently disable every future restart, including rs/SIGUSR2.
-      this.restarting = false;
+      // permanently disable every future restart, including rs/SIGUSR2. Only the generation
+      // that still owns the lane may clear it — a superseded chain must not unlatch its successor.
+      if (this.restartGeneration === generation) {
+        this.restarting = false;
+      }
     }
   }
 
@@ -198,6 +318,7 @@ export class ServePackageSupervisor {
     if (
       !snapshot.supervisorPid ||
       snapshot.state === 'stopped' ||
+      snapshot.state === 'exited' ||
       !ServePackageSupervisor.processAlive(snapshot.supervisorPid)
     ) {
       return false;
@@ -235,14 +356,22 @@ export class ServePackageSupervisor {
   /** Stop the child and the poll loop (idempotent). Process exit is the caller's concern. */
   async stop(): Promise<void> {
     this.stopping = true;
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
+    if (this.tickTimer) {
+      clearTimeout(this.tickTimer);
     }
+    for (const watcher of this.ipcWatchers) {
+      watcher.close();
+    }
+    this.ipcWatchers = [];
     if (this.bootSettleTimer) {
       clearTimeout(this.bootSettleTimer);
     }
+    if (this.respawnTimer) {
+      clearTimeout(this.respawnTimer);
+    }
     await this.killChild();
-    await fs.rm(path.join(this.ipcDir, 'pid'), { force: true });
+    // Sync, like every exit path: no exit may leave a pid file behind (zombie-shape guard).
+    fsSync.rmSync(path.join(this.ipcDir, 'pid'), { force: true });
     this.setState('stopped');
   }
 
@@ -269,7 +398,64 @@ export class ServePackageSupervisor {
 
   // ── Poll loop ─────────────────────────────────────────────────────────────
 
+  /**
+   * One tick: heartbeat, arm the NEXT tick, then run the poll. Arming comes FIRST and
+   * unconditionally — no outcome of this tick (a throw, an early return, a parked await inside
+   * an in-flight restart) can end the cadence, and overlapping polls are by design: the
+   * liveness watchdog needs ticks WHILE a restart chain is parked.
+   */
+  private tick(): void {
+    this.lastTickAt = Date.now();
+    this.armTick();
+    void this.poll().catch((e) => this.logger.error({ error: e }));
+  }
+
+  private armTick(): void {
+    if (this.stopping) {
+      return;
+    }
+    this.tickTimer = setTimeout(() => this.tick(), this.pollMs());
+  }
+
+  /**
+   * The tick chain's independent revival source (see the class doc's LANE LIVENESS paragraph).
+   * fs.watch rides the platform's file-event channel, not JS timers, so it survives the
+   * observed timer-subsystem death — and the writes it reports (lease renewals, restart
+   * requests) arrive exactly while someone is depending on this supervisor. Cheap and
+   * idempotent: while ticks are healthy every event is two comparisons.
+   */
+  private startIpcWatchers(): void {
+    for (const dir of [this.ipcDir, path.join(this.ipcDir, 'holds')]) {
+      const watcher = fsSync.watch(dir, { persistent: false }, () => this.onIpcActivity());
+      // Without a listener an FSWatcher 'error' (e.g. the dir removed under us) would crash the
+      // process; the tick chain still covers the lane, so log and carry on.
+      watcher.on('error', (error) => this.logger.error({ message: `> ipc watcher failed (${dir})`, error }));
+      this.ipcWatchers.push(watcher);
+    }
+  }
+
+  private onIpcActivity(): void {
+    if (this.stopping) {
+      return;
+    }
+    const sinceLastTick = Date.now() - this.lastTickAt;
+    if (sinceLastTick < this.tickStallMs()) {
+      return; // the chain is ticking — cadence stays timer-driven
+    }
+    this.logger.error({
+      message: `> Poll tick chain STALLED (no tick for ${Math.round(sinceLastTick / 1000)}s) — reviving from ipc activity; a fresh timer restores the cadence`,
+    });
+    if (this.tickTimer) {
+      clearTimeout(this.tickTimer);
+    }
+    this.tick();
+  }
+
   private async poll(): Promise<void> {
+    // FIRST, unconditionally: the supervisor must never sit with no child while believing it
+    // has one. This runs BEFORE the restarting/stopping early-return precisely because the
+    // wedge class lives inside an in-flight restart.
+    await this.enforceChildLiveness();
     if (this.restarting || this.stopping) {
       return;
     }
@@ -352,16 +538,31 @@ export class ServePackageSupervisor {
       return; // diagnose from the previous tick is still running — don't stack fs scans
     }
     this.coherenceCheckInFlight = true;
-    let findings: WorkspaceFinding[] = [];
+    let findings: WorkspaceFinding[] | undefined;
     try {
-      findings = await new WorkspaceDoctor(this.workspacePathResolved).diagnose(
-        this.options.coherencePackages ?? [this.options.packageName]
+      // Deadlined: this await sits directly in the poll chain, and its in-flight guard above
+      // short-circuits every later tick — an unbounded hang here would end automatic restarts
+      // permanently while the guard advertises nothing. The abandoned scan is read-only.
+      findings = await this.withDeadline(
+        new WorkspaceDoctor(this.workspacePathResolved).diagnose(
+          this.options.coherencePackages ?? [this.options.packageName]
+        ),
+        this.coherenceDeadlineMs()
       );
     } finally {
       this.coherenceCheckInFlight = false;
     }
     if (this.restarting || this.stopping) {
       return; // a forced restart or stop raced in while diagnosing
+    }
+    if (findings === undefined) {
+      if (Date.now() - this.lastCoherenceAnnounceAt >= 30_000) {
+        this.lastCoherenceAnnounceAt = Date.now();
+        this.logger.error({
+          message: `> Workspace diagnosis exceeded ${Math.round(this.coherenceDeadlineMs() / 1000)}s — abandoning it and retrying next poll; the stale restart stays pending`,
+        });
+      }
+      return;
     }
     if (findings.length > 0) {
       this.setState('waiting-coherence');
@@ -381,7 +582,249 @@ export class ServePackageSupervisor {
 
   // ── Child lifecycle ───────────────────────────────────────────────────────
 
+  /**
+   * LIVENESS INVARIANT: either a live child is serving, or the supervisor is deliberately down
+   * and says so. Never "alive, believes it has a child, has none" — the 2026-08-04 wedge, where
+   * a SIGUSR2 restart killed its child at 2:52:17 PM, the spawn never happened, and the
+   * supervisor sat childless for 15+ minutes still advertising `state: running, childPid: 29503`
+   * (a dead pid). Nothing could recover it: the stalled chain never reached the `finally` that
+   * clears `restarting`, so every later SIGUSR2 / `rs` / staleness restart silently no-opped on
+   * the re-entrancy guard, by construction.
+   *
+   * The process table is the truth (`kill(pid, 0)`), and INTENT decides the response:
+   *  - not our doing (no restart/stop in flight) — the child vanished without its 'exit' event
+   *    ever firing (the documented npm-wrapper class). Mirror plain-run semantics and stay down:
+   *    an externally killed child must never be resurrected.
+   *  - our own restart lost its child — recover. Gated on PROGRESS staleness, not elapsed time,
+   *    so a legitimately long coherence wait (which heartbeats every ~2s) is never mistaken for
+   *    a stall; only a chain that has stopped making progress is abandoned and replaced.
+   */
+  private async enforceChildLiveness(): Promise<void> {
+    if (this.stopping || !this.child?.pid) {
+      return;
+    }
+    if (ServePackageSupervisor.processAlive(this.child.pid)) {
+      this.childlessSince = 0;
+      return;
+    }
+    const pid = this.child.pid;
+    const now = Date.now();
+    if (!this.childlessSince) {
+      this.childlessSince = now;
+    }
+    // A pending restart-requested respawn: the child is down ON PURPOSE (backoff pacing a
+    // deliberate exit), so this is neither a vanished child nor a stalled restart. Once the
+    // backoff is due, run the respawn from the poll chain too — the backoff timer alone must
+    // not carry the lane (the observed timer-subsystem death class).
+    if (this.respawnDueAt) {
+      if (now < this.respawnDueAt) {
+        return;
+      }
+      this.childlessSince = 0;
+      await this.respawnNow();
+      return;
+    }
+    if (!this.restarting) {
+      if (this.lostChildToFailedRestart) {
+        // WE killed it and then failed to replace it — a transient spawn failure (EAGAIN/EMFILE)
+        // must not end supervision. Bounded so a permanently unspawnable child still surfaces.
+        if (this.recoveryAttempts >= ServePackageSupervisor.MAX_RECOVERY_ATTEMPTS) {
+          this.logger.error({
+            message: `> Could not respawn after ${this.recoveryAttempts} attempts — giving up and mirroring plain-run semantics`,
+          });
+          this.setState('failed');
+          this.endSupervision(1);
+          return;
+        }
+        this.recoveryAttempts += 1;
+        this.logger.warn({
+          message: `> No child is running after a failed restart — respawning (attempt ${this.recoveryAttempts}/${ServePackageSupervisor.MAX_RECOVERY_ATTEMPTS})`,
+        });
+        this.childlessSince = 0;
+        await this.recoverChild();
+        return;
+      }
+      this.logger.error({
+        message: `> Child pid ${pid} is GONE but its exit event never fired — mirroring plain-run semantics (an externally killed child is never resurrected)`,
+      });
+      this.setState('failed');
+      this.endSupervision(1);
+      return;
+    }
+    if (now - this.restartProgressAt < this.restartStallMs()) {
+      return; // a restart is genuinely in flight (killing, waiting for coherence, spawning)
+    }
+    this.logger.error({
+      message: `> Restart STALLED — no child has been running for ${Math.round((now - this.childlessSince) / 1000)}s and the restart made no progress for ${Math.round((now - this.restartProgressAt) / 1000)}s; abandoning that attempt and spawning a fresh child`,
+    });
+    this.childlessSince = 0;
+    await this.recoverChild();
+  }
+
+  /**
+   * Get a child serving again after a stalled restart. Every step is BOUNDED and it always ends
+   * in a spawn or an honest `failed` state — recovery must never re-enter the step that stalled
+   * (routing back through restart() would just park on the same unbounded coherence wait).
+   *
+   * Coherence is advisory here rather than blocking: nothing is serving, so a child on possibly
+   * stale code strictly beats no child, and a genuinely unbootable one still surfaces through
+   * the existing boot-retry → mirrored-exit path.
+   */
+  private async recoverChild(): Promise<void> {
+    // Bumping the generation makes the abandoned chain's eventual spawn a no-op.
+    const generation = ++this.restartGeneration;
+    this.restarting = true;
+    this.touchRestartProgress();
+    this.setState('restarting');
+    try {
+      await this.killChild(); // no-op when already dead; reaps a half-dead child
+      this.touchRestartProgress();
+      const findings = await this.withDeadline(
+        new WorkspaceDoctor(this.workspacePathResolved).diagnose(
+          this.options.coherencePackages ?? [this.options.packageName]
+        ),
+        this.coherenceDeadlineMs()
+      );
+      this.touchRestartProgress();
+      if (findings === undefined) {
+        this.logger.warn({
+          message: `> Recovery: workspace diagnosis timed out — spawning anyway (nothing is serving)`,
+        });
+      } else if (findings.length > 0) {
+        this.logger.warn({
+          message: `> Recovery: workspace is incoherent (${findings.length} finding${findings.length !== 1 ? 's' : ''}: ${findings
+            .map((f) => `${f.packageName} ${f.kind}`)
+            .join(', ')}) — spawning anyway (nothing is serving; a stale child beats no child)`,
+        });
+      }
+      if (this.stopping || this.restartGeneration !== generation) {
+        return;
+      }
+      await this.spawnChild(true);
+      this.touchRestartProgress();
+    } catch (error) {
+      this.logger.error({
+        message: `> Recovery spawn FAILED — no child is running; retrying on the next poll`,
+        error: error as Error,
+      });
+      if (this.restartGeneration === generation) {
+        this.lostChildToFailedRestart = true;
+        this.setState('failed');
+      }
+    } finally {
+      if (this.restartGeneration === generation) {
+        this.restarting = false;
+      }
+    }
+  }
+
+  private touchRestartProgress(): void {
+    this.restartProgressAt = Date.now();
+  }
+
+  /**
+   * A child exited with RESTART_REQUEST_EXIT_CODE: schedule a respawn with bounded backoff.
+   * The streak counter resets whenever the exiting child had a HEALTHY PERIOD (alive longer
+   * than bootFailWindowMs) — the dependency-outage loop (child serves for minutes, its monitor
+   * trips, exit, respawn) therefore never accumulates toward the cap; only a hot-crash loop
+   * (restart-requested exits faster than the boot window, maxConsecutiveRespawns in a row)
+   * exhausts it and gets mirrored like any other death.
+   */
+  private onRestartRequestedExit(): void {
+    const aliveMs = Date.now() - this.spawnedAt;
+    if (aliveMs >= this.bootFailWindowMs()) {
+      this.consecutiveRespawns = 0; // healthy period: a fresh streak
+    }
+    this.consecutiveRespawns += 1;
+    if (this.consecutiveRespawns > this.maxConsecutiveRespawns()) {
+      this.logger.error({
+        message: `> Child requested a restart (exit ${ServePackageSupervisor.RESTART_REQUEST_EXIT_CODE}) ${this.consecutiveRespawns} times in a row without a healthy period — hot-crash loop; giving up and mirroring the exit`,
+      });
+      this.endSupervision(ServePackageSupervisor.RESTART_REQUEST_EXIT_CODE);
+      return;
+    }
+    const backoffMs = Math.min(
+      this.respawnBackoffMs() * 2 ** (this.consecutiveRespawns - 1),
+      ServePackageSupervisor.MAX_RESPAWN_BACKOFF_MS
+    );
+    this.logger.warn({
+      message: `> Child requested a restart (exit ${ServePackageSupervisor.RESTART_REQUEST_EXIT_CODE}, ${Math.round(aliveMs / 1000)}s alive) — respawning in ${backoffMs}ms (request ${this.consecutiveRespawns}/${this.maxConsecutiveRespawns()})`,
+    });
+    this.respawnDueAt = Date.now() + backoffMs;
+    this.setState('restarting');
+    // The poll chain is the backstop: enforceChildLiveness runs a DUE respawn even if this
+    // timer dies with the timer subsystem (the observed 2026-08-04 class).
+    this.respawnTimer = setTimeout(
+      () => void this.respawnNow().catch((e) => this.logger.error({ error: e })),
+      backoffMs
+    );
+  }
+
+  /**
+   * Run the pending restart-requested respawn. Guarded on respawnDueAt so the two carriers
+   * (backoff timer, poll chain) and any interleaved spawn (rs/SIGUSR2 during the backoff park
+   * clears the pending respawn — see spawnChild) can never double-spawn.
+   */
+  private async respawnNow(): Promise<void> {
+    if (!this.respawnDueAt || this.stopping || this.restarting) {
+      return;
+    }
+    this.respawnDueAt = 0;
+    await this.recoverChild();
+  }
+
+  /**
+   * End supervision and mirror an exit code through onChildExit. SYNCHRONOUS end-to-end, by
+   * design: this path runs exactly when things are already wrong (dead child, dead timers, a
+   * wedged event loop), so it must not depend on any async machinery completing. The prior
+   * version routed through the async stop() chain and produced the observed zombie — mirror
+   * logged, cleanup parked, supervisor lingering with a pid file and a state.json claiming
+   * `running`, which then made the next relaunch silently fail on the single-instance guard.
+   * By the time onChildExit (process.exit in the CLI) runs, the pid file is gone and state.json
+   * says `exited` — the zombie shape is unrepresentable.
+   */
+  private endSupervision(code: number): void {
+    this.stopping = true;
+    if (this.tickTimer) {
+      clearTimeout(this.tickTimer);
+    }
+    if (this.bootSettleTimer) {
+      clearTimeout(this.bootSettleTimer);
+    }
+    if (this.respawnTimer) {
+      clearTimeout(this.respawnTimer);
+    }
+    for (const watcher of this.ipcWatchers) {
+      try {
+        watcher.close();
+      } catch {
+        // already closed
+      }
+    }
+    this.ipcWatchers = [];
+    // The direct child is already dead on every path here, but its process GROUP can outlive
+    // it (the documented npm-wrapper class) — sync best-effort sweep so nothing squats the
+    // port after the supervisor is gone.
+    if (this.child?.pid) {
+      this.signalChildGroup(this.child.pid, 'SIGKILL');
+    }
+    try {
+      fsSync.rmSync(path.join(this.ipcDir, 'pid'), { force: true });
+    } catch {
+      // best-effort: a leftover pid file from a dead process fails the alive-check on relaunch
+    }
+    this.setState('exited');
+    this.options.onChildExit?.(code);
+  }
+
   private async spawnChild(viaRestart = false): Promise<void> {
+    // ANY spawn satisfies a pending restart-requested respawn (a forced rs/SIGUSR2 restart may
+    // land during the backoff park) — clear it so the parked timer can't double-spawn.
+    this.respawnDueAt = 0;
+    if (this.respawnTimer) {
+      clearTimeout(this.respawnTimer);
+      this.respawnTimer = undefined;
+    }
     await this.clearHolds();
     await this.snapshotBaseline();
     this.stalePackages.clear();
@@ -398,6 +841,10 @@ export class ServePackageSupervisor {
       // leaving it squatting the port.
       detached: true,
     });
+    // A child is serving again: the failed-restart recovery budget resets.
+    this.lostChildToFailedRestart = false;
+    this.recoveryAttempts = 0;
+    this.childlessSince = 0;
     this.setState('running');
     this.logger.info({ message: `> Started: ${this.options.command.join(' ')} (pid ${this.child.pid})` });
     // Surviving the boot window resets the retry budget — failures only count consecutively.
@@ -410,11 +857,18 @@ export class ServePackageSupervisor {
     const child = this.child;
     child.on('error', (error) => {
       this.logger.error({ message: `> Failed to spawn '${this.options.command.join(' ')}'`, error });
-      void this.stop().then(() => this.options.onChildExit?.(1));
+      this.endSupervision(1);
     });
     child.on('exit', (code, signal) => {
       if (this.restarting || this.stopping) {
         return; // we initiated it
+      }
+      // A deliberate restart-requested exit is never a crash and never a boot failure — it is
+      // the child invoking the respawn contract. Checked FIRST so the boot-fail heuristic below
+      // can't misread it.
+      if (code === ServePackageSupervisor.RESTART_REQUEST_EXIT_CODE) {
+        this.onRestartRequestedExit();
+        return;
       }
       // A RESTART-spawned child dying nonzero inside the boot window is almost always a
       // mid-churn boot (a build landed between the coherence check and the child's own verify
@@ -440,7 +894,7 @@ export class ServePackageSupervisor {
       this.logger.error({
         message: `> Child exited on its own (${signal ?? `code ${code}`}) — mirroring plain-run semantics`,
       });
-      void this.stop().then(() => this.options.onChildExit?.(code ?? 1));
+      this.endSupervision(code ?? 1);
     });
   }
 
@@ -489,7 +943,21 @@ export class ServePackageSupervisor {
       if (this.stopping) {
         return;
       }
-      const findings = await doctor.diagnose(this.options.coherencePackages ?? [this.options.packageName]);
+      this.touchRestartProgress();
+      // Deadline every diagnosis: this await sits between the kill and the spawn with NOTHING
+      // logged before its first result, so a hang here is exactly the silent childless wedge.
+      // A timeout is loud and retried (the scan is read-only; an abandoned one is harmless).
+      const findings = await this.withDeadline(
+        doctor.diagnose(this.options.coherencePackages ?? [this.options.packageName]),
+        this.coherenceDeadlineMs()
+      );
+      this.touchRestartProgress();
+      if (findings === undefined) {
+        this.logger.error({
+          message: `> Workspace diagnosis exceeded ${Math.round(this.coherenceDeadlineMs() / 1000)}s while no child is running — retrying (the restart is holding here, nothing is being served)`,
+        });
+        continue;
+      }
       if (findings.length === 0) {
         return;
       }
@@ -504,6 +972,17 @@ export class ServePackageSupervisor {
       }
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
+  }
+
+  /** Await a value with a deadline; undefined when the deadline wins (the work keeps running). */
+  private async withDeadline<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), ms);
+    });
+    const result = await Promise.race([promise, timedOut]);
+    clearTimeout(timer);
+    return result;
   }
 
   /** Await a promise with a deadline; true if it settled in time. */
@@ -558,9 +1037,13 @@ export class ServePackageSupervisor {
   }
 
   private async clearHolds(): Promise<void> {
+    // Empty the CONTENTS, never the dir: the ipc watcher holds its identity on the holds dir,
+    // and fs.watch goes silently dead when its target is deleted and recreated.
     const holdsDir = path.join(this.ipcDir, 'holds');
-    await fs.rm(holdsDir, { recursive: true, force: true });
     await fs.mkdir(holdsDir, { recursive: true });
+    for (const entry of await fs.readdir(holdsDir).catch(() => [] as string[])) {
+      await fs.rm(path.join(holdsDir, entry), { recursive: true, force: true });
+    }
   }
 
   private setState(state: SupervisorState): void {
@@ -573,15 +1056,19 @@ export class ServePackageSupervisor {
       stalePackages: Array.from(this.stalePackages),
       staleSince: this.staleSince || undefined,
     };
-    // Write-then-rename: state.json is read cross-process (requestRestart) and a plain
-    // truncate+write racing a concurrent write — or the process's own exit during shutdown's
-    // fire-and-forget 'stopped' write — leaves a 0-byte file behind (observed 2026-08-02).
+    // SYNCHRONOUS write-then-rename. state.json is the one artifact an operator inspects when
+    // things are wrong, so it must not be able to lie: the async version left the file
+    // advertising `running` with a dead childPid through the entire 2026-08-04 wedge (the
+    // transition was issued, but its completion callback needed an event loop that had stopped
+    // turning). A truncate+write could also be read back empty cross-process (2026-08-02).
     const statePath = path.join(this.ipcDir, 'state.json');
     const tmpPath = `${statePath}.tmp-${process.pid}`;
-    void fs
-      .writeFile(tmpPath, JSON.stringify(snapshot, null, 2))
-      .then(() => fs.rename(tmpPath, statePath))
-      .catch(() => undefined);
+    try {
+      fsSync.writeFileSync(tmpPath, JSON.stringify(snapshot, null, 2));
+      fsSync.renameSync(tmpPath, statePath);
+    } catch {
+      // best-effort: state.json is diagnostics, never a control input for this process
+    }
   }
 
   // ── Staleness ─────────────────────────────────────────────────────────────
@@ -628,6 +1115,11 @@ export class ServePackageSupervisor {
     return this.options.pollMs ?? 2000;
   }
 
+  /** Ticks older than this are a dead chain — ipc activity may revive it. Healthy ticks re-arm every pollMs regardless of poll duration, so 5 periods of silence is unambiguous. */
+  private tickStallMs(): number {
+    return this.pollMs() * 5;
+  }
+
   private quietMs(): number {
     return this.options.quietMs ?? 1500;
   }
@@ -638,5 +1130,25 @@ export class ServePackageSupervisor {
 
   private bootFailWindowMs(): number {
     return this.options.bootFailWindowMs ?? 90_000;
+  }
+
+  /** Initial restart-requested respawn backoff; doubles per consecutive request. */
+  private respawnBackoffMs(): number {
+    return this.options.respawnBackoffMs ?? 1000;
+  }
+
+  /** Consecutive restart-requested respawns granted without a healthy period before mirroring. */
+  private maxConsecutiveRespawns(): number {
+    return this.options.maxConsecutiveRespawns ?? 5;
+  }
+
+  /** How long a restart may make NO progress while childless before the watchdog replaces it. */
+  private restartStallMs(): number {
+    return this.options.restartStallMs ?? 60_000;
+  }
+
+  /** Deadline for a single workspace diagnosis inside the childless coherence wait. */
+  private coherenceDeadlineMs(): number {
+    return this.options.coherenceDeadlineMs ?? 30_000;
   }
 }
