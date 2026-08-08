@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.9.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.8.0...@proteinjs/build@2.9.0) (2026-08-08)
+
+
+### Features
+
+* serve-package --daemon + atomic state.json writes (supervisor hardening) ([d3c787e](https://github.com/proteinjs/build/commit/d3c787e44488e4a21c6ed9595a484615a239c140))
+* serve-package supervisor state truth, signals-after-death, daemon crash respawn ([f1c1eec](https://github.com/proteinjs/build/commit/f1c1eeceed8c1ad36faff57276aacdc9cc8aa275)), closes [#6](https://github.com/proteinjs/build/issues/6) [#5](https://github.com/proteinjs/build/issues/5)
+
+
+
+
+
 # [2.6.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.5.1...@proteinjs/build@2.6.0) (2026-07-29)
 
 
