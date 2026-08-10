@@ -1162,6 +1162,18 @@ export class ServePackageSupervisor {
       this.endSupervision(1);
     });
     child.on('exit', (code, signal) => {
+      // A DEAD child must never settle its boot window: the settle timer's reset belongs to a
+      // child that SURVIVED the window, and it outliving the child's death let it fire during
+      // the next inter-spawn coherence wait whenever that wait is longer than the boot window
+      // (the real-default relationship: 10min ceiling vs 90s window) — resetting the retry
+      // budget every cycle and turning the bounded boot-retry mirror into an infinite
+      // spawn-fail loop (observed 2026-08-10, e2e). Guarded on identity so a late exit event
+      // from a superseded child can never cancel its successor's timer. Runs BEFORE the
+      // we-initiated-it early return: a child we killed early did not survive its window either.
+      if (this.child === child && this.bootSettleTimer) {
+        clearTimeout(this.bootSettleTimer);
+        this.bootSettleTimer = undefined;
+      }
       if (this.restarting || this.stopping) {
         return; // we initiated it
       }

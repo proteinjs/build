@@ -873,6 +873,46 @@ describe('ServePackageSupervisor', () => {
       expect((await readState()).state).toBe('exited');
     }, 20000);
 
+    it('the boot-retry budget stays exhausted across coherence waits LONGER than the boot window (the real-scale shape): bounded spawns then full mirror, never an infinite spawn-fail loop', async () => {
+      // Real defaults: coherenceWaitCeilingMs (10min) >> bootFailWindowMs (90s). The settle
+      // timer that resets the retry budget after a survived boot window must NOT fire for a
+      // child that is already DEAD — otherwise every inter-spawn coherence wait longer than
+      // the boot window resets the budget and the "bounded" retry loops forever (observed
+      // live 2026-08-10 in the e2e harness: 'attempt 1/2' every ceiling, indefinitely).
+      const exits: number[] = [];
+      supervisor = new ServePackageSupervisor({
+        packageName: '@test/consumer',
+        command: ['node', 'server.js'],
+        workspacePath,
+        pollMs: 100,
+        quietMs: 200,
+        graceMs: 1500,
+        bootFailWindowMs: 250, // SHORTER than the effective coherence wait, like production
+        coherenceWaitCeilingMs: 600, // effective wait ~2s (the loop's sleep granularity)
+        onChildExit: (code) => exits.push(code),
+      });
+      await supervisor.start();
+      await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
+      const linkPath = path.join(consumerDir, 'node_modules', '@test', 'lib');
+      await fs.rm(linkPath, { recursive: true, force: true });
+      await fs.mkdir(linkPath, { recursive: true });
+      await fs.copyFile(path.join(libDir, 'package.json'), path.join(linkPath, 'package.json'));
+      // Every later boot fails immediately, and each failing boot is COUNTED.
+      await fs.writeFile(
+        path.join(consumerDir, 'server.js'),
+        ["const fs = require('fs');", "fs.appendFileSync('boots.log', Date.now() + '\\n');", 'process.exit(1);'].join(
+          '\n'
+        )
+      );
+      void supervisor.restart('test: forced restart into persistent incoherence, long waits');
+      await waitFor(async () => exits.length > 0, 15000, 'supervision ended (bounded retries, no infinite loop)');
+      expect(exits).toEqual([1]);
+      const failedBoots = (await fs.readFile(path.join(consumerDir, 'boots.log'), 'utf-8')).trim().split('\n');
+      expect(failedBoots).toHaveLength(3); // initial attempt + exactly 2 budgeted retries
+      expect(pidFileExists()).toBe(false);
+      expect((await readState()).state).toBe('exited');
+    }, 25000);
+
     it('a dead child whose exit event was lost and whose pid still reads alive (pid reuse / lingering kernel entry) is mirrored — never a perpetual `running` claim with no child', async () => {
       const exits: number[] = [];
       const firstPid = await startSupervisor((code) => exits.push(code));
@@ -998,6 +1038,35 @@ describe('ServePackageSupervisor', () => {
       await waitFor(async () => (await childPid()) !== firstPid, 3000, 'restart in the first natural idle gap');
       // Fired via the idle gap, NOT lease expiry — the lease still had many seconds of TTL left.
       expect(Date.now() - activityStoppedAt).toBeLessThan(leaseTtlMs - 5000);
+    }, 20000);
+
+    it('a satisfied request restores FULL hold semantics: the next plain staleness defers behind a fresh hold (the starvation bypass dies with the request)', async () => {
+      // The bypass gate keys on restartRequestedAt, and the spawn that satisfies the request
+      // must CLEAR it. If it lingered, the timestamp would age past the ceiling and every later
+      // plain dist-staleness restart would fire straight through active holds — one npm op ago
+      // would bulldoze every future chat turn.
+      const firstPid = await startWithOptions({
+        restartRequestIdleGapMs: 300,
+        restartRequestStarvationCeilingMs: 1200,
+      });
+      // Phase 1: an unheld restart-request is satisfied by a spawn.
+      expect(await ServePackageSupervisor.requestRestart(consumerDir, 'workspace-package npm i')).toBe(true);
+      await waitFor(
+        async () => {
+          const pid = await childPid();
+          return pid !== undefined && pid !== firstPid;
+        },
+        5000,
+        'requested restart satisfied'
+      );
+      const secondPid = (await childPid())!;
+      // Phase 2: plain staleness behind a fresh hold — full hold-expiry semantics must be back.
+      await writeHold('mid-chat-turn', 1500);
+      await touchLibDist();
+      await sleep(800); // well past poll+quiet AND past the (dead) request's starvation ceiling
+      expect(await childPid()).toBe(secondPid); // deferred: the bypass died with the request
+      // Lease expiry releases the restart (the deferral above wasn't "restarts are broken").
+      await waitFor(async () => (await childPid()) !== secondPid, 5000, 'restart after hold expiry');
     }, 20000);
 
     it('a wedged in-flight restart plus a new request resolves: the request supersedes the stuck attempt (never rots unread)', async () => {
