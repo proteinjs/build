@@ -41,6 +41,39 @@ export type ServePackageOptions = {
    * that exceeds it is abandoned loudly and retried; it must never own the lane.
    */
   coherenceDeadlineMs?: number;
+  /**
+   * Ceiling on the CHILDLESS coherence wait inside a restart (default 10min). The wait exists
+   * for the mid-build case where coherence is moments away; when nothing is rebuilding (machine
+   * slept mid-op, an agent-clobbered workspace), an unbounded wait was a live zombie: a
+   * supervisor parked childless in `restarting` forever, holding the pid file against every
+   * fresh launch (observed 2026-08-09, twice after machine sleep). Past the ceiling the spawn
+   * proceeds anyway — nothing is serving, a stale child beats no child, and a genuinely
+   * unbootable child still ends supervision honestly through the bounded boot-retry mirror.
+   */
+  coherenceWaitCeilingMs?: number;
+  /**
+   * Natural idle gap in hold-lease WRITE activity (no lease refreshed for this long) that lets
+   * a QUEUED restart-request fire while holds are still unexpired (default 20s). The
+   * request-activity hold is refreshed by ANY HTTP request — including background poll timers
+   * from merely-open tabs (~20s cadence, zero human interaction) — so requiring full lease
+   * expiry starved a queued request indefinitely (observed 2026-08-09: queued 13:32, still
+   * starved past 18:00). A genuine interactive burst leaves no gap this large and still defers.
+   */
+  restartRequestIdleGapMs?: number;
+  /**
+   * Starvation ceiling for a queued restart-request (default 30min). The required idle gap
+   * shrinks linearly from restartRequestIdleGapMs to zero as the request ages toward this
+   * ceiling; at the ceiling the restart fires at the next poll regardless of hold activity,
+   * with a loud log line.
+   */
+  restartRequestStarvationCeilingMs?: number;
+  /**
+   * How long an in-flight restart chain may own the lane before a QUEUED restart-request
+   * supersedes it with a fresh bounded attempt (default 60s). Closes the wedge class the stall
+   * watchdog cannot see: a chain parked on a wait that keeps heartbeating progress while new
+   * requests pile up unread (the 2026-08-09 wedge served stale dists silently).
+   */
+  restartSupersedeMs?: number;
   /** Dist mtime poll interval. */
   pollMs?: number;
   /**
@@ -102,6 +135,10 @@ type SupervisorState =
 type Hold = {
   holder: string;
   expiresAt: number;
+  /** Lease file mtime — the holder's last sign of life, and the idle-gap signal the queued
+   *  restart-request starvation guard reads; expiresAt alone cannot distinguish an active
+   *  holder from a lease written once and abandoned. */
+  refreshedAt: number;
 };
 
 /**
@@ -127,6 +164,19 @@ type Hold = {
  *
  * Also written under SERVE_PACKAGE_IPC: `pid` (supervisor pid, for `kill -USR2 $(cat pid)`)
  * and `state.json` (queryable status: state, child pid, stale packages, active holds).
+ *
+ * QUEUED RESTART-REQUESTS CANNOT STARVE: holds defer, they must never starve. A restart-request
+ * (see requestRestart) rides the normal quiet/coherence gates, but its holds gate is IDLE-GAP
+ * based rather than expiry based: it fires once hold-lease WRITE activity shows a natural gap
+ * (restartRequestIdleGapMs), and the required gap shrinks linearly to zero as the request ages
+ * toward restartRequestStarvationCeilingMs — at the ceiling it fires regardless, loudly. Full
+ * expiry was starvation by construction: the request-activity lease is refreshed by ANY HTTP
+ * request, including background poll timers from merely-open tabs (~20s cadence, zero human
+ * interaction), so a request queued at 13:32 was still starved past 18:00 while the child
+ * silently served stale dists (observed 2026-08-09). The request is also consumed while a
+ * restart chain is in flight and SUPERSEDES a chain that has owned the lane past
+ * restartSupersedeMs (see maybeSupersedeWedgedRestart) — a queued request always eventually
+ * wins or screams. Genuine interactive bursts still defer: they leave no qualifying gap.
  *
  * LANE LIVENESS: the poll cadence is a self-re-arming timer chain (every tick arms the next
  * BEFORE doing any work) cross-checked against ipc filesystem activity — fs.watch on the ipc
@@ -224,6 +274,14 @@ export class ServePackageSupervisor {
   // and recoverable — instead of silently owning the lane forever.
   private restartGeneration = 0;
   private restartProgressAt = 0;
+  // When the CURRENT restart chain latched the lane — the supersede clock for queued
+  // restart-requests (total ownership time, deliberately NOT the progress heartbeat: the
+  // wedge class heartbeats forever).
+  private restartStartedAt = 0;
+  // When the oldest unsatisfied cross-process restart-request was consumed (0 = none). Drives
+  // the starvation-escalated holds gate and the wedged-restart supersede; any spawn clears it.
+  private restartRequestedAt = 0;
+  private lastStarvationAnnounceAt = 0;
   private childlessSince = 0;
   // Set when OUR OWN restart ended with no child (the spawn threw). The watchdog reads it to
   // tell "we lost our child" (retry) from "someone killed our child" (mirror, never resurrect) —
@@ -295,6 +353,7 @@ export class ServePackageSupervisor {
       return;
     }
     this.restarting = true;
+    this.restartStartedAt = Date.now();
     // Generation stamp: if the liveness watchdog gives up on this chain and starts a fresh one,
     // this (possibly still-parked) chain must never spawn a second child behind its back.
     const generation = ++this.restartGeneration;
@@ -347,7 +406,10 @@ export class ServePackageSupervisor {
    * Ask the supervisor of `packageDir` (if one is alive) for a HOLD- and COHERENCE-GATED
    * restart by dropping a `restart-request` lease in its ipc dir; the poll loop absorbs it
    * like a dist change (quiet window, holds, boot coherence all apply — unlike SIGUSR2,
-   * this never bulldozes an active hold such as a chat turn).
+   * this never bulldozes an active hold such as a chat turn). Deferred, never starved: the
+   * request fires in the first natural idle gap of hold activity, escalating to a hard
+   * ceiling, and supersedes a wedged in-flight restart (see the class doc's QUEUED
+   * RESTART-REQUESTS paragraph).
    *
    * Exists for package-manager operations: npm tears node_modules down and rebuilds it, and
    * a watcher inside the running child (webpack dev middleware) can compile DURING that hole
@@ -558,28 +620,17 @@ export class ServePackageSupervisor {
     // has one. This runs BEFORE the restarting/stopping early-return precisely because the
     // wedge class lives inside an in-flight restart.
     await this.enforceChildLiveness();
-    if (this.restarting || this.stopping) {
+    if (this.stopping) {
       return;
     }
     const now = Date.now();
-    // Absorb a cross-process restart request (workspace-package after an npm op) as staleness:
-    // it rides the same quiet window, holds, and coherence gate as a dist change.
-    const requestPath = path.join(this.ipcDir, ServePackageSupervisor.RESTART_REQUEST_FILE);
-    const requester = await fs.readFile(requestPath, 'utf-8').catch(() => undefined);
-    if (requester !== undefined) {
-      await fs.rm(requestPath, { force: true });
-      this.lastChangeAt = now;
-      const token = `requested by ${requester.trim() || 'unknown'}`;
-      if (!this.stalePackages.has(token)) {
-        this.stalePackages.add(token);
-        if (this.state === 'running') {
-          this.staleSince = now;
-        }
-        this.setState('stale');
-        this.logger.warn({
-          message: `> STALE — restart ${token} (node_modules were rebuilt under the running child; its watcher may serve a bundle compiled mid-op)`,
-        });
-      }
+    // Consume a cross-process restart request BEFORE the restarting early-return: a request
+    // filed while a restart chain is wedged must be SEEN — unread requests behind the latch
+    // were how the 2026-08-09 wedge served stale dists silently for hours.
+    await this.consumeRestartRequest(now);
+    if (this.restarting) {
+      await this.maybeSupersedeWedgedRestart(now);
+      return;
     }
     // node_modules PACKAGE-IDENTITY churn rides the same stale path as a dist change (see the
     // class doc paragraph). Latched, not endpoint-compared: churn that settles back to the
@@ -640,7 +691,7 @@ export class ServePackageSupervisor {
       return; // build burst still settling
     }
     const holds = await this.activeHolds();
-    if (holds.length > 0) {
+    if (holds.length > 0 && !this.queuedRequestMayFireThroughHolds(now, holds)) {
       this.setState('waiting-holds');
       // Announce on holder-set changes, with a 30s heartbeat otherwise — keying on TTLs would
       // log every poll.
@@ -654,8 +705,11 @@ export class ServePackageSupervisor {
         const report = holds
           .map((h) => `${h.holder} (${Math.round((h.expiresAt - Date.now()) / 1000)}s ttl)`)
           .join(', ');
+        const queuedNote = this.restartRequestedAt
+          ? `; restart-request queued ${Math.round((now - this.restartRequestedAt) / 1000)}s — fires on a ${Math.round(this.requiredIdleGapMs(now) / 1000)}s idle gap`
+          : '';
         this.logger.warn({
-          message: `> STALE ${Math.round((now - this.staleSince) / 1000)}s, restart held by: ${report} — 'rs' or SIGUSR2 to force`,
+          message: `> STALE ${Math.round((now - this.staleSince) / 1000)}s, restart held by: ${report}${queuedNote} — 'rs' or SIGUSR2 to force`,
         });
       }
       return;
@@ -713,6 +767,107 @@ export class ServePackageSupervisor {
     await this.restart(`stale: ${Array.from(this.stalePackages).join(', ')}`);
   }
 
+  /**
+   * Absorb a cross-process restart request (workspace-package after an npm op) as staleness:
+   * it rides the same quiet window and coherence gate as a dist change, plus its own
+   * starvation-escalated holds gate (see queuedRequestMayFireThroughHolds). Runs even while a
+   * restart chain is in flight so a wedged chain can be superseded rather than starving the
+   * request behind the latch (see maybeSupersedeWedgedRestart).
+   */
+  private async consumeRestartRequest(now: number): Promise<void> {
+    const requestPath = path.join(this.ipcDir, ServePackageSupervisor.RESTART_REQUEST_FILE);
+    const requester = await fs.readFile(requestPath, 'utf-8').catch(() => undefined);
+    if (requester === undefined) {
+      return;
+    }
+    await fs.rm(requestPath, { force: true });
+    this.lastChangeAt = now;
+    if (!this.restartRequestedAt) {
+      this.restartRequestedAt = now;
+    }
+    const token = `requested by ${requester.trim() || 'unknown'}`;
+    if (this.stalePackages.has(token)) {
+      return;
+    }
+    this.stalePackages.add(token);
+    // A chain in flight owns the state display ('restarting'); its spawn satisfies the request.
+    if (!this.restarting) {
+      if (this.state === 'running') {
+        this.staleSince = now;
+      }
+      this.setState('stale');
+    }
+    this.logger.warn({
+      message: `> STALE — restart ${token} (node_modules were rebuilt under the running child; its watcher may serve a bundle compiled mid-op)`,
+    });
+  }
+
+  /**
+   * STARVATION GUARD for queued restart-requests (see the class doc's QUEUED RESTART-REQUESTS
+   * paragraph): with a request queued, the holds gate passes once hold-lease write activity
+   * shows a natural idle gap of requiredIdleGapMs — which escalates (shrinks) as the request
+   * ages — or unconditionally and loudly once the request is older than the starvation ceiling.
+   * Plain dist staleness (no queued request) keeps full hold-expiry semantics.
+   */
+  private queuedRequestMayFireThroughHolds(now: number, holds: Hold[]): boolean {
+    if (!this.restartRequestedAt) {
+      return false;
+    }
+    const queuedMs = now - this.restartRequestedAt;
+    const requiredGapMs = this.requiredIdleGapMs(now);
+    const idleGapMs = now - Math.max(...holds.map((h) => h.refreshedAt));
+    if (idleGapMs < requiredGapMs) {
+      return false;
+    }
+    if (now - this.lastStarvationAnnounceAt >= 30_000) {
+      this.lastStarvationAnnounceAt = now;
+      if (queuedMs >= this.restartRequestStarvationCeilingMs()) {
+        this.logger.error({
+          message: `> Restart request STARVED for ${Math.round(queuedMs / 1000)}s — past the ${Math.round(this.restartRequestStarvationCeilingMs() / 1000)}s ceiling; firing NOW through ${holds.length} active hold(s): ${holds.map((h) => h.holder).join(', ')}`,
+        });
+      } else {
+        this.logger.info({
+          message: `> Queued restart request (${Math.round(queuedMs / 1000)}s old) firing during a natural idle gap: ${Math.round(idleGapMs / 1000)}s since the last hold refresh ≥ required ${Math.round(requiredGapMs / 1000)}s (shrinks as the request ages)`,
+        });
+      }
+    }
+    return true;
+  }
+
+  /** Idle gap a queued restart-request needs right now: shrinks linearly from
+   *  restartRequestIdleGapMs to zero as the request ages toward the starvation ceiling. */
+  private requiredIdleGapMs(now: number): number {
+    const queuedMs = now - this.restartRequestedAt;
+    const ceilingMs = this.restartRequestStarvationCeilingMs();
+    if (queuedMs >= ceilingMs) {
+      return 0;
+    }
+    return Math.ceil(this.restartRequestIdleGapMs() * (1 - queuedMs / ceilingMs));
+  }
+
+  /**
+   * WEDGE-PROOF LATCH: a queued restart-request must never rot behind an in-flight restart
+   * chain. The stall watchdog only catches chains whose progress heartbeat went stale; a chain
+   * parked on a wait that KEEPS heartbeating (the coherence wait's announce loop is one) owned
+   * the lane forever while requests piled up unread. Once a chain has owned the lane past
+   * restartSupersedeMs with a request queued, the request supersedes it: recoverChild bumps the
+   * generation (the wedged chain's eventual actions become no-ops) and runs the bounded
+   * kill → deadlined-diagnose → spawn path. A queued request always eventually wins or screams.
+   */
+  private async maybeSupersedeWedgedRestart(now: number): Promise<void> {
+    if (!this.restarting || this.stopping || !this.restartRequestedAt) {
+      return;
+    }
+    const inFlightMs = now - this.restartStartedAt;
+    if (inFlightMs < this.restartSupersedeMs()) {
+      return;
+    }
+    this.logger.error({
+      message: `> Restart request queued ${Math.round((now - this.restartRequestedAt) / 1000)}s while a restart attempt has owned the lane for ${Math.round(inFlightMs / 1000)}s — superseding the stuck attempt with a fresh bounded restart`,
+    });
+    await this.recoverChild();
+  }
+
   // ── Child lifecycle ───────────────────────────────────────────────────────
 
   /**
@@ -736,7 +891,13 @@ export class ServePackageSupervisor {
     if (this.stopping || !this.child?.pid) {
       return;
     }
-    if (ServePackageSupervisor.processAlive(this.child.pid)) {
+    // The handle's own reap knowledge (exitCode/signalCode — set by node's internal reap even
+    // when the 'exit' EVENT was lost) is consulted before the process table: kill(pid, 0)
+    // reads a DEAD child as alive when its pid was reused or its kernel entry lingers, and a
+    // supervisor trusting it alone persisted `running`-with-no-child indefinitely (the
+    // 2026-08-09 zombie shape, observed after machine sleep).
+    const reaped = this.child.exitCode !== null || this.child.signalCode !== null;
+    if (!reaped && ServePackageSupervisor.processAlive(this.child.pid)) {
       this.childlessSince = 0;
       return;
     }
@@ -807,6 +968,7 @@ export class ServePackageSupervisor {
     // Bumping the generation makes the abandoned chain's eventual spawn a no-op.
     const generation = ++this.restartGeneration;
     this.restarting = true;
+    this.restartStartedAt = Date.now();
     this.touchRestartProgress();
     this.setState('restarting');
     try {
@@ -965,6 +1127,9 @@ export class ServePackageSupervisor {
     await this.identityWatcher.baseline();
     this.stalePackages.clear();
     this.staleSince = 0;
+    // ANY spawn satisfies a queued restart-request: the fresh child loads dists as of now,
+    // which is at or after the request's filing.
+    this.restartRequestedAt = 0;
     this.spawnedByRestart = viaRestart;
     this.spawnedAt = Date.now();
     this.lastChildExit = undefined;
@@ -1121,14 +1286,30 @@ export class ServePackageSupervisor {
 
   /**
    * Poll the workspace doctor (scoped to this package's closure) until no findings remain,
-   * announcing every 30s. Unbounded by design: the operator is mid-rebuild; the wait ends
-   * when their build does. stop() interrupts it.
+   * announcing every 30s. stop() interrupts it.
+   *
+   * CEILINGED, not unbounded: this wait only ever runs CHILDLESS (the poll gates the kill on
+   * coherence, so a chain reaching here has already lost its child). Mid-build, coherence is
+   * moments away and the wait ends when the build does; but when nothing is rebuilding (machine
+   * slept mid-op, an agent-clobbered workspace at 2 AM), an unbounded wait was a live zombie —
+   * a supervisor parked childless in `restarting` forever, holding the pid file against every
+   * fresh launch, its per-iteration progress heartbeat keeping the stall watchdog at bay
+   * (observed 2026-08-09, twice after machine sleep). Past the ceiling: spawn anyway — a stale
+   * child beats no child, and a genuinely unbootable child still ends supervision honestly
+   * through the bounded boot-retry mirror.
    */
   private async waitForCoherence(): Promise<void> {
     const doctor = new WorkspaceDoctor(this.workspacePathResolved);
+    const waitStartedAt = Date.now();
     let lastAnnounceAt = 0;
     for (;;) {
       if (this.stopping) {
+        return;
+      }
+      if (Date.now() - waitStartedAt >= this.coherenceWaitCeilingMs()) {
+        this.logger.error({
+          message: `> Childless coherence wait exceeded its ${Math.round(this.coherenceWaitCeilingMs() / 1000)}s ceiling — spawning anyway (nothing is serving; boot failures stay bounded by the boot-retry budget)`,
+        });
         return;
       }
       this.touchRestartProgress();
@@ -1211,9 +1392,10 @@ export class ServePackageSupervisor {
     for (const entry of entries) {
       const holdPath = path.join(holdsDir, entry);
       try {
-        const hold = JSON.parse(await fs.readFile(holdPath, 'utf-8')) as Hold;
-        if (typeof hold.expiresAt === 'number' && hold.expiresAt > Date.now()) {
-          holds.push(hold);
+        const [raw, stat] = await Promise.all([fs.readFile(holdPath, 'utf-8'), fs.stat(holdPath)]);
+        const lease = JSON.parse(raw) as { holder: string; expiresAt: number };
+        if (typeof lease.expiresAt === 'number' && lease.expiresAt > Date.now()) {
+          holds.push({ holder: lease.holder, expiresAt: lease.expiresAt, refreshedAt: stat.mtimeMs });
         } else {
           await fs.rm(holdPath, { force: true }); // reap expired lease
         }
@@ -1247,6 +1429,7 @@ export class ServePackageSupervisor {
       packageName: this.options.packageName,
       stalePackages: Array.from(this.stalePackages),
       staleSince: this.staleSince || undefined,
+      restartRequestedAt: this.restartRequestedAt || undefined,
     };
     // SYNCHRONOUS write-then-rename. state.json is the one artifact an operator inspects when
     // things are wrong, so it must not be able to lie: the async version left the file
@@ -1357,5 +1540,25 @@ export class ServePackageSupervisor {
   /** Deadline for a single workspace diagnosis inside the childless coherence wait. */
   private coherenceDeadlineMs(): number {
     return this.options.coherenceDeadlineMs ?? 30_000;
+  }
+
+  /** Total ceiling on the childless coherence wait before spawning anyway. */
+  private coherenceWaitCeilingMs(): number {
+    return this.options.coherenceWaitCeilingMs ?? 10 * 60_000;
+  }
+
+  /** Idle gap in hold-lease writes that lets a queued restart-request fire (before escalation). */
+  private restartRequestIdleGapMs(): number {
+    return this.options.restartRequestIdleGapMs ?? 20_000;
+  }
+
+  /** Queue age at which a restart-request fires regardless of hold activity, loudly. */
+  private restartRequestStarvationCeilingMs(): number {
+    return this.options.restartRequestStarvationCeilingMs ?? 30 * 60_000;
+  }
+
+  /** In-flight restart age past which a queued restart-request supersedes the chain. */
+  private restartSupersedeMs(): number {
+    return this.options.restartSupersedeMs ?? 60_000;
   }
 }

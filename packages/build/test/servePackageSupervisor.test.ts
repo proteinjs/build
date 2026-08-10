@@ -4,7 +4,7 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import { execSync } from 'child_process';
 import { PackageUtil } from '@proteinjs/util-node';
-import { ServePackageSupervisor } from '../src/ServePackageSupervisor';
+import { ServePackageOptions, ServePackageSupervisor } from '../src/ServePackageSupervisor';
 import { WorkspaceDoctor } from '../src/WorkspaceDoctor';
 
 /**
@@ -807,6 +807,244 @@ describe('ServePackageSupervisor', () => {
     await sleep(700);
     expect(await boots()).toBe(3);
     expect(exits).toEqual([]); // parked, not mirrored — SIGUSR2/SIGTERM still live
+  });
+
+  /**
+   * The 2026-08-09 early-boot zombie class (observed twice after machine sleep): a child that
+   * fails during early boot must resolve to exactly ONE of two outcomes — a FULL mirror-exit
+   * (pid file removed, state.json terminal) or a legitimate respawn. The observed third shape
+   * was a supervisor SURVIVING childless in a nonterminal state — a live zombie holding the
+   * pid file (blocking fresh launches on the single-instance guard) while state.json claimed
+   * a child that did not exist.
+   */
+  describe('early-boot child failure resolves atomically (no live zombie)', () => {
+    const readState = async () =>
+      JSON.parse(await fs.readFile(path.join(consumerDir, '.serve-package', 'state.json'), 'utf-8'));
+    const pidFileExists = () => fsSync.existsSync(path.join(consumerDir, '.serve-package', 'pid'));
+
+    it('a child that exits immediately at first boot mirrors fully: pid file removed, state.json terminal', async () => {
+      await fs.writeFile(path.join(consumerDir, 'server.js'), 'process.exit(1);');
+      const exits: number[] = [];
+      supervisor = new ServePackageSupervisor({
+        packageName: '@test/consumer',
+        command: ['node', 'server.js'],
+        workspacePath,
+        pollMs: 100,
+        quietMs: 200,
+        onChildExit: (code) => exits.push(code),
+      });
+      await supervisor.start();
+      await waitFor(async () => exits.length > 0, 5000, 'mirrored exit');
+      expect(exits).toEqual([1]);
+      expect(pidFileExists()).toBe(false);
+      expect((await readState()).state).toBe('exited');
+    });
+
+    it('a restart into PERSISTENT incoherence with a child that fails at boot still ENDS: bounded coherence wait, bounded boot retries, full mirror — never a childless park holding the pid file', async () => {
+      const exits: number[] = [];
+      supervisor = new ServePackageSupervisor({
+        packageName: '@test/consumer',
+        command: ['node', 'server.js'],
+        workspacePath,
+        pollMs: 100,
+        quietMs: 200,
+        graceMs: 1500,
+        bootFailWindowMs: 3000,
+        coherenceWaitCeilingMs: 400,
+        onChildExit: (code) => exits.push(code),
+      });
+      await supervisor.start();
+      await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
+      // Persistent incoherence nobody is healing (the post-sleep shape): clobber the workspace
+      // symlink. No build is running, so coherence is NOT "moments away" — pre-fix the childless
+      // coherence wait parked on it FOREVER, heartbeating progress so the stall watchdog never
+      // tripped: alive, childless, nonterminal, pid file held.
+      const linkPath = path.join(consumerDir, 'node_modules', '@test', 'lib');
+      await fs.rm(linkPath, { recursive: true, force: true });
+      await fs.mkdir(linkPath, { recursive: true });
+      await fs.copyFile(path.join(libDir, 'package.json'), path.join(linkPath, 'package.json'));
+      // Every later boot fails immediately — the boot-doctor-findings / crash-before-listening class.
+      await fs.writeFile(path.join(consumerDir, 'server.js'), 'process.exit(1);');
+      // Forced restart (rs/SIGUSR2 path, which bypasses the poll's coherence-gated kill).
+      void supervisor.restart('test: forced restart into persistent incoherence');
+      await waitFor(async () => exits.length > 0, 12000, 'supervision ended honestly');
+      expect(exits).toEqual([1]);
+      expect(pidFileExists()).toBe(false);
+      expect((await readState()).state).toBe('exited');
+    }, 20000);
+
+    it('a dead child whose exit event was lost and whose pid still reads alive (pid reuse / lingering kernel entry) is mirrored — never a perpetual `running` claim with no child', async () => {
+      const exits: number[] = [];
+      const firstPid = await startSupervisor((code) => exits.push(code));
+      const internals = supervisor as unknown as { child: { removeAllListeners: (event: string) => unknown } };
+      const supervisorClass = ServePackageSupervisor as unknown as { processAlive: (pid: number) => boolean };
+      const realProcessAlive = supervisorClass.processAlive;
+      try {
+        // The exit event is lost AND the process table lies: kill(pid, 0) keeps succeeding
+        // after death (pid reused by an unrelated process, or the kernel entry lingering).
+        // Pre-fix the liveness watchdog trusted kill() alone and sat `running`-with-no-child
+        // forever — the literal observed zombie shape.
+        internals.child.removeAllListeners('exit');
+        supervisorClass.processAlive = () => true;
+        process.kill(firstPid, 'SIGKILL');
+        await waitFor(async () => exits.length > 0, 5000, 'mirrored via the process handle reap state');
+        expect(exits).toEqual([1]);
+        expect(pidFileExists()).toBe(false);
+        expect((await readState()).state).toBe('exited');
+      } finally {
+        supervisorClass.processAlive = realProcessAlive;
+      }
+    });
+  });
+
+  /**
+   * The 2026-08-09 starvation class: the request-activity hold is refreshed by ANY HTTP request
+   * — including background poll timers from merely-open tabs (~20s cadence, zero human
+   * interaction) — so a queued restart-request waiting for FULL hold expiry starved from 13:32
+   * past 18:00 while the child silently served stale dists. Queued requests must fire during a
+   * natural idle gap (the required gap escalating shorter as the request ages), must fire at a
+   * hard ceiling regardless, and must supersede a wedged in-flight restart — a queued request
+   * always eventually wins or screams. Genuine interactive bursts still defer.
+   */
+  describe('restart-request starvation (idle-gap escalation, hard ceiling, wedged-latch supersede)', () => {
+    const readState = async () =>
+      JSON.parse(await fs.readFile(path.join(consumerDir, '.serve-package', 'state.json'), 'utf-8'));
+
+    const startWithOptions = async (extra: Partial<ServePackageOptions>) => {
+      supervisor = new ServePackageSupervisor({
+        packageName: '@test/consumer',
+        command: ['node', 'server.js'],
+        workspacePath,
+        pollMs: 100,
+        quietMs: 200,
+        graceMs: 1500,
+        ...extra,
+      });
+      await supervisor.start();
+      await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
+      return (await childPid())!;
+    };
+
+    /**
+     * Background-tab poll traffic, scaled down: rewrites the request-activity lease on a fixed
+     * cadence with a TTL longer than the cadence, so the hold NEVER expires — the exact
+     * starvation shape (real system: ~20s poll cadence vs a 30s quiet-window TTL).
+     */
+    const startActivitySource = (cadenceMs: number, ttlMs: number) => {
+      const leasePath = path.join(holdsDir(), 'request-activity.json');
+      const write = () => {
+        fsSync.mkdirSync(holdsDir(), { recursive: true });
+        const tmpPath = `${leasePath}.tmp-test`;
+        fsSync.writeFileSync(tmpPath, JSON.stringify({ holder: 'request-activity', expiresAt: Date.now() + ttlMs }));
+        fsSync.renameSync(tmpPath, leasePath);
+      };
+      write();
+      const interval = setInterval(write, cadenceMs);
+      return () => clearInterval(interval);
+    };
+
+    it('poll-cadence hold refreshes cannot starve a queued request: it fires in an escalated idle gap, before the ceiling', async () => {
+      const firstPid = await startWithOptions({
+        restartRequestIdleGapMs: 600,
+        restartRequestStarvationCeilingMs: 5000,
+      });
+      const stopActivity = startActivitySource(450, 1500);
+      try {
+        const queuedAt = Date.now();
+        expect(await ServePackageSupervisor.requestRestart(consumerDir, 'workspace-package npm i')).toBe(true);
+        // Pre-fix: the ~450ms-cadence refreshes keep the lease perpetually unexpired and the
+        // restart never fires. Post-fix: the required gap shrinks as the request ages until a
+        // natural inter-refresh gap (~450ms) qualifies — well before the 5s ceiling.
+        await waitFor(async () => (await childPid()) !== firstPid, 4500, 'queued request fired before the ceiling');
+        expect(Date.now() - queuedAt).toBeLessThan(5000);
+      } finally {
+        stopActivity();
+      }
+    }, 20000);
+
+    it('gapless hold activity: the queued request still fires once past the hard ceiling', async () => {
+      const firstPid = await startWithOptions({
+        restartRequestIdleGapMs: 5000,
+        restartRequestStarvationCeilingMs: 1200,
+      });
+      const stopActivity = startActivitySource(60, 1000);
+      try {
+        const queuedAt = Date.now();
+        expect(await ServePackageSupervisor.requestRestart(consumerDir, 'starved-op')).toBe(true);
+        await waitFor(async () => (await childPid()) !== firstPid, 6000, 'request fired at the ceiling');
+        // It waited (deferral is correct) but the ceiling put a hard stop on the starvation.
+        expect(Date.now() - queuedAt).toBeGreaterThanOrEqual(1000);
+      } finally {
+        stopActivity();
+      }
+    }, 20000);
+
+    it('a genuine interactive burst still defers; the request fires in the FIRST natural idle gap, long before lease expiry', async () => {
+      const firstPid = await startWithOptions({
+        restartRequestIdleGapMs: 500,
+        restartRequestStarvationCeilingMs: 60_000,
+      });
+      const leaseTtlMs = 10_000;
+      const stopActivity = startActivitySource(100, leaseTtlMs);
+      try {
+        expect(await ServePackageSupervisor.requestRestart(consumerDir, 'mid-burst-op')).toBe(true);
+        // A burst within the idle-gap window defers — deferral is correct; only starvation is the bug.
+        await sleep(1500);
+        expect(await childPid()).toBe(firstPid);
+      } finally {
+        stopActivity();
+      }
+      const activityStoppedAt = Date.now();
+      await waitFor(async () => (await childPid()) !== firstPid, 3000, 'restart in the first natural idle gap');
+      // Fired via the idle gap, NOT lease expiry — the lease still had many seconds of TTL left.
+      expect(Date.now() - activityStoppedAt).toBeLessThan(leaseTtlMs - 5000);
+    }, 20000);
+
+    it('a wedged in-flight restart plus a new request resolves: the request supersedes the stuck attempt (never rots unread)', async () => {
+      const firstPid = await startWithOptions({ restartSupersedeMs: 700 });
+      const internals = supervisor as unknown as {
+        waitForCoherence: () => Promise<void>;
+        touchRestartProgress: () => void;
+      };
+      // The wedge class the stall watchdog CANNOT see: the chain keeps heartbeating progress
+      // (exactly like the coherence wait's announce loop does) but never reaches its spawn.
+      const touch = internals.touchRestartProgress.bind(supervisor);
+      const heartbeat = setInterval(touch, 200);
+      internals.waitForCoherence = () => new Promise<void>(() => undefined);
+      try {
+        void supervisor!.restart('test: wedged restart');
+        await waitFor(
+          async () => {
+            try {
+              process.kill(firstPid, 0);
+              return false;
+            } catch {
+              return true;
+            }
+          },
+          5000,
+          'child killed by the wedged restart'
+        );
+        expect(await ServePackageSupervisor.requestRestart(consumerDir, 'post-npm-op')).toBe(true);
+        // Pre-fix: the poll early-returned on the restarting latch BEFORE reading the request
+        // file, so the request rotted unread while the wedged chain owned the lane forever.
+        await waitFor(
+          async () => {
+            const pid = await childPid();
+            return pid !== undefined && pid !== firstPid;
+          },
+          8000,
+          'queued request superseded the wedged attempt'
+        );
+        expect((await readState()).state).toBe('running');
+        // The request was consumed, not left to re-trigger forever.
+        await expect(
+          fs.readFile(path.join(consumerDir, '.serve-package', 'restart-request'), 'utf-8')
+        ).rejects.toThrow();
+      } finally {
+        clearInterval(heartbeat);
+      }
+    }, 20000);
   });
 
   it('refuses to start while another live supervisor owns the package dir', async () => {
