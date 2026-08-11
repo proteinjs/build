@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.10.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.9.1...@proteinjs/build@2.10.0) (2026-08-11)
+
+
+### Features
+
+* serve-package watches node_modules package identity; churn rides the gated restart ([c518865](https://github.com/proteinjs/build/commit/c5188652a49d64041c0c28d0bd9afea2af725ff5))
+
+
+
+
+
 ## [2.9.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.9.0...@proteinjs/build@2.9.1) (2026-08-08)
 
 
