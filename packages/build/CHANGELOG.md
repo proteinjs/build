@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.10.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.10.0...@proteinjs/build@2.10.1) (2026-08-11)
+
+
+### Bug Fixes
+
+* implicit installs no longer mutate committed lockfiles locally ([56d5d28](https://github.com/proteinjs/build/commit/56d5d2821aecdbb4a7299c0e20df676b45afa085))
+* sync-workspace pulls autostash and report per-repo failures instead of stranding the sweep ([e674f54](https://github.com/proteinjs/build/commit/e674f545fcdaf488c66f6368117eb9b79c4d5a25))
+
+
+
+
+
 # [2.10.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.9.1...@proteinjs/build@2.10.0) (2026-08-11)
 
 
