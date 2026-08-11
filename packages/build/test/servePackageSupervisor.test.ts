@@ -945,8 +945,14 @@ describe('ServePackageSupervisor', () => {
    * natural idle gap (the required gap escalating shorter as the request ages), must fire at a
    * hard ceiling regardless, and must supersede a wedged in-flight restart — a queued request
    * always eventually wins or screams. Genuine interactive bursts still defer.
+   *
+   * 2026-08-11 recurrence: the guard covered ONLY queued requests, and the exact starvation
+   * came back as PLAIN dist staleness (the earlier request had been consumed by a spawn; the
+   * next rebuild's staleness kept full hold-expiry semantics against a lease refreshed every
+   * ~21s). ANY pending restart — queued request or plain staleness — now rides the same
+   * idle-gap + ceiling gate: holds defer, they must never starve.
    */
-  describe('restart-request starvation (idle-gap escalation, hard ceiling, wedged-latch supersede)', () => {
+  describe('pending-restart starvation (idle-gap escalation, hard ceiling, wedged-latch supersede)', () => {
     const readState = async () =>
       JSON.parse(await fs.readFile(path.join(consumerDir, '.serve-package', 'state.json'), 'utf-8'));
 
@@ -1019,6 +1025,47 @@ describe('ServePackageSupervisor', () => {
       }
     }, 20000);
 
+    it('PLAIN dist staleness behind gapless hold refreshes fires at the starvation ceiling (2026-08-11 field class)', async () => {
+      // No restart-request anywhere: a sibling rebuild lands while a lease is being refreshed
+      // faster than it can expire. Pre-fix this deferred FOREVER (full hold-expiry semantics
+      // with a lease that never expires); post-fix the staleness clock drives the same ceiling.
+      const firstPid = await startWithOptions({
+        restartRequestIdleGapMs: 5000, // a 60ms cadence never leaves this gap — only the ceiling can fire
+        restartRequestStarvationCeilingMs: 1500,
+      });
+      const stopActivity = startActivitySource(60, 1000);
+      try {
+        const staleAt = Date.now();
+        await touchLibDist();
+        await waitFor(async () => (await childPid()) !== firstPid, 8000, 'stale restart fired at the ceiling');
+        // It waited out the ceiling (deferral is correct) instead of firing instantly.
+        expect(Date.now() - staleAt).toBeGreaterThanOrEqual(1200);
+      } finally {
+        stopActivity();
+      }
+    }, 20000);
+
+    it('PLAIN dist staleness fires in a natural idle gap of hold refreshes, long before lease expiry', async () => {
+      const firstPid = await startWithOptions({
+        restartRequestIdleGapMs: 500,
+        restartRequestStarvationCeilingMs: 60_000,
+      });
+      const leaseTtlMs = 10_000;
+      const stopActivity = startActivitySource(100, leaseTtlMs);
+      try {
+        await touchLibDist();
+        // While refreshes leave no qualifying gap, staleness defers — deferral is correct.
+        await sleep(1500);
+        expect(await childPid()).toBe(firstPid);
+      } finally {
+        stopActivity();
+      }
+      const activityStoppedAt = Date.now();
+      await waitFor(async () => (await childPid()) !== firstPid, 3000, 'stale restart in the first natural idle gap');
+      // Fired via the idle gap, NOT lease expiry — the lease still had many seconds of TTL left.
+      expect(Date.now() - activityStoppedAt).toBeLessThan(leaseTtlMs - 5000);
+    }, 20000);
+
     it('a genuine interactive burst still defers; the request fires in the FIRST natural idle gap, long before lease expiry', async () => {
       const firstPid = await startWithOptions({
         restartRequestIdleGapMs: 500,
@@ -1040,14 +1087,15 @@ describe('ServePackageSupervisor', () => {
       expect(Date.now() - activityStoppedAt).toBeLessThan(leaseTtlMs - 5000);
     }, 20000);
 
-    it('a satisfied request restores FULL hold semantics: the next plain staleness defers behind a fresh hold (the starvation bypass dies with the request)', async () => {
-      // The bypass gate keys on restartRequestedAt, and the spawn that satisfies the request
-      // must CLEAR it. If it lingered, the timestamp would age past the ceiling and every later
-      // plain dist-staleness restart would fire straight through active holds — one npm op ago
-      // would bulldoze every future chat turn.
+    it("a satisfied request's starvation clock dies with it: the next plain staleness defers on a FRESH escalation window", async () => {
+      // The gate's escalation clock keys on restartRequestedAt/staleSince, and the spawn that
+      // satisfies a request must CLEAR both. If the dead request's timestamp lingered, it would
+      // already sit past the ceiling and the next plain dist-staleness restart would fire
+      // straight through actively-refreshed holds — one npm op ago would bulldoze the next
+      // chat turn. Fresh staleness must earn its own idle gap or ceiling.
       const firstPid = await startWithOptions({
         restartRequestIdleGapMs: 300,
-        restartRequestStarvationCeilingMs: 1200,
+        restartRequestStarvationCeilingMs: 2000,
       });
       // Phase 1: an unheld restart-request is satisfied by a spawn.
       expect(await ServePackageSupervisor.requestRestart(consumerDir, 'workspace-package npm i')).toBe(true);
@@ -1060,13 +1108,27 @@ describe('ServePackageSupervisor', () => {
         'requested restart satisfied'
       );
       const secondPid = (await childPid())!;
-      // Phase 2: plain staleness behind a fresh hold — full hold-expiry semantics must be back.
-      await writeHold('mid-chat-turn', 1500);
-      await touchLibDist();
-      await sleep(800); // well past poll+quiet AND past the (dead) request's starvation ceiling
-      expect(await childPid()).toBe(secondPid); // deferred: the bypass died with the request
-      // Lease expiry releases the restart (the deferral above wasn't "restarts are broken").
-      await waitFor(async () => (await childPid()) !== secondPid, 5000, 'restart after hold expiry');
+      // Phase 2: plain staleness behind a hold refreshed every 60ms (no 300ms gap ever opens
+      // naturally). A lingering phase-1 request clock (~1.2s old by now) would have escalated
+      // the required gap under the refresh cadence already and fire within the first ticks
+      // after quiet; a FRESH staleness clock still demands ~150ms+ gaps through the first
+      // second, so "still deferred at +1s" is the discriminator. WHERE in its window it
+      // eventually fires (a jitter gap qualifying as the required gap shrinks, or the hard
+      // ceiling) is legitimate timing variance — only "not instantly" and "eventually" are
+      // the contract.
+      const stopActivity = startActivitySource(60, 5000);
+      try {
+        await touchLibDist();
+        await sleep(1000); // past poll+quiet and past where a lingering clock would have fired
+        expect(await childPid()).toBe(secondPid); // deferred: the dead request's clock is gone
+        await waitFor(
+          async () => (await childPid()) !== secondPid,
+          6000,
+          'stale restart within its own escalation window'
+        );
+      } finally {
+        stopActivity();
+      }
     }, 20000);
 
     it('a wedged in-flight restart plus a new request resolves: the request supersedes the stuck attempt (never rots unread)', async () => {

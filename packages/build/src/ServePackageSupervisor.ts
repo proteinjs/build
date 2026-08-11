@@ -53,18 +53,22 @@ export type ServePackageOptions = {
   coherenceWaitCeilingMs?: number;
   /**
    * Natural idle gap in hold-lease WRITE activity (no lease refreshed for this long) that lets
-   * a QUEUED restart-request fire while holds are still unexpired (default 20s). The
-   * request-activity hold is refreshed by ANY HTTP request — including background poll timers
-   * from merely-open tabs (~20s cadence, zero human interaction) — so requiring full lease
-   * expiry starved a queued request indefinitely (observed 2026-08-09: queued 13:32, still
-   * starved past 18:00). A genuine interactive burst leaves no gap this large and still defers.
+   * a PENDING restart — a queued restart-request OR plain dist/identity staleness — fire while
+   * holds are still unexpired (default 20s). The request-activity hold can be refreshed on a
+   * cadence shorter than its TTL (observed 2026-08-09: background poll timers from merely-open
+   * tabs at ~20s against a 30s TTL), so requiring full lease expiry was starvation by
+   * construction — first for queued requests (starved 13:32 → past 18:00), then again for
+   * plain staleness once the queued request had been consumed by an earlier spawn (observed
+   * 2026-08-11: stale 01:10, still deferred at 02:46 on a 21s refresh cadence). A genuine
+   * interactive burst leaves no gap this large and still defers.
    */
   restartRequestIdleGapMs?: number;
   /**
-   * Starvation ceiling for a queued restart-request (default 30min). The required idle gap
-   * shrinks linearly from restartRequestIdleGapMs to zero as the request ages toward this
-   * ceiling; at the ceiling the restart fires at the next poll regardless of hold activity,
-   * with a loud log line.
+   * Starvation ceiling for a pending restart (default 30min), clocked from the queued
+   * restart-request or from when the staleness appeared — whichever is older. The required
+   * idle gap shrinks linearly from restartRequestIdleGapMs to zero as the pending restart ages
+   * toward this ceiling; at the ceiling the restart fires at the next poll regardless of hold
+   * activity, with a loud log line.
    */
   restartRequestStarvationCeilingMs?: number;
   /**
@@ -135,8 +139,8 @@ type SupervisorState =
 type Hold = {
   holder: string;
   expiresAt: number;
-  /** Lease file mtime — the holder's last sign of life, and the idle-gap signal the queued
-   *  restart-request starvation guard reads; expiresAt alone cannot distinguish an active
+  /** Lease file mtime — the holder's last sign of life, and the idle-gap signal the
+   *  pending-restart starvation guard reads; expiresAt alone cannot distinguish an active
    *  holder from a lease written once and abandoned. */
   refreshedAt: number;
 };
@@ -156,8 +160,8 @@ type Hold = {
  * a directory; anything may write TTL lease files under `<SERVE_PACKAGE_IPC>/holds/<name>.json`
  * shaped `{ "holder": string, "expiresAt": epochMs }` and refresh them while work is in flight
  * (an in-progress chat turn, a focused browser tab's dev heartbeat, the child's own
- * request-activity high-water lease — any real HTTP request defers restarts until the server
- * has been request-quiet for the lease's TTL). Expired leases are ignored
+ * request-activity high-water lease — human-evidenced HTTP requests defer restarts until the
+ * server has been quiet of them for the lease's TTL). Expired leases are ignored
  * and reaped, so a crashed holder can never wedge the lane. Processes that never write holds
  * get plain announce-then-restart semantics. The holds dir is cleared on every spawn — leases
  * belong to the child that wrote them.
@@ -165,18 +169,22 @@ type Hold = {
  * Also written under SERVE_PACKAGE_IPC: `pid` (supervisor pid, for `kill -USR2 $(cat pid)`)
  * and `state.json` (queryable status: state, child pid, stale packages, active holds).
  *
- * QUEUED RESTART-REQUESTS CANNOT STARVE: holds defer, they must never starve. A restart-request
- * (see requestRestart) rides the normal quiet/coherence gates, but its holds gate is IDLE-GAP
- * based rather than expiry based: it fires once hold-lease WRITE activity shows a natural gap
- * (restartRequestIdleGapMs), and the required gap shrinks linearly to zero as the request ages
- * toward restartRequestStarvationCeilingMs — at the ceiling it fires regardless, loudly. Full
- * expiry was starvation by construction: the request-activity lease is refreshed by ANY HTTP
- * request, including background poll timers from merely-open tabs (~20s cadence, zero human
- * interaction), so a request queued at 13:32 was still starved past 18:00 while the child
- * silently served stale dists (observed 2026-08-09). The request is also consumed while a
- * restart chain is in flight and SUPERSEDES a chain that has owned the lane past
- * restartSupersedeMs (see maybeSupersedeWedgedRestart) — a queued request always eventually
- * wins or screams. Genuine interactive bursts still defer: they leave no qualifying gap.
+ * PENDING RESTARTS CANNOT STARVE: holds defer, they must never starve — and that applies to
+ * EVERY pending restart, not just queued restart-requests. The holds gate for a pending restart
+ * is IDLE-GAP based rather than expiry based: it fires once hold-lease WRITE activity shows a
+ * natural gap (restartRequestIdleGapMs), and the required gap shrinks linearly to zero as the
+ * pending restart ages toward restartRequestStarvationCeilingMs — at the ceiling it fires
+ * regardless, loudly. The escalation clock is the older of the queued request and the first
+ * unserved staleness. Full expiry was starvation by construction whenever a lease is refreshed
+ * on a cadence shorter than its TTL: first observed for queued requests (2026-08-09, queued
+ * 13:32 and still starved past 18:00 behind ~20s-cadence background polls), then AGAIN for
+ * plain dist staleness after the 2026-08-09 fix covered only requests (2026-08-11: chat/space
+ * rebuilds stale from 01:10 deferred past 02:46 behind a 21s-cadence lease refresh — the
+ * queued request had been consumed by an earlier spawn, so nothing bounded the deferral). A
+ * queued request is also consumed while a restart chain is in flight and SUPERSEDES a chain
+ * that has owned the lane past restartSupersedeMs (see maybeSupersedeWedgedRestart) — a
+ * pending restart always eventually wins or screams. Genuine interactive bursts still defer:
+ * they leave no qualifying gap.
  *
  * LANE LIVENESS: the poll cadence is a self-re-arming timer chain (every tick arms the next
  * BEFORE doing any work) cross-checked against ipc filesystem activity — fs.watch on the ipc
@@ -691,7 +699,7 @@ export class ServePackageSupervisor {
       return; // build burst still settling
     }
     const holds = await this.activeHolds();
-    if (holds.length > 0 && !this.queuedRequestMayFireThroughHolds(now, holds)) {
+    if (holds.length > 0 && !this.pendingRestartMayFireThroughHolds(now, holds)) {
       this.setState('waiting-holds');
       // Announce on holder-set changes, with a 30s heartbeat otherwise — keying on TTLs would
       // log every poll.
@@ -705,11 +713,12 @@ export class ServePackageSupervisor {
         const report = holds
           .map((h) => `${h.holder} (${Math.round((h.expiresAt - Date.now()) / 1000)}s ttl)`)
           .join(', ');
-        const queuedNote = this.restartRequestedAt
-          ? `; restart-request queued ${Math.round((now - this.restartRequestedAt) / 1000)}s — fires on a ${Math.round(this.requiredIdleGapMs(now) / 1000)}s idle gap`
+        const pendingSince = this.pendingRestartSince();
+        const pendingNote = pendingSince
+          ? `; ${this.restartRequestedAt ? 'restart-request queued' : 'restart pending'} ${Math.round((now - pendingSince) / 1000)}s — fires on a ${Math.round(this.requiredIdleGapMs(now, pendingSince) / 1000)}s idle gap`
           : '';
         this.logger.warn({
-          message: `> STALE ${Math.round((now - this.staleSince) / 1000)}s, restart held by: ${report}${queuedNote} — 'rs' or SIGUSR2 to force`,
+          message: `> STALE ${Math.round((now - this.staleSince) / 1000)}s, restart held by: ${report}${pendingNote} — 'rs' or SIGUSR2 to force`,
         });
       }
       return;
@@ -803,46 +812,66 @@ export class ServePackageSupervisor {
   }
 
   /**
-   * STARVATION GUARD for queued restart-requests (see the class doc's QUEUED RESTART-REQUESTS
-   * paragraph): with a request queued, the holds gate passes once hold-lease write activity
-   * shows a natural idle gap of requiredIdleGapMs — which escalates (shrinks) as the request
-   * ages — or unconditionally and loudly once the request is older than the starvation ceiling.
-   * Plain dist staleness (no queued request) keeps full hold-expiry semantics.
+   * STARVATION GUARD for pending restarts (see the class doc's PENDING RESTARTS CANNOT STARVE
+   * paragraph): with a restart pending — a queued restart-request OR plain dist/identity
+   * staleness — the holds gate passes once hold-lease write activity shows a natural idle gap
+   * of requiredIdleGapMs — which escalates (shrinks) as the pending restart ages — or
+   * unconditionally and loudly once it is older than the starvation ceiling. The 2026-08-09
+   * version of this guard covered only queued requests; the identical starvation recurred as
+   * plain staleness on 2026-08-11 (a lease refreshed every ~21s against a 30s TTL never
+   * expires, and nothing else bounded the deferral).
    */
-  private queuedRequestMayFireThroughHolds(now: number, holds: Hold[]): boolean {
-    if (!this.restartRequestedAt) {
+  private pendingRestartMayFireThroughHolds(now: number, holds: Hold[]): boolean {
+    const pendingSince = this.pendingRestartSince();
+    if (!pendingSince) {
       return false;
     }
-    const queuedMs = now - this.restartRequestedAt;
-    const requiredGapMs = this.requiredIdleGapMs(now);
-    const idleGapMs = now - Math.max(...holds.map((h) => h.refreshedAt));
+    const pendingMs = now - pendingSince;
+    const requiredGapMs = this.requiredIdleGapMs(now, pendingSince);
+    // Fresh clock, not the poll-start `now`: refreshedAt was stat'd AFTER `now` was captured
+    // (several awaits sit between them), so a holder whose refresh cadence phase-locks against
+    // the poll cadence could land every write inside that window — the gap then read negative
+    // on every single tick and defeated even the required-zero starvation ceiling.
+    const idleGapMs = Date.now() - Math.max(...holds.map((h) => h.refreshedAt));
     if (idleGapMs < requiredGapMs) {
       return false;
     }
     if (now - this.lastStarvationAnnounceAt >= 30_000) {
       this.lastStarvationAnnounceAt = now;
-      if (queuedMs >= this.restartRequestStarvationCeilingMs()) {
+      const label = this.restartRequestedAt ? 'Restart request' : 'Stale restart';
+      if (pendingMs >= this.restartRequestStarvationCeilingMs()) {
         this.logger.error({
-          message: `> Restart request STARVED for ${Math.round(queuedMs / 1000)}s — past the ${Math.round(this.restartRequestStarvationCeilingMs() / 1000)}s ceiling; firing NOW through ${holds.length} active hold(s): ${holds.map((h) => h.holder).join(', ')}`,
+          message: `> ${label} STARVED for ${Math.round(pendingMs / 1000)}s — past the ${Math.round(this.restartRequestStarvationCeilingMs() / 1000)}s ceiling; firing NOW through ${holds.length} active hold(s): ${holds.map((h) => h.holder).join(', ')}`,
         });
       } else {
         this.logger.info({
-          message: `> Queued restart request (${Math.round(queuedMs / 1000)}s old) firing during a natural idle gap: ${Math.round(idleGapMs / 1000)}s since the last hold refresh ≥ required ${Math.round(requiredGapMs / 1000)}s (shrinks as the request ages)`,
+          message: `> Pending restart (${Math.round(pendingMs / 1000)}s old) firing during a natural idle gap: ${Math.round(idleGapMs / 1000)}s since the last hold refresh ≥ required ${Math.round(requiredGapMs / 1000)}s (shrinks as the pending restart ages)`,
         });
       }
     }
     return true;
   }
 
-  /** Idle gap a queued restart-request needs right now: shrinks linearly from
-   *  restartRequestIdleGapMs to zero as the request ages toward the starvation ceiling. */
-  private requiredIdleGapMs(now: number): number {
-    const queuedMs = now - this.restartRequestedAt;
+  /**
+   * When the oldest unserved restart trigger arrived (0 = nothing pending): the earlier of the
+   * queued restart-request and the first still-unserved staleness. Drives the anti-starvation
+   * escalation clock; any spawn clears both sources, so a satisfied trigger can never keep
+   * escalating the next one.
+   */
+  private pendingRestartSince(): number {
+    const clocks = [this.restartRequestedAt, this.staleSince].filter((at) => at > 0);
+    return clocks.length === 0 ? 0 : Math.min(...clocks);
+  }
+
+  /** Idle gap a pending restart needs right now: shrinks linearly from
+   *  restartRequestIdleGapMs to zero as the pending restart ages toward the starvation ceiling. */
+  private requiredIdleGapMs(now: number, pendingSince: number): number {
+    const pendingMs = now - pendingSince;
     const ceilingMs = this.restartRequestStarvationCeilingMs();
-    if (queuedMs >= ceilingMs) {
+    if (pendingMs >= ceilingMs) {
       return 0;
     }
-    return Math.ceil(this.restartRequestIdleGapMs() * (1 - queuedMs / ceilingMs));
+    return Math.ceil(this.restartRequestIdleGapMs() * (1 - pendingMs / ceilingMs));
   }
 
   /**
