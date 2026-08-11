@@ -141,7 +141,7 @@ export class WorkspaceDoctor {
     const packageDir = path.dirname(localPackage.filePath);
     const workspaceDeps = await PackageUtil.getTransitiveWorkspaceDependencies(localPackage, metadata.packageMap);
     for (const depName of workspaceDeps) {
-      const entryPath = await this.resolveNodeModulesEntry(packageDir, depName);
+      const entryPath = await WorkspaceDoctor.resolveNodeModulesEntry(this.workspacePath, packageDir, depName);
       const expectedDir = path.dirname(metadata.packageMap[depName].filePath);
       const remediation = `npm run symlink-workspace (or: npx verify-workspace --fix)`;
       if (!entryPath) {
@@ -183,9 +183,16 @@ export class WorkspaceDoctor {
    * Node's resolution reality: a dependency may live in the package's own node_modules OR any
    * ancestor's (nested monorepos hoist installs to their workspace root). Returns the first
    * existing entry walking up from `packageDir` to the workspace root, or undefined.
+   *
+   * Static and public: NodeModulesIdentityWatcher samples the same entries this doctor
+   * diagnoses — churn detection and coherence diagnosis must resolve identically.
    */
-  private async resolveNodeModulesEntry(packageDir: string, depName: string): Promise<string | undefined> {
-    const workspaceReal = await fs.realpath(this.workspacePath).catch(() => path.resolve(this.workspacePath));
+  static async resolveNodeModulesEntry(
+    workspacePath: string,
+    packageDir: string,
+    depName: string
+  ): Promise<string | undefined> {
+    const workspaceReal = await fs.realpath(workspacePath).catch(() => path.resolve(workspacePath));
     let dir = path.resolve(packageDir);
     // eslint-disable-next-line no-constant-condition
     while (true) {
@@ -221,7 +228,7 @@ export class WorkspaceDoctor {
         continue; // workspace dep — the symlink pass owns it
       }
       // Ancestor-walk resolution: nested monorepos hoist installs to their own root.
-      const entryPath = await this.resolveNodeModulesEntry(packageDir, depName);
+      const entryPath = await WorkspaceDoctor.resolveNodeModulesEntry(this.workspacePath, packageDir, depName);
       if (!entryPath) {
         findings.push({
           packageName: localPackage.name,

@@ -5,6 +5,7 @@ import { ChildProcess, spawn } from 'child_process';
 import { PackageUtil, WorkspaceMetadata } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
 import { WorkspaceDoctor, WorkspaceFinding } from './WorkspaceDoctor';
+import { NodeModulesIdentityWatcher } from './NodeModulesIdentityWatcher';
 
 export type ServePackageOptions = {
   /** Workspace package whose process this supervises (e.g. @n3xa/app-server). */
@@ -42,6 +43,12 @@ export type ServePackageOptions = {
   coherenceDeadlineMs?: number;
   /** Dist mtime poll interval. */
   pollMs?: number;
+  /**
+   * node_modules package-identity sample interval (default 7.5s — deliberately coarser than
+   * pollMs: identity churn is rare and each sample stats every watched entry). See
+   * NodeModulesIdentityWatcher for what a sample reads (and the dist non-goal it must not touch).
+   */
+  identityPollMs?: number;
   /** Quiet period after the last dist change before a restart is considered (builds settle). */
   quietMs?: number;
   /** Grace period between SIGTERM and SIGKILL when stopping the child. */
@@ -149,6 +156,16 @@ type Hold = {
  * as a zombie holding the pid file with state.json stale-claiming `running` — which then made
  * the next relaunch silently fail on the single-instance guard.
  *
+ * NODE_MODULES IDENTITY CHURN: the child's own coherence gate runs only at boot, so a live
+ * child's webpack watcher recompiles across npm-install/symlink-workspace node_modules churn
+ * with boot-time loader config — raw-TS "Module parse failed" bundles with no gate in sight
+ * (the cooperative restart-request above covers workspace-package ops, but a bare npm i files
+ * nothing). The supervisor closes the blind spot itself: a coarse poll (identityPollMs) of the
+ * closure's symlink-set fingerprint via NodeModulesIdentityWatcher, and a fingerprint change is
+ * absorbed EXACTLY like a dist change — stale banner, quiet window, holds, coherence gate,
+ * restart. Watching dist contents is that watcher's explicit non-goal; dist churn keeps flowing
+ * through webpack/HMR and the mtime watch untouched.
+ *
  * The child owns its own coherence gate (chain verify-workspace in the package's serve script);
  * the supervisor owns only process freshness.
  */
@@ -192,6 +209,12 @@ export class ServePackageSupervisor {
   private lastChildExit?: { code: number | null; signal: NodeJS.Signals | null };
   /** Timestamps of daemon-posture crash respawns inside the rolling budget window. */
   private crashRespawnAt: number[] = [];
+  // node_modules identity watch (see the class doc's NODE_MODULES IDENTITY CHURN paragraph):
+  // sampled from the poll chain at its own coarser cadence; the in-flight guard keeps
+  // overlapping poll ticks from stacking fs scans, mirroring the coherence check's guard.
+  private identityWatcher!: NodeModulesIdentityWatcher;
+  private lastIdentitySampleAt = 0;
+  private identitySampleInFlight = false;
   private lastHoldReport = '';
   private lastHoldAnnounceAt = 0;
   private lastCoherenceAnnounceAt = 0;
@@ -242,6 +265,10 @@ export class ServePackageSupervisor {
     for (const packageName of this.closure) {
       this.distDirs[packageName] = path.join(path.dirname(metadata.packageMap[packageName].filePath), 'dist');
     }
+    this.identityWatcher = new NodeModulesIdentityWatcher(
+      workspacePath,
+      this.options.coherencePackages ?? [this.options.packageName]
+    );
     this.ipcDir = path.join(this.packageDir, '.serve-package');
     await this.assertSingleInstance();
     await fs.mkdir(path.join(this.ipcDir, 'holds'), { recursive: true });
@@ -249,7 +276,7 @@ export class ServePackageSupervisor {
     // A request left behind for a dead supervisor is already satisfied by this fresh boot.
     await fs.rm(path.join(this.ipcDir, ServePackageSupervisor.RESTART_REQUEST_FILE), { force: true });
     this.logger.info({
-      message: `> Watching dists of ${this.closure.length} workspace packages (closure of ${this.options.packageName}); restart triggers: dist change + quiet ${this.quietMs()}ms + no holds + coherent workspace, or 'rs' / SIGUSR2`,
+      message: `> Watching dists of ${this.closure.length} workspace packages (closure of ${this.options.packageName}); restart triggers: dist change or node_modules identity churn (sampled every ${this.identityPollMs()}ms) + quiet ${this.quietMs()}ms + no holds + coherent workspace, or 'rs' / SIGUSR2`,
     });
     this.started = true;
     await this.spawnChild();
@@ -552,6 +579,37 @@ export class ServePackageSupervisor {
         this.logger.warn({
           message: `> STALE — restart ${token} (node_modules were rebuilt under the running child; its watcher may serve a bundle compiled mid-op)`,
         });
+      }
+    }
+    // node_modules PACKAGE-IDENTITY churn rides the same stale path as a dist change (see the
+    // class doc paragraph). Latched, not endpoint-compared: churn that settles back to the
+    // boot-time fingerprint (npm i then re-symlink) still restarts — the child compiled
+    // through the hole and its broken bundle would otherwise stick.
+    if (!this.identitySampleInFlight && now - this.lastIdentitySampleAt >= this.identityPollMs()) {
+      this.identitySampleInFlight = true;
+      this.lastIdentitySampleAt = now;
+      let changed: string[];
+      try {
+        changed = await this.identityWatcher.sampleChanged();
+      } finally {
+        this.identitySampleInFlight = false;
+      }
+      if (this.restarting || this.stopping) {
+        return; // a forced restart or stop raced in while sampling
+      }
+      if (changed.length > 0) {
+        this.lastChangeAt = Date.now();
+        const token = 'node_modules package identity';
+        if (!this.stalePackages.has(token)) {
+          this.stalePackages.add(token);
+          if (this.state === 'running') {
+            this.staleSince = now;
+          }
+          this.setState('stale');
+          this.logger.warn({
+            message: `> STALE — node_modules package identity changed under the running child: ${changed.join(', ')} (its watcher compiles with boot-time loader config; the bundle may be broken until a restart)`,
+          });
+        }
       }
     }
     const newlyStale: string[] = [];
@@ -902,6 +960,9 @@ export class ServePackageSupervisor {
     }
     await this.clearHolds();
     await this.snapshotBaseline();
+    // The child boots through its own verify gate, so whatever identity the workspace has RIGHT
+    // NOW is what it compiles against — churn history before this spawn is absorbed.
+    await this.identityWatcher.baseline();
     this.stalePackages.clear();
     this.staleSince = 0;
     this.spawnedByRestart = viaRestart;
@@ -1244,6 +1305,11 @@ export class ServePackageSupervisor {
 
   private pollMs(): number {
     return this.options.pollMs ?? 2000;
+  }
+
+  /** node_modules package-identity sample interval (coarser than pollMs by design). */
+  private identityPollMs(): number {
+    return this.options.identityPollMs ?? 7_500;
   }
 
   /** Ticks older than this are a dead chain — ipc activity may revive it. Healthy ticks re-arm every pollMs regardless of poll duration, so 5 periods of silence is unambiguous. */

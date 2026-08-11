@@ -357,6 +357,50 @@ describe('ServePackageSupervisor', () => {
     expect(() => process.kill(firstPid, 0)).toThrow();
   });
 
+  it('node_modules identity churn restarts through the gated path, even when the churn settles back to the boot-time state', async () => {
+    // The blind-spot class (POST_RELEASE_QUEUE item 22): a bare npm i files no restart-request
+    // and touches no dist — the child's watcher compiles through the node_modules hole with
+    // boot-time loader config and the broken bundle STICKS, because the post-op re-symlink
+    // restores identical mtimes AND the identical symlink set. Detection must therefore latch
+    // on any observed change, not compare endpoints.
+    supervisor = new ServePackageSupervisor({
+      packageName: '@test/consumer',
+      command: ['node', 'server.js'],
+      workspacePath,
+      pollMs: 100,
+      quietMs: 200,
+      graceMs: 1500,
+      identityPollMs: 150,
+    });
+    await supervisor.start();
+    await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
+    const firstPid = (await childPid())!;
+    const readState = async () =>
+      JSON.parse(await fs.readFile(path.join(consumerDir, '.serve-package', 'state.json'), 'utf-8'));
+    // The bare-npm-i shape: the workspace symlink becomes a registry-copy real directory.
+    const linkPath = path.join(consumerDir, 'node_modules', '@test', 'lib');
+    await fs.rm(linkPath, { recursive: true, force: true });
+    await fs.mkdir(linkPath, { recursive: true });
+    await fs.copyFile(path.join(libDir, 'package.json'), path.join(linkPath, 'package.json'));
+    await waitFor(
+      async () => ((await readState()).stalePackages ?? []).includes('node_modules package identity'),
+      5000,
+      'identity churn latched as staleness'
+    );
+    // Same gate as a dist change: the workspace is incoherent (clobbered symlink), so the
+    // running child must stay alive — no kill into the hole.
+    expect(await childPid()).toBe(firstPid);
+    expect(() => process.kill(firstPid, 0)).not.toThrow();
+    // Settle the churn back to the EXACT boot-time state (the re-symlink after the op).
+    await fs.rm(linkPath, { recursive: true, force: true });
+    const { packageMap } = await PackageUtil.getWorkspaceMetadata(workspacePath);
+    await PackageUtil.symlinkDependencies(packageMap['@test/consumer'], packageMap);
+    // The latched staleness lands the restart even though the final fingerprint equals the
+    // baseline — the whole point of latching.
+    await waitFor(async () => (await childPid()) !== firstPid, 10000, 'restart after churn settled');
+    expect(() => process.kill(firstPid, 0)).toThrow();
+  }, 20000);
+
   /**
    * The 2026-08-04 wedge class: a restart killed its child, the spawn never happened, and the
    * supervisor sat childless for 15+ minutes still advertising `state: running` with a dead pid
