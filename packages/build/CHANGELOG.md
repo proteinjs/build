@@ -3,6 +3,19 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.10.2](https://github.com/proteinjs/build/compare/@proteinjs/build@2.10.1...@proteinjs/build@2.10.2) (2026-08-11)
+
+
+### Bug Fixes
+
+* dead child never settles its boot window — boot-retry budget stays bounded across long coherence waits ([39a8bcb](https://github.com/proteinjs/build/commit/39a8bcb54bea35b87605b4b2aa6843f492632c03))
+* pending-restart starvation guard covers plain dist staleness; idle gap measured on a fresh clock ([2ae4100](https://github.com/proteinjs/build/commit/2ae4100fc19d70a125ddb05fccf9f9633d5aedb4))
+* supervisor zombie-proof early-boot failures + starve-proof restart requests ([d90ab96](https://github.com/proteinjs/build/commit/d90ab96045b7af60302a192706b5978f95944fc8))
+
+
+
+
+
 ## [2.10.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.10.0...@proteinjs/build@2.10.1) (2026-08-11)
 
 
