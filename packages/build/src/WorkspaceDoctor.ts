@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { LocalPackage, PackageUtil, WorkspaceMetadata, cmd } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
+import { materializeDependencies } from './materializeDependencies';
 
 export type WorkspaceFindingKind = 'clobbered-symlink' | 'missing-install' | 'stale-dist';
 
@@ -97,7 +98,7 @@ export class WorkspaceDoctor {
       const kinds = new Set(packageFindings.map((f) => f.kind));
       if (kinds.has('missing-install')) {
         this.logger.info({ message: `[${packageName}] npm i (missing installs)` });
-        await cmd('npm', ['i'], { cwd: packageDir }, { logPrefix: `[${packageName}] ` });
+        await materializeDependencies(packageDir, { logPrefix: `[${packageName}] ` });
         await PackageUtil.symlinkDependencies(localPackage, metadata.packageMap);
       } else if (kinds.has('clobbered-symlink')) {
         this.logger.info({ message: `[${packageName}] re-symlinking workspace dependencies` });

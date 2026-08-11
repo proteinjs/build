@@ -3,6 +3,7 @@ import { LogColorWrapper, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util
 import { Logger } from '@proteinjs/logger';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 import { hasLintConfig } from './lintWorkspace';
+import { materializeDependencies } from './materializeDependencies';
 
 /**
  * Install and build workspace, in dependency order.
@@ -48,7 +49,7 @@ export async function buildWorkspace() {
     const packageDir = path.dirname(localPackage.filePath);
 
     if (!args.noInstall || !args.noInstall.includes(packageName)) {
-      await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
+      await materializeDependencies(packageDir, { logPrefix: `[${cw.color(packageName)}] ` });
       await PackageUtil.symlinkDependencies(localPackage, packageMap);
       logger.info({ message: `Installed ${cw.color(packageName)} (${packageDir})` });
     }
