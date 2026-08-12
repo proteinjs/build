@@ -1,6 +1,6 @@
 {
   "name": "@proteinjs/build",
-  "version": "2.11.1",
+  "version": "2.11.2",
   "description": "Workspace build tools",
   "main": "./dist/generated/index.js",
   "types": "./dist/generated/index.d.ts",
