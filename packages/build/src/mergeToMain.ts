@@ -166,43 +166,62 @@ export async function mergeToMain(workspacePath: string, spec: MergeToMainSpec, 
 }
 
 /**
- * Idempotency guard for the release flow. The versioning loop writes a package's bumped
- * package.json to disk (versionWorkspace.ts) BEFORE it commits + pushes that package; an
- * interruption in that window (a flaky release-build/test failure, a publish/push error) leaves an
- * uncommitted bumped package.json. A blind re-run would then read the already-bumped DISK version
- * as its base and double-bump it — or, for a partially-pushed multi-package repo, fail to re-flag
- * the un-pushed package and silently SKIP it. Both produce a wrong release.
+ * Leftover-state sweep for the release flow. The versioning loop's writes are TRANSIENT: a
+ * bumped package.json/lockfile only becomes durable (committed + pushed) after the registry
+ * accepts the publish, and an in-run failure reverts the writes (versionWorkspace.ts). A hard
+ * crash, though, can't revert — it leaves uncommitted package.json / package-lock.json changes
+ * in leaf repos. In release mode (post-merge, where a clean merge phase has committed its
+ * resolutions) those can only be that residue, so this sweep restores them to committed truth
+ * and lets the run proceed: release baselines come from the registry, never from local state,
+ * so the re-run recomputes every bump correctly — that is what makes a single re-run
+ * self-healing instead of stopping for operator surgery.
  *
- * So, before the versioning loop (release mode only), STOP if any leaf repo carries uncommitted
- * package.json / package-lock.json — those can only be leftovers from a prior interrupted run
- * (a clean merge phase commits its resolutions). Non-destructive: it names the files and the
- * one-line reset, and never mutates — the operator resets to committed (source-of-truth) state and
- * re-runs. On a fresh run after clean merges there is nothing uncommitted, so this is a no-op.
+ * Untracked (or newly-added, not-yet-in-HEAD) package.json/lockfiles are left alone and named
+ * in the log: the versioning flow only rewrites files that are already committed, so those are
+ * someone's in-flight new package, not residue.
  */
-export async function assertNoLeftoverVersionState(workspacePath: string): Promise<void> {
+export async function revertLeftoverVersionState(workspacePath: string): Promise<void> {
   const repoRoots = await leafRepoRoots(workspacePath);
-  const dirty: string[] = [];
   for (const repoRoot of repoRoots) {
-    const out = await git(repoRoot, 'status --porcelain').catch(() => '');
-    for (const line of out
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)) {
-      const file = line.replace(/^.. /, '');
+    const repoName = path.basename(repoRoot);
+    // No trimming before the columns are read: porcelain's X/Y status occupies the first two
+    // characters, and an unstaged entry (' M path') KEEPS a leading space — trimming shifts
+    // the path into the status columns and the entry is silently misparsed.
+    const out = await cmd(
+      'git',
+      ['status', '--porcelain'],
+      { cwd: repoRoot },
+      { omitLogs: { stdout: { omit: true }, stderr: { omit: true } } }
+    ).catch(() => ({ stdout: '' }));
+    const leftovers: string[] = [];
+    for (const line of out.stdout.split('\n').filter((l) => l.length > 0)) {
+      const status = line.slice(0, 2);
+      const file = line.slice(3);
       const base = path.basename(file);
-      if (base === 'package.json' || base === 'package-lock.json') {
-        dirty.push(`${path.basename(repoRoot)}: ${line}`);
+      if (base !== 'package.json' && base !== 'package-lock.json') {
+        continue;
       }
+      if (status.includes('?') || status.includes('A')) {
+        logger.info({
+          message: `(${cw.color(repoName)}) leaving ${file} (${status.trim()}) — not in HEAD, so not versioning residue`,
+        });
+        continue;
+      }
+      leftovers.push(file);
     }
-  }
-  if (dirty.length > 0) {
-    throw new Error(
-      `Refusing to version: uncommitted package.json/package-lock.json detected — almost certainly ` +
-        `leftovers from a PRIOR INTERRUPTED release run. Re-running blindly could double-bump or skip ` +
-        `these packages. Reset each to its committed (source-of-truth) state and re-run:\n` +
-        dirty.map((d) => `  ${d}`).join('\n') +
-        `\n  (per repo: git checkout -- <file>, or git checkout -- . after confirming there is no ` +
-        `unrelated work)`
+    if (leftovers.length === 0) {
+      continue;
+    }
+    logger.info({
+      message: `(${cw.color(repoName)}) reverting leftover version state from a prior interrupted run: ${leftovers.join(', ')}`,
+    });
+    // `checkout HEAD --` restores index AND working tree, so residue staged by an interrupted
+    // run (killed between `git add` and `git commit`) is swept back to committed truth too.
+    await cmd(
+      'git',
+      ['checkout', 'HEAD', '--', ...leftovers],
+      { cwd: repoRoot },
+      { logPrefix: `[${cw.color(repoName)}] ` }
     );
   }
 }

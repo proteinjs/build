@@ -12,6 +12,10 @@ import { pullWorkspaceRepos } from '../src/syncWorkspace';
  * (2026-08-10: packages/util 148 commits behind after a "successful" sync).
  */
 
+// Hermetic-git suites in this package spawn dozens of git processes and run under shared jest
+// workers; the 5s default is tight under that contention.
+jest.setTimeout(60_000);
+
 const git = (cwd: string, ...args: string[]) =>
   cmd('git', args, { cwd }, { omitLogs: { stdout: { omit: true }, stderr: { omit: true } } });
 

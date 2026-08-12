@@ -5,8 +5,8 @@ import { Logger } from '@proteinjs/logger';
 import semver from 'semver';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 import { hasLintConfig } from './lintWorkspace';
-import { mergeToMain, parseMergeToMainSpec, assertNoLeftoverVersionState } from './mergeToMain';
-import { PackageRegistry, NpmPackageRegistry, isNetworkError } from './PackageRegistry';
+import { mergeToMain, parseMergeToMainSpec, revertLeftoverVersionState } from './mergeToMain';
+import { PackageRegistry, NpmPackageRegistry, isNetworkError, maxPublishedVersion } from './PackageRegistry';
 
 const cw = new LogColorWrapper();
 const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.color('version', secondaryLogColor) });
@@ -54,11 +54,14 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
   const mergeSpec = parseMergeToMainSpec(process.argv.slice(2), process.env.VERSION_WORKSPACE_MERGE_TO_MAIN);
   await mergeToMain(workspacePath, mergeSpec, planOnly);
 
-  // Release-flow idempotency guard: after clean merges, uncommitted package.json/lock can only be
-  // leftovers from a prior interrupted versioning run — stop before the loop reads bad disk state.
-  // Release mode = --merge-to-main; skip in preview/dry modes (which legitimately leave writes).
+  // Release-flow idempotency sweep: after clean merges, uncommitted package.json/lock can only be
+  // crash residue from a prior interrupted versioning run (in-run failures revert their own
+  // transient writes). Restore committed truth before the loop reads disk state — the re-run then
+  // recomputes every bump from its registry baseline, healing the interruption without operator
+  // surgery. Release mode = --merge-to-main; skip in preview/dry modes (which legitimately leave
+  // writes).
   if (mergeSpec.enabled && !planOnly && !dryRun) {
-    await assertNoLeftoverVersionState(workspacePath);
+    await revertLeftoverVersionState(workspacePath);
   }
 
   const workspaceRootDirty = await isRepoDirty(workspacePath);
@@ -127,6 +130,12 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
   // publish before dependents that need to consume their new versions, and
   // any non-leaf commit-haver still gets its own-commit bump respected
   // rather than being demoted to 'patch' by the cascade.
+  //
+  // Versions this run saw the registry accept (or would accept, in plan/dry preview modes),
+  // by package name. This — not in-memory package.json state — is what dependent ranges are
+  // rewritten from: a range only ever points at a version that verifiably exists on the
+  // registry (topo order guarantees the upstream entry lands before dependents read it).
+  const acceptedVersions = new Map<string, string>();
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     const skipBumpingPackageVersion = isInFixedVersionWorkspace(localPackage);
@@ -135,7 +144,8 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
       localPackage,
       packageMap,
       packageGraph,
-      userSkippedPackages
+      userSkippedPackages,
+      acceptedVersions
     );
     const cascadeBump: CommitBump | undefined = dependenciesChanged ? 'patch' : undefined;
     const effectiveBump = maxBump(ownBump, cascadeBump);
@@ -144,15 +154,39 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
       continue;
     }
 
+    const willPublish = !skipBumpingPackageVersion && shouldPublishPackage(localPackage);
     if (effectiveBump && !skipBumpingPackageVersion) {
-      const currentVersion = localPackage.packageJson.version;
-      // In-memory version mutation runs in plan-only too so downstream
-      // packages see the right dep versions when we simulate cascades.
-      localPackage.packageJson.version = semver.inc(currentVersion, effectiveBump);
+      const localVersion = localPackage.packageJson.version;
+      // REGISTRY-RECONCILED BASELINE: the version we bump from is the max PUBLISHED version
+      // across the package's full registry version list — never the local package.json, and
+      // never the `latest` dist-tag (which can diverge from version order). The local record
+      // desyncs in both directions (bump-without-publish, publish-without-record) and can sit
+      // entirely below another workspace lineage's releases (2026-08-12 train: chat-common
+      // local 1.22.x vs sibling-published 1.24.0 — dependents' caret ranges resolved to the
+      // sibling's content, shadowing this workspace's release). Bumping PAST the registry max
+      // makes every one of those shapes self-heal on the next run. A never-published package
+      // has no registry lineage; its local version is the only baseline that exists.
+      let baseline = localVersion;
+      if (willPublish) {
+        const registryMax = maxPublishedVersion(await seams.registry.getPublishedVersions(localPackage));
+        if (registryMax) {
+          baseline = registryMax;
+          if (registryMax !== localVersion) {
+            logger.info({
+              message: `(${cw.color(packageName)}) registry max (${registryMax}) != local package.json (${localVersion}) — reconciling: the registry is the baseline`,
+            });
+          }
+        } else {
+          logger.info({
+            message: `(${cw.color(packageName)}) no published versions on its registry — first publish, baseline is local (${localVersion})`,
+          });
+        }
+      }
+      localPackage.packageJson.version = semver.inc(baseline, effectiveBump);
       const sourceNote = ownBump ? (cascadeBump ? `own+cascade, own=${ownBump}` : `own=${ownBump}`) : 'dep cascade';
       const planPrefix = planOnly ? 'would bump' : 'bumping';
       logger.info({
-        message: `(${cw.color(packageName)}) ${planPrefix} version (${effectiveBump}; ${sourceNote}) from ${currentVersion} -> ${localPackage.packageJson.version}`,
+        message: `(${cw.color(packageName)}) ${planPrefix} version (${effectiveBump}; ${sourceNote}) from ${baseline} -> ${localPackage.packageJson.version}`,
       });
     }
 
@@ -166,9 +200,12 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
 
     if (planOnly) {
       // Plan-only: skip the disk write, the build/test, publish, push/tag,
-      // and the eventual syncFixedVersionWorkspaces pass. The in-memory
-      // mutation above is enough to keep the simulated cascade correct for
-      // the remaining packages in this loop.
+      // and the eventual syncFixedVersionWorkspaces pass. Recording the would-be
+      // accepted version keeps the simulated cascade correct for the remaining
+      // packages in this loop.
+      if (willPublish && effectiveBump) {
+        acceptedVersions.set(packageName, localPackage.packageJson.version);
+      }
       continue;
     }
 
@@ -178,16 +215,27 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
       ]);
     }
 
-    await seams.buildAndTest(localPackage);
-    if (isInFixedVersionWorkspace(localPackage) && localPackage.workspace) {
-      logger.info({
-        message: `(${cw.color(packageName)}) skipping version push for package in a fixed-version workspace`,
-      });
-      continue;
-    }
+    // TRANSIENT BUMP: from the write above until the durable record (`pushAndTag` commits
+    // package.json + lockfile), the bumped version exists only in the working tree. Registry
+    // acceptance is the commit point — any failure before it reverts the transient writes, so
+    // an interrupted run leaves committed truth on disk and the next run recomputes everything
+    // from the registry baseline instead of double-bumping off leftover state.
+    try {
+      await seams.buildAndTest(localPackage);
+      if (isInFixedVersionWorkspace(localPackage) && localPackage.workspace) {
+        logger.info({
+          message: `(${cw.color(packageName)}) skipping version push for package in a fixed-version workspace`,
+        });
+        continue;
+      }
 
-    if (shouldPublishPackage(localPackage)) {
-      await publish(localPackage, seams.registry);
+      if (willPublish) {
+        await publish(localPackage, seams.registry);
+        acceptedVersions.set(packageName, localPackage.packageJson.version);
+      }
+    } catch (error) {
+      await revertTransientVersionWrites(localPackage);
+      throw error;
     }
 
     await pushAndTag(localPackage);
@@ -379,21 +427,29 @@ async function pullWorkspace(workspacePath: string, skipRootRepo = false) {
 }
 
 /**
- * Rewrite `localPackage`'s dependency-version fields in package.json to match
- * the current in-memory versions of its workspace-local deps. Returns true if
- * any dep version was rewritten (i.e. a dep's already-bumped version now
- * differs from what this package.json records). Pure rewrite — does NOT bump
- * `localPackage`'s own version; the caller decides that by combining this
- * result with the commit-scan map (see `versionWorkspace`).
+ * Rewrite `localPackage`'s dependency-version fields in package.json to match the versions
+ * its workspace-local deps had ACCEPTED BY THE REGISTRY this run (`acceptedVersions` — topo
+ * order guarantees an upstream's acceptance lands before its dependents are processed).
+ * Returns true if any dep version was rewritten.
  *
- * Writing the package.json to disk is left to the caller too, so we can apply
- * the own-version bump in the same write.
+ * Ranges are rewritten from accepted versions ONLY — never from a dep's on-disk package.json.
+ * A local record is not proof of a publishable version: rewriting a dependent to a
+ * bumped-but-never-published dep version strands it on an uninstallable range (`npm install`
+ * retries ETARGET for minutes before dying). A dep that didn't release this run keeps the
+ * dependent's recorded range, which was itself written from an accepted version when the dep
+ * last released.
+ *
+ * Pure rewrite — does NOT bump `localPackage`'s own version; the caller decides that by
+ * combining this result with the commit-scan map (see `versionWorkspace`). Writing the
+ * package.json to disk is left to the caller too, so we can apply the own-version bump in
+ * the same write.
  */
 async function applyDependencyVersionRewrites(
   localPackage: LocalPackage,
   packageMap: LocalPackageMap,
   packageGraph: any,
-  userSkippedPackages: Set<string> = new Set()
+  userSkippedPackages: Set<string>,
+  acceptedVersions: Map<string, string>
 ): Promise<boolean> {
   const localDependencies = packageGraph.successors(localPackage.name);
   if (!localDependencies || localDependencies.length == 0) {
@@ -403,7 +459,6 @@ async function applyDependencyVersionRewrites(
   let dependenciesChanged = false;
   for (const localDependency of localDependencies) {
     const localDependencyPackage = packageMap[localDependency];
-    const localDependencyVersion = localDependencyPackage.packageJson.version as string;
     const currentDependencyVersion = getDependencyVersion(localDependency, localPackage);
     if (!currentDependencyVersion) {
       throw new Error(
@@ -415,23 +470,33 @@ async function applyDependencyVersionRewrites(
       continue;
     }
 
-    if (currentDependencyVersion?.version == localDependencyVersion) {
+    if (userSkippedPackages.has(localDependency)) {
+      // The dep was skipped via --skip: leave this package's reference at its
+      // current (published, known-compatible) version.
+      logger.info({
+        message: `(${cw.color(localPackage.name)}) keeping dependency version of ${cw.color(localDependency)} at ${currentDependencyVersion.prefix ?? ''}${currentDependencyVersion.version} (skipped via --skip)`,
+      });
       continue;
     }
 
-    if (userSkippedPackages.has(localDependency)) {
-      // The dep was skipped via --skip: leave this package's reference at its
-      // current (published, known-compatible) version instead of rewriting to
-      // the on-disk version of the skipped package.
-      logger.info({
-        message: `(${cw.color(localPackage.name)}) keeping dependency version of ${cw.color(localDependency)} at ${currentDependencyVersion.prefix ?? ''}${currentDependencyVersion.version} (skipped via --skip; on-disk is ${localDependencyVersion})`,
-      });
+    const acceptedVersion = acceptedVersions.get(localDependency);
+    if (!acceptedVersion) {
+      const onDiskVersion = localDependencyPackage.packageJson.version as string;
+      if (currentDependencyVersion.version !== onDiskVersion) {
+        logger.info({
+          message: `(${cw.color(localPackage.name)}) leaving dependency version of ${cw.color(localDependency)} at ${currentDependencyVersion.prefix ?? ''}${currentDependencyVersion.version} (its local record ${onDiskVersion} did not release this run; ranges only track registry-accepted versions)`,
+        });
+      }
+      continue;
+    }
+
+    if (currentDependencyVersion.version == acceptedVersion) {
       continue;
     }
 
     const newDependencyVersion: DependencyVersion = {
       prefix: currentDependencyVersion.prefix,
-      version: localDependencyVersion,
+      version: acceptedVersion,
     };
     setDependencyVersion(localDependency, currentDependencyVersion, newDependencyVersion, localPackage);
     dependenciesChanged = true;
@@ -877,14 +942,74 @@ async function symlinkWorkspace(workspacePath: string, packageNames: string[], p
 
 async function publish(localPackage: LocalPackage, registry: PackageRegistry) {
   const dryRun = isDryRun();
+  const target = localPackage.packageJson.version;
   if (dryRun) {
     logger.info({
-      message: `(${cw.color(localPackage.name)}) Dry run: would publish version ${localPackage.packageJson.version}`,
+      message: `(${cw.color(localPackage.name)}) Dry run: would publish version ${target}`,
     });
     return;
   }
 
-  await registry.publish(localPackage);
+  // RESUME WINDOW: the computed target can already be on the registry — a prior attempt was
+  // accepted but the response was lost, or a run died between acceptance and the durable
+  // record. Acceptance is what matters; re-publishing the same version can only collide.
+  // Skip straight to recording.
+  const publishedBefore = await registry.getPublishedVersions(localPackage);
+  if (publishedBefore.includes(target)) {
+    logger.info({
+      message: `(${cw.color(localPackage.name)}) ${target} is already on the registry — resuming: skipping publish, recording only`,
+    });
+    return;
+  }
+
+  try {
+    await registry.publish(localPackage);
+  } catch (error) {
+    // The registry can accept a publish while the client sees an error (lost response,
+    // timeout mid-upload). The registry is the authority, not the exit code: if the target
+    // landed, the publish succeeded — continue to the durable record.
+    const publishedAfter = await registry.getPublishedVersions(localPackage).catch(() => undefined);
+    if (publishedAfter && publishedAfter.includes(target)) {
+      logger.info({
+        message: `(${cw.color(localPackage.name)}) publish reported an error but the registry accepted ${target} — continuing to record`,
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Undo the transient writes of an in-flight version attempt for one package: restore
+ * package.json and package-lock.json to their committed (HEAD) state. Only tracked files are
+ * restored — an untracked lockfile has no committed truth to restore, and untracked files are
+ * never versioning residue (the flow only rewrites files that are already committed).
+ */
+async function revertTransientVersionWrites(localPackage: LocalPackage) {
+  const packageDir = path.dirname(localPackage.filePath);
+  const tracked = (
+    await cmd(
+      'git',
+      ['ls-files', '--', 'package.json', 'package-lock.json'],
+      { cwd: packageDir },
+      { omitLogs: { stdout: { omit: true }, stderr: { omit: true } } }
+    )
+  ).stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (tracked.length === 0) {
+    return;
+  }
+  await cmd(
+    'git',
+    ['checkout', 'HEAD', '--', ...tracked],
+    { cwd: packageDir },
+    { logPrefix: `[${cw.color(localPackage.name)}] ` }
+  );
+  logger.info({
+    message: `(${cw.color(localPackage.name)}) reverted transient version writes (${tracked.join(', ')})`,
+  });
 }
 
 function shouldPublishPackage(localPackage: LocalPackage) {

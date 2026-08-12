@@ -53,7 +53,15 @@ export class NpmPackageRegistry implements PackageRegistry {
     try {
       const result = await cmd(
         'npm',
-        ['view', localPackage.name, 'versions', '--json', '--registry', registry, ...(await this.userconfigArgs(packageDir))],
+        [
+          'view',
+          localPackage.name,
+          'versions',
+          '--json',
+          '--registry',
+          registry,
+          ...(await this.userconfigArgs(packageDir)),
+        ],
         { cwd: packageDir, env: { ...process.env } },
         { omitLogs: { stdout: { omit: true }, stderr: { omit: true } } }
       );
