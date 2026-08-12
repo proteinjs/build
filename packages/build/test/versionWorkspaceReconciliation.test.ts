@@ -394,6 +394,33 @@ describe('versionWorkspace registry reconciliation', () => {
     expect(await originTags('chat-common')).toEqual([]);
   });
 
+  it('publish-error acceptance: a pre-check that saw no versions cannot launder an old own version via membership', async () => {
+    // One read staler than the stale-baseline shape: the lie ([] — authenticated-404 shape)
+    // persists through the publish PRE-CHECK read too, so the invariant assert at the top of
+    // `publish` is vacuous (no other versions to exceed). The publish of the old own version
+    // then fails EPUBLISHCONFLICT (it already exists), and the acceptance re-check — the first
+    // read to see registry truth — finds the target in the list. Membership alone must NOT
+    // read as "this run's publish landed": the acceptance path has to enforce the same
+    // invariant on ITS OWN read, or the shadowed 1.22.1 gets recorded and dependent rewrites
+    // track it (the attempt-10 laundering, one read later).
+    const chatCommon = await initPackageRepo('chat-common', packageJsonFor('@test/chat-common', '1.22.0'));
+    await addUnpushedCommit(chatCommon, 'fix: ops permission guard');
+    fake.seed('@test/chat-common', ['1.22.0', '1.23.0', '1.24.0', '1.22.1']);
+    const headBefore = await localHead(chatCommon);
+    // Scan (call 1), baseline (call 2), AND publish pre-check (call 3) get the lie; the
+    // acceptance re-check (call 4) sees truth.
+    fake.versionsBehavior.set('@test/chat-common', (call, current) => (call <= 3 ? [] : current));
+
+    await expect(run()).rejects.toThrow(/does not exceed the registry max/);
+
+    // Nothing recorded: no publish event, transient writes reverted, no record commit, no tag.
+    expect(fake.publishEvents).toEqual([]);
+    expect(await isClean(chatCommon)).toBe(true);
+    expect((await headJson(chatCommon, 'package.json')).version).toEqual('1.22.0');
+    expect(await localHead(chatCommon)).toEqual(headBefore);
+    expect(await originTags('chat-common')).toEqual([]);
+  });
+
   it('ambiguous publish failure: registry acceptance wins over the client error', async () => {
     const driver = await initPackageRepo('driver', packageJsonFor('@test/driver', '1.4.0'));
     fake.seed('@test/driver', ['1.4.0']);

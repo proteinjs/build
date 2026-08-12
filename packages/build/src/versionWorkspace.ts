@@ -1040,6 +1040,13 @@ async function publish(localPackage: LocalPackage, registry: PackageRegistry) {
     // landed, the publish succeeded — continue to the durable record.
     const publishedAfter = await registry.getPublishedVersions(localPackage).catch(() => undefined);
     if (publishedAfter && publishedAfter.includes(target)) {
+      // This exit records `target` too, so it enforces the invariant on ITS OWN read. The
+      // assert at the top of this function is only as good as the pre-check read behind it:
+      // if that read was also stale (empty list — the authenticated-404 shape), it was
+      // vacuous, the publish of an old own version failed as a conflict, and this re-check
+      // is the first read to see registry truth. Membership alone would launder the shadow;
+      // the assert makes acceptance mean "this run's release", not "this version exists".
+      assertReleaseExceedsRegistryMax(localPackage.name, target, publishedAfter);
       logger.info({
         message: `(${cw.color(localPackage.name)}) publish reported an error but the registry accepted ${target} — continuing to record`,
       });
