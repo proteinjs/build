@@ -263,9 +263,9 @@ describe('versionWorkspace registry reconciliation', () => {
     const driver = await initPackageRepo('driver', packageJsonFor('@test/driver', '1.4.0'));
     fake.seed('@test/driver', ['1.4.0']);
     await addUnpushedCommit(driver, 'fix: correct retry logic');
-    // Baseline read sees 1.4.0; by the pre-publish check the prior attempt's acceptance of the
-    // computed target (1.4.1) has become visible.
-    fake.versionsBehavior.set('@test/driver', (call, current) => (call === 1 ? current : [...current, '1.4.1']));
+    // The phase-0 scan (call 1) and the baseline read (call 2) see 1.4.0; by the pre-publish
+    // check the prior attempt's acceptance of the computed target (1.4.1) has become visible.
+    fake.versionsBehavior.set('@test/driver', (call, current) => (call <= 2 ? current : [...current, '1.4.1']));
 
     await run();
 
@@ -274,6 +274,124 @@ describe('versionWorkspace registry reconciliation', () => {
     expect(await isClean(driver)).toBe(true);
     expect(await originHead('driver')).toEqual(await localHead(driver));
     expect(await originTags('driver')).toContain('@test/driver@1.4.1');
+  });
+
+  it('attempt-10 shape: a pushed-but-shadowed lineage re-releases past the registry max', async () => {
+    // The 2026-08-12 train, attempt 10 (train-release5.log), exactly: OUR lineage's content
+    // and its release record at 1.22.1 (commit + tag) are fully PUSHED — history, not
+    // working-tree residue. The registry also holds a sibling workspace's 1.23.0/1.24.0, and
+    // the sibling's release records were merged into our history (merged local record
+    // 1.24.0). Nothing is unpushed, so a branch-anchored scan reports "nothing to ship" and
+    // the content stays shadowed forever: dependents' recorded ranges semver-resolve to the
+    // sibling's pre-ops 1.24.0 and their builds die on missing exports, every re-run. The
+    // release-anchored scan must see the commits since the registry-max release record and
+    // re-release them PAST the sibling's max.
+    const chatCommon = await initPackageRepo('chat-common', packageJsonFor('@test/chat-common', '1.22.0'));
+    const baseSha = await localHead(chatCommon);
+    // Ours: the ops content, then the old attempt's release record at 1.22.1 (commit + tag).
+    await addUnpushedCommit(chatCommon, 'fix: ops permission guard');
+    await fs.writeFile(
+      path.join(chatCommon, 'package.json'),
+      JSON.stringify(packageJsonFor('@test/chat-common', '1.22.1'), null, 2) + '\n'
+    );
+    await git(
+      chatCommon,
+      'commit',
+      '-am',
+      'chore(version): bumping dependency versions for @test/chat-common [skip ci]'
+    );
+    await git(chatCommon, 'tag', '-a', '@test/chat-common@1.22.1', '-m', 'Release @test/chat-common@1.22.1');
+    // Sibling lineage: branched before the ops content, released 1.23.0 then 1.24.0
+    // (records + tags) without ever carrying the ops changes.
+    await git(chatCommon, 'checkout', '-b', 'sibling', baseSha);
+    await fs.appendFile(path.join(chatCommon, 'src.txt'), 'conversation lineage\n');
+    for (const siblingVersion of ['1.23.0', '1.24.0']) {
+      await fs.writeFile(
+        path.join(chatCommon, 'package.json'),
+        JSON.stringify(packageJsonFor('@test/chat-common', siblingVersion), null, 2) + '\n'
+      );
+      await git(chatCommon, 'add', '.');
+      await git(chatCommon, 'commit', '-m', 'chore(release): publish [skip ci]');
+      await git(
+        chatCommon,
+        'tag',
+        '-a',
+        `@test/chat-common@${siblingVersion}`,
+        '-m',
+        `Release @test/chat-common@${siblingVersion}`
+      );
+    }
+    // The lineage merge: the record resolves to the sibling's higher 1.24.0 while our ops
+    // content SURVIVES in the tree (the real merge: "ops and conversation-lineage lines
+    // coexist"). Everything — merge, records, tags — is pushed.
+    await git(chatCommon, 'checkout', 'main');
+    await git(chatCommon, 'merge', 'sibling', '-m', 'Merge sibling release lineage into main').catch(() => {
+      /* both lineages touched package.json and src.txt — conflicts expected */
+    });
+    await fs.writeFile(
+      path.join(chatCommon, 'package.json'),
+      JSON.stringify(packageJsonFor('@test/chat-common', '1.24.0'), null, 2) + '\n'
+    );
+    await fs.writeFile(path.join(chatCommon, 'src.txt'), 'initial\nfix: ops permission guard\nconversation lineage\n');
+    await git(chatCommon, 'add', '.');
+    await git(chatCommon, 'commit', '-m', 'Merge sibling release lineage into main');
+    await git(chatCommon, 'push', 'origin', 'main', '--tags');
+    expect((await git(chatCommon, 'log', '@{u}..HEAD', '--oneline')).stdout.trim()).toEqual(''); // the shape: nothing unpushed
+    // Registry in publish chronology: the sibling's releases landed before our shadowed
+    // 1.22.1, so the numeric max sits mid-list.
+    fake.seed('@test/chat-common', ['1.22.0', '1.23.0', '1.24.0', '1.22.1']);
+    // Dependent with no changes of its own, cleanly released at 2.0.0 (tagged); its recorded
+    // range is attempt 10's ^1.21.1, which resolves to the sibling's 1.24.0 until chat-common
+    // re-releases past it.
+    const spaceServer = await initPackageRepo(
+      'space-server',
+      packageJsonFor('@test/space-server', '2.0.0', { '@test/chat-common': '^1.21.1' })
+    );
+    await git(spaceServer, 'tag', '-a', '@test/space-server@2.0.0', '-m', 'Release @test/space-server@2.0.0');
+    fake.seed('@test/space-server', ['2.0.0']);
+
+    await run();
+
+    // The pushed-but-shadowed content re-releases PAST the registry max.
+    expect(fake.published('@test/chat-common')).toContain('1.24.1');
+    expect((await headJson(chatCommon, 'package.json')).version).toEqual('1.24.1');
+    expect(await isClean(chatCommon)).toBe(true);
+    expect(await originHead('chat-common')).toEqual(await localHead(chatCommon));
+    expect(await originTags('chat-common')).toContain('@test/chat-common@1.24.1');
+    // The dependent's recorded range tracks THIS run's release and semver-resolves to it —
+    // the shadow no longer wins.
+    const range = (await headJson(spaceServer, 'package.json')).dependencies['@test/chat-common'];
+    expect(range).toEqual('^1.24.1');
+    expect(semver.maxSatisfying(fake.published('@test/chat-common'), range)).toEqual('1.24.1');
+    expect(fake.published('@test/space-server')).toContain('2.0.1');
+    const publishOrder = fake.publishEvents.map((e) => e.name);
+    expect(publishOrder.indexOf('@test/chat-common')).toBeLessThan(publishOrder.indexOf('@test/space-server'));
+  });
+
+  it('stale baseline: a target at-or-below the registry max is refused loudly, never recorded as a resume', async () => {
+    // The reads feeding the target computation lie (empty version list — the shape of a
+    // transient authenticated 404 reading as "never published"), so the computed target
+    // lands on an OLD own version that still exists on the registry below the sibling max.
+    // Membership alone then reads as "this run's publish landed earlier": pre-fix, the
+    // resume window / publish-error acceptance check RECORDED the shadowed 1.22.1 as this
+    // run's release and dependent rewrites tracked it. The invariant must fail the run
+    // loudly instead, leaving nothing recorded.
+    const chatCommon = await initPackageRepo('chat-common', packageJsonFor('@test/chat-common', '1.22.0'));
+    await addUnpushedCommit(chatCommon, 'fix: ops permission guard');
+    fake.seed('@test/chat-common', ['1.22.0', '1.23.0', '1.24.0', '1.22.1']);
+    const headBefore = await localHead(chatCommon);
+    // The phase-0 scan (call 1) and the baseline read (call 2) get the lie; the publish
+    // pre-check (call 3) and everything after see registry truth.
+    fake.versionsBehavior.set('@test/chat-common', (call, current) => (call <= 2 ? [] : current));
+
+    await expect(run()).rejects.toThrow(/does not exceed the registry max/);
+
+    // Nothing recorded: no publish, transient writes reverted, no record commit, no tag.
+    expect(fake.publishEvents).toEqual([]);
+    expect(await isClean(chatCommon)).toBe(true);
+    expect((await headJson(chatCommon, 'package.json')).version).toEqual('1.22.0');
+    expect(await localHead(chatCommon)).toEqual(headBefore);
+    expect(await originTags('chat-common')).toEqual([]);
   });
 
   it('ambiguous publish failure: registry acceptance wins over the client error', async () => {

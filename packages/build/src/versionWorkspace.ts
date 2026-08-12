@@ -98,20 +98,23 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
 
   logger.info({ message: `> Versioning workspace (${workspacePath})` });
 
-  // Phase 0: scan every candidate package's unpushed commits up front. This
-  // gives us a map of packages that have their own local changes to ship,
-  // separate from the traditional "dependency bumped, cascade" trigger.
-  const commitBumps = await scanCommitBumps(filteredPackageNames, packageMap);
+  // Phase 0: scan every candidate package's UNRELEASED commits up front. For a publishable
+  // package the scan is anchored on the record commit of its REGISTRY-MAX release (via the
+  // release tag), not on the upstream branch — pushed-but-never-released content (a shadowed
+  // release under a sibling lineage's higher versions) still counts as changes to ship. This
+  // gives us a map of packages that have their own changes to ship, separate from the
+  // traditional "dependency bumped, cascade" trigger.
+  const commitBumps = await scanCommitBumps(filteredPackageNames, packageMap, seams.registry);
   if (commitBumps.size === 0) {
-    logger.info({ message: `> No packages have unpushed commits` });
+    logger.info({ message: `> No packages have unreleased changes` });
   } else {
     const scanSummary = Array.from(commitBumps.entries())
       .map(([name, bump]) => `${cw.color(name)}:${bump}`)
       .join(', ');
-    logger.info({ message: `> Packages with unpushed commits: ${scanSummary}` });
+    logger.info({ message: `> Packages with unreleased changes: ${scanSummary}` });
   }
 
-  // Phase 1: identify commit-leaves — packages with unpushed commits whose
+  // Phase 1: identify commit-leaves — packages with unreleased commits whose
   // direct workspace-local deps have none. These are the roots of change
   // and must be versioned+published first; once they're out, the cascade of
   // dep-version rewrites propagates to the rest.
@@ -123,7 +126,7 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
   }
 
   // Phase 2: unified topo-ordered loop. For each package we combine two
-  // signals: own unpushed commits (from `commitBumps`) and dep-version
+  // signals: own unreleased commits (from `commitBumps`) and dep-version
   // rewrites (from `applyDependencyVersionRewrites`). A package publishes
   // iff either signal fires. The effective bump is the max of (own-commit
   // bump) and (cascade → 'patch'). Topo order (deps-first) ensures leaves
@@ -135,6 +138,12 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
   // by package name. This — not in-memory package.json state — is what dependent ranges are
   // rewritten from: a range only ever points at a version that verifiably exists on the
   // registry (topo order guarantees the upstream entry lands before dependents read it).
+  //
+  // INVARIANT: every entry EXCEEDS the package's registry max at compute time. Targets are
+  // computed as bump(registry max), and `publish` refuses (loudly) to record a target that
+  // does not exceed every other published version (see assertReleaseExceedsRegistryMax) —
+  // so a caret range rewritten from an entry here always semver-resolves to THIS run's
+  // release, never to a shadowed lower version or another lineage's content.
   const acceptedVersions = new Map<string, string>();
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
@@ -506,20 +515,23 @@ async function applyDependencyVersionRewrites(
 }
 
 /**
- * Up-front scan: for each candidate package, classify the unpushed commits
- * in its own git repo into a semver bump level. Returns a map (only contains
- * entries for packages with classifiable unpushed commits). Packages with no
- * unpushed commits or missing upstream branches are absent from the map.
+ * Up-front scan: for each candidate package, classify its unreleased commits into a semver
+ * bump level (`classifyUnreleasedCommits`). Returns a map (only contains entries for
+ * packages with classifiable unreleased commits).
  *
  * This is the input to `computeCommitLeaves` and to the per-package bump-level
  * combine in the main loop.
  */
-async function scanCommitBumps(packageNames: string[], packageMap: LocalPackageMap): Promise<Map<string, CommitBump>> {
+async function scanCommitBumps(
+  packageNames: string[],
+  packageMap: LocalPackageMap,
+  registry: PackageRegistry
+): Promise<Map<string, CommitBump>> {
   const result = new Map<string, CommitBump>();
   for (const packageName of packageNames) {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
-    const bump = await classifyUnpushedCommits(packageDir);
+    const bump = await classifyUnreleasedCommits(localPackage, packageDir, registry);
     if (bump) {
       result.set(packageName, bump);
     }
@@ -528,8 +540,60 @@ async function scanCommitBumps(packageNames: string[], packageMap: LocalPackageM
 }
 
 /**
- * A package is a "commit-leaf" if it has unpushed commits (i.e. appears in
- * `scanMap`) AND none of its direct workspace-local deps have unpushed
+ * Change detection for one package: classify the commits its repo carries SINCE THE RECORD
+ * COMMIT OF ITS REGISTRY-MAX RELEASE. The anchor is the release tag `<name>@<registryMax>`
+ * that every release flow pushes (this flow's `pushAndTag`, CI's chore(release)) at the
+ * commit that recorded the release. Path-filtered to the package dir so sibling packages'
+ * commits in a multi-package repo don't register as this package's changes.
+ *
+ * Why not unpushed commits (`@{u}..HEAD`)? Pushed-but-unreleased content is invisible to a
+ * branch-anchored scan. 2026-08-12 train, attempt 10: chat-common's ops content and its
+ * shadowed 1.22.1 record were fully pushed while the registry max was a sibling lineage's
+ * 1.24.0 — the branch scan reported "nothing to ship", so no run ever released the content
+ * past the sibling's max, and dependents' recorded ^1.22.1 ranges kept resolving to the
+ * sibling's pre-ops 1.24.0 (space-server/space-ui died on missing exports, every re-run,
+ * forever). Anchoring on the registry-max release closes that at the source: the commits
+ * between the sibling's record (merged into our history) and HEAD ARE unreleased content,
+ * and the resulting bump — applied to the registry-max baseline in the main loop — releases
+ * past the shadow. When the release tag exists this scan is a superset of the unpushed scan
+ * (release records are always pushed), and prior-attempt residue can never lower the anchor
+ * because the anchor version comes from the registry, not from local tags or records.
+ *
+ * Named fallbacks, each keeping the branch-anchored semantics:
+ *   - not a publishable package: "released" doesn't exist for it; its bumps only version
+ *     git records, and unpushed commits remain the right signal.
+ *   - never published (no registry versions): every commit is unreleased and the local
+ *     version is the only baseline that exists; `@{u}..HEAD` matches how that baseline
+ *     advances.
+ *   - registry max has no local release tag (tags never fetched): there is no commit to
+ *     anchor on — fall back loudly, because a pushed-but-unreleased change is invisible in
+ *     this mode.
+ */
+async function classifyUnreleasedCommits(
+  localPackage: LocalPackage,
+  packageDir: string,
+  registry: PackageRegistry
+): Promise<CommitBump | undefined> {
+  if (!shouldPublishPackage(localPackage, { quiet: true })) {
+    return classifyUnpushedCommits(packageDir);
+  }
+  const registryMax = maxPublishedVersion(await registry.getPublishedVersions(localPackage));
+  if (!registryMax) {
+    return classifyUnpushedCommits(packageDir);
+  }
+  const releaseTag = `${localPackage.name}@${registryMax}`;
+  if (!(await refExists(packageDir, `refs/tags/${releaseTag}`))) {
+    logger.warn({
+      message: `(${cw.color(localPackage.name)}) registry max ${registryMax} has no local release tag (${releaseTag}) — cannot anchor the change scan on the release record; falling back to the unpushed-commit scan (a pushed-but-unreleased change is invisible to it)`,
+    });
+    return classifyUnpushedCommits(packageDir);
+  }
+  return classifyCommitRange(packageDir, `${releaseTag}..HEAD`, '.');
+}
+
+/**
+ * A package is a "commit-leaf" if it has unreleased commits (i.e. appears in
+ * `scanMap`) AND none of its direct workspace-local deps have unreleased
  * commits. These are the true sources of change — they trigger the entire
  * cascade, so they must be versioned + published first.
  *
@@ -950,11 +1014,17 @@ async function publish(localPackage: LocalPackage, registry: PackageRegistry) {
     return;
   }
 
+  // Every path out of this function feeds `acceptedVersions` — enforce the release
+  // invariant on the freshly read registry state before ANY of them can record `target`.
+  const publishedBefore = await registry.getPublishedVersions(localPackage);
+  assertReleaseExceedsRegistryMax(localPackage.name, target, publishedBefore);
+
   // RESUME WINDOW: the computed target can already be on the registry — a prior attempt was
   // accepted but the response was lost, or a run died between acceptance and the durable
   // record. Acceptance is what matters; re-publishing the same version can only collide.
-  // Skip straight to recording.
-  const publishedBefore = await registry.getPublishedVersions(localPackage);
+  // Skip straight to recording. The assert above scopes this window to a genuinely
+  // this-run target (one that exceeds every OTHER published version): a pre-existing OLD
+  // own version at-or-below the registry max is history, never a resume.
   if (publishedBefore.includes(target)) {
     logger.info({
       message: `(${cw.color(localPackage.name)}) ${target} is already on the registry — resuming: skipping publish, recording only`,
@@ -976,6 +1046,34 @@ async function publish(localPackage: LocalPackage, registry: PackageRegistry) {
       return;
     }
     throw error;
+  }
+}
+
+/**
+ * INVARIANT: a release this run always EXCEEDS the registry max at compute time. Enforced at
+ * the one boundary where a computed target becomes a recorded release (`publish` — its every
+ * exit feeds `acceptedVersions`, which dependent ranges are rewritten from): `target` must be
+ * strictly greater than every published version other than itself.
+ *
+ * Targets are computed as bump(registry max), so a violation here means the baseline read
+ * was stale or wrong (an empty or partial version list — e.g. a transient authenticated 404
+ * reading as "never published"). Recording anyway would create a SHADOWED release: an
+ * at-or-below-max version whose dependents' caret ranges semver-resolve to another lineage's
+ * content (2026-08-12 train: chat-common 1.22.1 recorded under a sibling's 1.24.0 —
+ * dependents installed the sibling's pre-ops content and their builds died on missing
+ * exports). The resume window and the publish-error acceptance check would otherwise LAUNDER
+ * exactly that shape: the old own version is on the registry, so membership alone reads as
+ * "this run's publish landed earlier". Fail loudly instead — the re-run recomputes from a
+ * fresh baseline.
+ */
+function assertReleaseExceedsRegistryMax(packageName: string, target: string, publishedVersions: string[]) {
+  const othersMax = maxPublishedVersion(publishedVersions.filter((version) => version !== target));
+  if (othersMax && !semver.gt(target, othersMax)) {
+    throw new Error(
+      `(${packageName}) computed release target ${target} does not exceed the registry max ${othersMax} — ` +
+        `refusing to record a shadowed release. The baseline this target was computed from does not match ` +
+        `the registry's current version list; re-run to recompute from a fresh baseline.`
+    );
   }
 }
 
@@ -1012,25 +1110,34 @@ async function revertTransientVersionWrites(localPackage: LocalPackage) {
   });
 }
 
-function shouldPublishPackage(localPackage: LocalPackage) {
+/**
+ * Whether the package publishes to a registry at all. `quiet` suppresses the skip-reason
+ * logs for callers that only need the predicate (e.g. the phase-0 scan, which probes every
+ * candidate package every run).
+ */
+function shouldPublishPackage(localPackage: LocalPackage, { quiet = false }: { quiet?: boolean } = {}) {
   if (localPackage.packageJson.private) {
     return false;
   }
 
   const publishConfig = localPackage.packageJson.publishConfig;
   if (!publishConfig) {
-    logger.info({
-      message: `(${cw.color(localPackage.name)}) skipping publish – package missing publishConfig`,
-    });
+    if (!quiet) {
+      logger.info({
+        message: `(${cw.color(localPackage.name)}) skipping publish – package missing publishConfig`,
+      });
+    }
     return false;
   }
 
   const hasAccess = typeof publishConfig.access === 'string' && publishConfig.access.length > 0;
   const hasRegistry = typeof publishConfig.registry === 'string' && publishConfig.registry.length > 0;
   if (!hasAccess && !hasRegistry) {
-    logger.info({
-      message: `(${cw.color(localPackage.name)}) skipping publish – publishConfig requires an access or registry value`,
-    });
+    if (!quiet) {
+      logger.info({
+        message: `(${cw.color(localPackage.name)}) skipping publish – publishConfig requires an access or registry value`,
+      });
+    }
     return false;
   }
 
@@ -1113,9 +1220,26 @@ function maxBump(a: CommitBump | undefined, b: CommitBump | undefined): CommitBu
  * don't depend on any repo state beyond a valid upstream ref.
  */
 export async function classifyUnpushedCommits(dir: string): Promise<CommitBump | undefined> {
+  return classifyCommitRange(dir, '@{u}..HEAD');
+}
+
+/**
+ * Classify the net semver bump of the commits in `range` (optionally path-filtered relative
+ * to `dir`) by conventional-commits rules. `undefined` when the range is empty or cannot be
+ * resolved (missing upstream, unknown ref — treated as "nothing to ship").
+ */
+async function classifyCommitRange(dir: string, range: string, pathFilter?: string): Promise<CommitBump | undefined> {
   return new Promise((resolve) => {
     // `\x00` as record separator; each record is the full commit message body.
-    exec('git log @{u}..HEAD --format=%B%x00', { cwd: dir }, (error, stdout) => {
+    //
+    // `--full-history` (only meaningful with a pathspec): default history simplification
+    // follows a single TREESAME parent through merges, which can prune an entire side
+    // branch's commits from the listing. For change detection the safe bias is to KEEP
+    // every commit touching the path — over-listing at worst releases a version whose
+    // content matches the registry max (harmless), while under-listing recreates the
+    // shadowed-release dead end this scan exists to close.
+    const pathArgs = pathFilter ? ` --full-history -- ${pathFilter}` : '';
+    exec(`git log '${range}' --format=%B%x00${pathArgs}`, { cwd: dir }, (error, stdout) => {
       if (error || !stdout.trim()) {
         resolve(undefined);
         return;
@@ -1133,6 +1257,12 @@ export async function classifyUnpushedCommits(dir: string): Promise<CommitBump |
       }
       resolve(result);
     });
+  });
+}
+
+async function refExists(dir: string, ref: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    exec(`git rev-parse --verify --quiet '${ref}'`, { cwd: dir }, (error) => resolve(!error));
   });
 }
 
