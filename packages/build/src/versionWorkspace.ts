@@ -3,16 +3,37 @@ import { exec } from 'child_process';
 import { LocalPackage, LocalPackageMap, PackageUtil, cmd, Fs, LogColorWrapper } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
 import semver from 'semver';
-import { Commit } from './Github';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 import { hasLintConfig } from './lintWorkspace';
 import { mergeToMain, parseMergeToMainSpec, assertNoLeftoverVersionState } from './mergeToMain';
+import { PackageRegistry, NpmPackageRegistry, isNetworkError } from './PackageRegistry';
 
 const cw = new LogColorWrapper();
 const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.color('version', secondaryLogColor) });
 const fixedVersionWorkspacesToVersion: { [workspacePath: string]: boolean } = {};
 
-export async function versionWorkspace() {
+/**
+ * Injectable collaborators for `versionWorkspace`. Production runs use the npm-CLI registry
+ * and the real clean/install/build/test pipeline; the test harness substitutes an in-memory
+ * registry and a lightweight build so the versioning flow itself — baselines, publishes,
+ * records, cascades — runs hermetically against staged registry/git states.
+ */
+export type VersionWorkspaceSeams = {
+  registry: PackageRegistry;
+  buildAndTest: (localPackage: LocalPackage) => Promise<void>;
+};
+
+export type VersionWorkspaceOptions = {
+  /** Workspace root to version. Defaults to `process.cwd()` (the bin entry's contract). */
+  workspacePath?: string;
+  seams?: Partial<VersionWorkspaceSeams>;
+};
+
+export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
+  const seams: VersionWorkspaceSeams = {
+    registry: options.seams?.registry ?? new NpmPackageRegistry(),
+    buildAndTest: options.seams?.buildAndTest ?? buildAndTest,
+  };
   const dryRun = isDryRun();
   const planOnly = isPlanOnly();
 
@@ -24,7 +45,7 @@ export async function versionWorkspace() {
   } else if (dryRun) {
     logger.info({ message: 'Dry run mode enabled. Publish and push operations will be skipped.' });
   }
-  const workspacePath = process.cwd();
+  const workspacePath = options.workspacePath ?? process.cwd();
   await evictGitLocks(workspacePath);
 
   // Opt-in pre-phase: merge feature-branch work into main per leaf repo before versioning (see
@@ -157,7 +178,7 @@ export async function versionWorkspace() {
       ]);
     }
 
-    await buildAndTest(localPackage);
+    await seams.buildAndTest(localPackage);
     if (isInFixedVersionWorkspace(localPackage) && localPackage.workspace) {
       logger.info({
         message: `(${cw.color(packageName)}) skipping version push for package in a fixed-version workspace`,
@@ -166,7 +187,7 @@ export async function versionWorkspace() {
     }
 
     if (shouldPublishPackage(localPackage)) {
-      await publish(localPackage);
+      await publish(localPackage, seams.registry);
     }
 
     await pushAndTag(localPackage);
@@ -698,14 +719,14 @@ async function pull(localPackage: LocalPackage) {
   logger.info({ message: `(${cw.color(localPackage.name)}) pulled latest changes` });
 }
 
-async function pushAndTag(localPackage: LocalPackage): Promise<Commit | undefined> {
+async function pushAndTag(localPackage: LocalPackage): Promise<void> {
   const dryRun = isDryRun();
 
   if (dryRun) {
     logger.info({
       message: `(${cw.color(localPackage.name)}) Dry run: skipping git add/commit/push/tag for version ${localPackage.packageJson.version}`,
     });
-    return undefined;
+    return;
   }
 
   const packageDir = path.dirname(localPackage.filePath);
@@ -723,9 +744,6 @@ async function pushAndTag(localPackage: LocalPackage): Promise<Commit | undefine
   logger.info({
     message: `(${cw.color(localPackage.name)}) pushed latest version (${localPackage.packageJson.version})`,
   });
-  const latestCommitSha = await getLatestCommitSha(packageDir);
-  const repoInfo = await getRepoInfo(packageDir);
-  const commit = { sha: latestCommitSha, ...repoInfo };
   const tagName = `${localPackage.name}@${localPackage.packageJson.version}`;
   logger.info({ message: `(${cw.color(localPackage.name)}) pushing tag (${tagName})` });
   await cmd(
@@ -741,7 +759,6 @@ async function pushAndTag(localPackage: LocalPackage): Promise<Commit | undefine
     { logPrefix: `[${cw.color(localPackage.name)}] ` }
   );
   logger.info({ message: `(${cw.color(localPackage.name)}) pushed tag (${tagName})` });
-  return commit;
 }
 
 async function pushAndTagFixedVersionRepo(
@@ -749,7 +766,7 @@ async function pushAndTagFixedVersionRepo(
   version: string | false,
   skipTagging = false,
   skipCi = true
-): Promise<Commit | undefined> {
+): Promise<void> {
   const dryRun = isDryRun();
 
   if (dryRun) {
@@ -757,7 +774,7 @@ async function pushAndTagFixedVersionRepo(
     logger.info({
       message: `(${cw.color(repoName)}) Dry run: skipping git add/commit/push${version ? ` for version ${version}` : ''}`,
     });
-    return undefined;
+    return;
   }
 
   const repoName = path.basename(dir.endsWith(path.sep) ? dir.slice(0, -1) : dir);
@@ -787,9 +804,6 @@ async function pushAndTagFixedVersionRepo(
       logger.info({ message: `(${cw.color(repoName)}) pushed dependency bumps` });
     }
   }
-  const latestCommitSha = await getLatestCommitSha(dir);
-  const repoInfo = await getRepoInfo(dir);
-  const commit = { sha: latestCommitSha, ...repoInfo };
   if (!skipTagging) {
     const tagName = `v${version}`;
     logger.info({ message: `(${cw.color(repoName)}) pushing tag (${tagName})` });
@@ -802,8 +816,6 @@ async function pushAndTagFixedVersionRepo(
     await cmd('git', ['push', 'origin', tagName], { cwd: dir }, { logPrefix: `[${cw.color(repoName)}] ` });
     logger.info({ message: `(${cw.color(repoName)}) pushed tag (${tagName})` });
   }
-
-  return commit;
 }
 
 async function pushMetarepos(dir: string, skipRootRepo = false) {
@@ -863,63 +875,8 @@ async function symlinkWorkspace(workspacePath: string, packageNames: string[], p
   logger.info({ message: `> Symlinked local dependencies in workspace (${workspacePath})` });
 }
 
-async function getLatestCommitSha(dir: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    exec('git rev-parse HEAD', { cwd: dir }, (error, stdout) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(stdout.trim());
-    });
-  });
-}
-
-type RepoInfo = {
-  owner: string;
-  repo: string;
-};
-
-async function getRepoInfo(dir: string): Promise<RepoInfo> {
-  return new Promise((resolve, reject) => {
-    exec('git remote -v', { cwd: dir }, (error, stdout) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-
-      const lines = stdout.split('\n');
-      for (const line of lines) {
-        if (line.startsWith('origin')) {
-          // eslint-disable-next-line no-useless-escape
-          const match = line.match(/github\.com[:\/](.+?)\/(.+?)\.git/);
-          if (match) {
-            const [_, owner, repo] = match;
-            resolve({ owner, repo });
-            return;
-          }
-        }
-      }
-
-      reject(new Error('Origin remote not found or is not a GitHub repository'));
-    });
-  });
-}
-
-async function publish(localPackage: LocalPackage) {
+async function publish(localPackage: LocalPackage, registry: PackageRegistry) {
   const dryRun = isDryRun();
-  if (localPackage.packageJson.private) {
-    logger.info({ message: `Preventing publish of private package: ${cw.color(localPackage.name)}` });
-    return;
-  }
-
-  const publishConfig = localPackage.packageJson.publishConfig ?? {};
-  const registry = getPublishRegistry(publishConfig); // uses publishConfig.registry or falls back to npmjs
-  const tag = publishConfig.tag ?? 'latest';
-  const access = publishConfig.access;
-  const packageDir = path.dirname(localPackage.filePath);
-
-  await assertRegistryAuth(registry, localPackage);
   if (dryRun) {
     logger.info({
       message: `(${cw.color(localPackage.name)}) Dry run: would publish version ${localPackage.packageJson.version}`,
@@ -927,57 +884,7 @@ async function publish(localPackage: LocalPackage) {
     return;
   }
 
-  logger.info({
-    message: `(${cw.color(localPackage.name)}) publishing latest version (${localPackage.packageJson.version}) [registry=${registry}]`,
-  });
-
-  // Use publishConfig as the source of truth
-  const args = ['publish', '--tag', tag, ...(await npmUserconfigArgs(packageDir))];
-  // Only include --access when publishing to the public npm registry
-  try {
-    const host = new URL(registry).hostname;
-    if (host.endsWith('npmjs.org') && access) {
-      args.push('--access', access);
-    }
-  } catch {
-    /* ignore malformed URL */
-  }
-
-  await retryOnNetworkError(
-    () =>
-      cmd(
-        'npm',
-        args,
-        { cwd: packageDir, env: { ...process.env } },
-        { logPrefix: `[${cw.color(localPackage.name)}] ` }
-      ),
-    localPackage.name,
-    3,
-    15_000
-  );
-
-  logger.info({ message: `(${cw.color(localPackage.name)}) published ${localPackage.packageJson.version}` });
-}
-
-const registryAuthCheckCache: { [registry: string]: boolean } = {};
-
-async function npmUserconfigArgs(packageDir: string): Promise<string[]> {
-  const rc = path.join(packageDir, '.npmrc');
-  return (await Fs.exists(rc)) ? ['--userconfig', rc] : [];
-}
-
-async function assertRegistryAuth(registry: string, localPackage: LocalPackage) {
-  if (!registry || registryAuthCheckCache[registry]) {
-    return;
-  }
-  const packageDir = path.dirname(localPackage.filePath);
-  await cmd(
-    'npm',
-    ['whoami', '--registry', registry, ...(await npmUserconfigArgs(packageDir))],
-    { cwd: packageDir, env: { ...process.env } },
-    { logPrefix: `[${cw.color(localPackage.name)}] ` }
-  );
-  registryAuthCheckCache[registry] = true;
+  await registry.publish(localPackage);
 }
 
 function shouldPublishPackage(localPackage: LocalPackage) {
@@ -1003,14 +910,6 @@ function shouldPublishPackage(localPackage: LocalPackage) {
   }
 
   return true;
-}
-
-function getPublishRegistry(publishConfig: { registry?: string }) {
-  if (publishConfig.registry) {
-    return publishConfig.registry;
-  }
-
-  return 'https://registry.npmjs.org/';
 }
 
 async function getCurrentBranch(dir: string): Promise<string> {
@@ -1200,39 +1099,4 @@ export async function evictGitLocks(workspacePath: string) {
   logger.info({ message: `> Evicting ${lockFiles.length} git lock file(s) from workspace` });
   await Fs.deleteFiles(lockFiles);
   logger.info({ message: `> Evicted git lock files` });
-}
-
-function isNetworkError(error: any): boolean {
-  const output = `${error.stdout ?? ''}${error.stderr ?? ''}`;
-  return (
-    /ECONNRESET/i.test(output) ||
-    /ETIMEDOUT/i.test(output) ||
-    /ENOTFOUND/i.test(output) ||
-    /EAI_AGAIN/i.test(output) ||
-    /ECONNREFUSED/i.test(output) ||
-    /socket hang up/i.test(output) ||
-    /network/i.test(output)
-  );
-}
-
-async function retryOnNetworkError(
-  fn: () => Promise<any>,
-  label: string,
-  maxRetries = 3,
-  retryDelayMs = 15_000
-): Promise<void> {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      await fn();
-      return;
-    } catch (error: any) {
-      if (!isNetworkError(error) || attempt === maxRetries) {
-        throw error;
-      }
-      logger.info({
-        message: `(${cw.color(label)}) network error, retrying (attempt ${attempt}/${maxRetries}, next retry in ${retryDelayMs / 1000}s)`,
-      });
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-    }
-  }
 }
