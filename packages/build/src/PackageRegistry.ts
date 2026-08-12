@@ -19,8 +19,10 @@ export interface PackageRegistry {
   /**
    * The full published version list for the package on ITS OWN registry (per-package
    * publishConfig/.npmrc — e.g. @n3xah on npm.pkg.github.com, @proteinjs on npmjs).
-   * Returns `[]` for a package that has never been published. Never cached — callers
-   * re-query for resume/acceptance checks and need registry truth, not a snapshot.
+   * Returns `[]` for a package that has never been published. Not cached here — the
+   * resume/acceptance checks re-query and need registry truth, not a snapshot; callers
+   * that can tolerate a run-scoped snapshot (the prior-run rewrite reads) cache on their
+   * own side.
    */
   getPublishedVersions(localPackage: LocalPackage): Promise<string[]>;
   /**
@@ -48,22 +50,22 @@ export class NpmPackageRegistry implements PackageRegistry {
     if (!this.isNpmjs(registry)) {
       await this.assertAuth(registry, localPackage);
     }
+    const userconfigArgs = await this.userconfigArgs(packageDir);
 
     let stdout: string;
     try {
-      const result = await cmd(
-        'npm',
-        [
-          'view',
-          localPackage.name,
-          'versions',
-          '--json',
-          '--registry',
-          registry,
-          ...(await this.userconfigArgs(packageDir)),
-        ],
-        { cwd: packageDir, env: { ...process.env } },
-        { omitLogs: { stdout: { omit: true }, stderr: { omit: true } } }
+      // Retried on transients: a rate-limit 403 flap on this exact metadata GET killed train
+      // attempt 12 (2026-08-12) — the read succeeded seconds later. Non-transient errors (the
+      // authenticated 404 below) rethrow on the first attempt.
+      const result = await retryOnNetworkError(
+        () =>
+          cmd(
+            'npm',
+            ['view', localPackage.name, 'versions', '--json', '--registry', registry, ...userconfigArgs],
+            { cwd: packageDir, env: { ...process.env } },
+            { omitLogs: { stdout: { omit: true }, stderr: { omit: true } } }
+          ),
+        localPackage.name
       );
       stdout = result.stdout;
     } catch (error: any) {
@@ -140,11 +142,18 @@ export class NpmPackageRegistry implements PackageRegistry {
       return;
     }
     const packageDir = path.dirname(localPackage.filePath);
-    await cmd(
-      'npm',
-      ['whoami', '--registry', registry, ...(await this.userconfigArgs(packageDir))],
-      { cwd: packageDir, env: { ...process.env } },
-      { logPrefix: `[${cw.color(localPackage.name)}] ` }
+    const userconfigArgs = await this.userconfigArgs(packageDir);
+    // Same transient class as the metadata GET: an auth probe that flaps 403 must not kill a
+    // train; a real credential problem still exhausts the retries and surfaces.
+    await retryOnNetworkError(
+      () =>
+        cmd(
+          'npm',
+          ['whoami', '--registry', registry, ...userconfigArgs],
+          { cwd: packageDir, env: { ...process.env } },
+          { logPrefix: `[${cw.color(localPackage.name)}] ` }
+        ),
+      localPackage.name
     );
     this.authCheckedRegistries[registry] = true;
   }
@@ -187,16 +196,15 @@ export function isNetworkError(error: any): boolean {
   );
 }
 
-export async function retryOnNetworkError(
-  fn: () => Promise<any>,
+export async function retryOnNetworkError<T>(
+  fn: () => Promise<T>,
   label: string,
   maxRetries = 3,
   retryDelayMs = 15_000
-): Promise<void> {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
     try {
-      await fn();
-      return;
+      return await fn();
     } catch (error: any) {
       if (!isNetworkError(error) || attempt === maxRetries) {
         throw error;

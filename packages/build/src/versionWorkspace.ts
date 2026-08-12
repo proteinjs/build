@@ -135,9 +135,11 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
   // rather than being demoted to 'patch' by the cascade.
   //
   // Versions this run saw the registry accept (or would accept, in plan/dry preview modes),
-  // by package name. This — not in-memory package.json state — is what dependent ranges are
-  // rewritten from: a range only ever points at a version that verifiably exists on the
-  // registry (topo order guarantees the upstream entry lands before dependents read it).
+  // by package name. Dependent ranges are rewritten from THIS map for deps releasing this
+  // run, and from the registry's own version list for deps whose latest release a PRIOR run
+  // recorded (see applyDependencyVersionRewrites) — never from in-memory package.json state:
+  // a range only ever points at a version that verifiably exists on the registry (topo order
+  // guarantees the upstream entry lands before dependents read it).
   //
   // INVARIANT: every entry EXCEEDS the package's registry max at compute time. Targets are
   // computed as bump(registry max), and `publish` refuses (loudly) to record a target that
@@ -145,6 +147,11 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
   // so a caret range rewritten from an entry here always semver-resolves to THIS run's
   // release, never to a shadowed lower version or another lineage's content.
   const acceptedVersions = new Map<string, string>();
+  // Registry version lists read for the prior-run rewrite path, cached per run: a dep that is
+  // not releasing this run cannot grow new versions mid-run, and a dep that IS releasing hits
+  // the acceptedVersions short-circuit before this cache is ever consulted. Never shared with
+  // the scan, baseline, or publish reads — those need per-phase registry truth, not a snapshot.
+  const rewriteVersionsCache = new Map<string, string[]>();
   for (const packageName of filteredPackageNames) {
     const localPackage = packageMap[packageName];
     const skipBumpingPackageVersion = isInFixedVersionWorkspace(localPackage);
@@ -154,7 +161,9 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
       packageMap,
       packageGraph,
       userSkippedPackages,
-      acceptedVersions
+      acceptedVersions,
+      seams.registry,
+      rewriteVersionsCache
     );
     const cascadeBump: CommitBump | undefined = dependenciesChanged ? 'patch' : undefined;
     const effectiveBump = maxBump(ownBump, cascadeBump);
@@ -436,29 +445,44 @@ async function pullWorkspace(workspacePath: string, skipRootRepo = false) {
 }
 
 /**
- * Rewrite `localPackage`'s dependency-version fields in package.json to match the versions
- * its workspace-local deps had ACCEPTED BY THE REGISTRY this run (`acceptedVersions` — topo
- * order guarantees an upstream's acceptance lands before its dependents are processed).
- * Returns true if any dep version was rewritten.
+ * Rewrite `localPackage`'s dependency-version fields in package.json to the version each
+ * workspace-local dep most recently had ACCEPTED BY THE REGISTRY: from `acceptedVersions`
+ * when the dep released THIS run (topo order guarantees an upstream's acceptance lands before
+ * its dependents are processed), and from the dep's own registry version list when its latest
+ * release was recorded by a PRIOR run. Returns true if any dep version was rewritten.
  *
- * Ranges are rewritten from accepted versions ONLY — never from a dep's on-disk package.json.
- * A local record is not proof of a publishable version: rewriting a dependent to a
- * bumped-but-never-published dep version strands it on an uninstallable range (`npm install`
- * retries ETARGET for minutes before dying). A dep that didn't release this run keeps the
- * dependent's recorded range, which was itself written from an accepted version when the dep
- * last released.
+ * Ranges are rewritten from registry-accepted versions ONLY — never from a dep's on-disk
+ * package.json. A local record is not proof of a publishable version: rewriting a dependent
+ * to a bumped-but-never-published dep version strands it on an uninstallable range
+ * (`npm install` retries ETARGET for minutes before dying).
+ *
+ * Why the registry read for deps that didn't release this run: acceptance is DURABLE, the
+ * in-run map is not. An interrupted run can release an upstream (recorded + tagged) and die
+ * before its dependents record their rewritten ranges — the revert restores their
+ * pre-release ranges, and the re-run's scan finds nothing to ship for the upstream, so
+ * `acceptedVersions` never carries its release. 2026-08-12 train, attempts 12+13:
+ * chat-common@1.25.0 released and recorded at 2:42, the run died on a later package's
+ * publish read; the re-run left space-common's stale ^1.22.1 in place and its committed
+ * lockfile pin at the sibling's pre-ops 1.24.0 still SATISFIED that range, so `npm install`
+ * bound to 1.24.0 and the build died on missing exports. Rewriting the floor to the registry
+ * max closes both halves at once: the range tracks the accepted release, and a floor equal
+ * to the highest published version invalidates every lower lockfile pin — the install that
+ * follows can only resolve the rewritten floor.
  *
  * Pure rewrite — does NOT bump `localPackage`'s own version; the caller decides that by
  * combining this result with the commit-scan map (see `versionWorkspace`). Writing the
  * package.json to disk is left to the caller too, so we can apply the own-version bump in
- * the same write.
+ * the same write — which the caller MUST land before the package's `npm install` (the
+ * install reads disk, not memory).
  */
 async function applyDependencyVersionRewrites(
   localPackage: LocalPackage,
   packageMap: LocalPackageMap,
   packageGraph: any,
   userSkippedPackages: Set<string>,
-  acceptedVersions: Map<string, string>
+  acceptedVersions: Map<string, string>,
+  registry: PackageRegistry,
+  rewriteVersionsCache: Map<string, string[]>
 ): Promise<boolean> {
   const localDependencies = packageGraph.successors(localPackage.name);
   if (!localDependencies || localDependencies.length == 0) {
@@ -488,8 +512,21 @@ async function applyDependencyVersionRewrites(
       continue;
     }
 
-    const acceptedVersion = acceptedVersions.get(localDependency);
-    if (!acceptedVersion) {
+    let targetVersion = acceptedVersions.get(localDependency);
+    if (!targetVersion) {
+      // The dep isn't releasing this run — but a PRIOR run may have released past this
+      // package's recorded floor (see the function doc). The registry is the durable
+      // accepted-version record; adopt its max. A registry max BELOW the recorded floor can
+      // only be a stale/partial read (the floor was itself accepted once) — never downgrade.
+      const priorReleaseMax = await maxPriorReleasedVersion(localDependencyPackage, registry, rewriteVersionsCache);
+      if (priorReleaseMax && semver.gt(priorReleaseMax, currentDependencyVersion.version)) {
+        logger.info({
+          message: `(${cw.color(localPackage.name)}) dependency ${cw.color(localDependency)} released ${priorReleaseMax} in a prior run (recorded range floor ${currentDependencyVersion.version}) — adopting the registry-accepted version`,
+        });
+        targetVersion = priorReleaseMax;
+      }
+    }
+    if (!targetVersion) {
       const onDiskVersion = localDependencyPackage.packageJson.version as string;
       if (currentDependencyVersion.version !== onDiskVersion) {
         logger.info({
@@ -499,19 +536,42 @@ async function applyDependencyVersionRewrites(
       continue;
     }
 
-    if (currentDependencyVersion.version == acceptedVersion) {
+    if (currentDependencyVersion.version == targetVersion) {
       continue;
     }
 
     const newDependencyVersion: DependencyVersion = {
       prefix: currentDependencyVersion.prefix,
-      version: acceptedVersion,
+      version: targetVersion,
     };
     setDependencyVersion(localDependency, currentDependencyVersion, newDependencyVersion, localPackage);
     dependenciesChanged = true;
   }
 
   return dependenciesChanged;
+}
+
+/**
+ * The max registry-accepted version of a dep that is not releasing this run — the durable
+ * counterpart of `acceptedVersions` (every release flow's record path ends at the registry,
+ * so the registry version list IS the accepted-version record that survives interrupted
+ * runs). `undefined` for non-publishable deps (no registry to consult) and never-published
+ * deps (no accepted versions exist). Reads are cached per run: see `rewriteVersionsCache`.
+ */
+async function maxPriorReleasedVersion(
+  localDependencyPackage: LocalPackage,
+  registry: PackageRegistry,
+  rewriteVersionsCache: Map<string, string[]>
+): Promise<string | undefined> {
+  if (!shouldPublishPackage(localDependencyPackage, { quiet: true })) {
+    return undefined;
+  }
+  let versions = rewriteVersionsCache.get(localDependencyPackage.name);
+  if (!versions) {
+    versions = await registry.getPublishedVersions(localDependencyPackage);
+    rewriteVersionsCache.set(localDependencyPackage.name, versions);
+  }
+  return maxPublishedVersion(versions);
 }
 
 /**

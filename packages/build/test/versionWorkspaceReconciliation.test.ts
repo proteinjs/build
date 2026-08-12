@@ -9,7 +9,7 @@ import { revertLeftoverVersionState } from '../src/mergeToMain';
 
 /**
  * Registry-reconciled versioning harness. Hermetic fixtures (local git repos with bare
- * origins + an in-memory registry seam) stage the three desync shapes from the 2026-08-12
+ * origins + an in-memory registry seam) stage the desync shapes from the 2026-08-12
  * release train and assert each self-heals in a SINGLE re-run of `versionWorkspace`:
  *
  *   1. bump-without-publish — an interrupted run left a bumped-but-never-published version in
@@ -19,10 +19,19 @@ import { revertLeftoverVersionState } from '../src/mergeToMain';
  *      the registry max instead of colliding with it.
  *   3. shadowed-by-higher-lineage — a sibling workspace published higher versions of a dep;
  *      the dependent's rewritten range must resolve to THIS run's release, not the sibling's.
+ *   4. prior-run release unseen by the re-run — an interrupted run released an upstream and
+ *      died before its dependents recorded rewritten ranges; the re-run's install must still
+ *      resolve the released version, not a stale range's lockfile pin (attempt-13 shape).
  *
  * Plus the transient-bump contract: a version write only becomes durable (committed + pushed)
  * on registry acceptance; failures revert the working tree; a target already on the registry
  * is recorded without re-publishing (resume window).
+ *
+ * The fake buildAndTest seam MODELS INSTALLATION (see `makeFakeBuildAndTest`): dependency
+ * ranges are read from the package.json ON DISK at install time and resolved against the fake
+ * registry with npm's lockfile-pin semantics. Fixtures assert the RESOLVED versions — a
+ * pipeline that lets an install read pre-rewrite ranges (or a stale-but-satisfying lock pin)
+ * goes red here instead of on a live train.
  */
 
 jest.setTimeout(120_000);
@@ -80,18 +89,54 @@ class FakeRegistry implements PackageRegistry {
   }
 }
 
-/** Stand-in for clean/install/build/test: regenerate the lockfile the way `npm install` does. */
-const fakeBuildAndTest = async (localPackage: LocalPackage) => {
+/**
+ * Stand-in for clean/install/build/test that models the part of `npm install` the versioning
+ * flow's correctness depends on: DEPENDENCY RESOLUTION.
+ *
+ *   - Ranges are read from the package.json ON DISK at install time — what npm reads. The
+ *     rewrite must land on disk before the install for this to see it; a pipeline that
+ *     installs against pre-rewrite ranges goes red in every fixture with dependencies.
+ *   - An existing lockfile pin is honored while it still SATISFIES its range (npm's actual
+ *     behavior — the attempt-13 mechanism: a stale-but-satisfying pin binds the install to
+ *     pre-release content). Otherwise resolution is semver.maxSatisfying over the registry's
+ *     published list, and an unsatisfiable range on a known package throws (ETARGET class —
+ *     what a rewrite to a never-published version dies on in production).
+ *   - Resolutions are written back as the regenerated lockfile's `packages` entries, exactly
+ *     where the real train records them — fixtures assert the resolved versions there.
+ */
+const makeFakeBuildAndTest = (registry: FakeRegistry) => async (localPackage: LocalPackage) => {
   const packageDir = path.dirname(localPackage.filePath);
+  const diskJson = JSON.parse(await fs.readFile(localPackage.filePath, 'utf-8'));
+  const lockPath = path.join(packageDir, 'package-lock.json');
+  let previousLock: any = {};
+  try {
+    previousLock = JSON.parse(await fs.readFile(lockPath, 'utf-8'));
+  } catch {
+    // no lockfile yet — fresh resolution for everything
+  }
+  const resolvedPackages: Record<string, { version: string }> = {};
+  const ranges: Record<string, unknown> = { ...(diskJson.dependencies ?? {}), ...(diskJson.devDependencies ?? {}) };
+  for (const [depName, range] of Object.entries(ranges)) {
+    if (typeof range !== 'string' || !semver.validRange(range)) {
+      continue; // file:/path deps and other non-registry references
+    }
+    const published = registry.published(depName);
+    if (published.length === 0) {
+      continue; // not a package the fake registry models
+    }
+    const pin = previousLock.packages?.[`node_modules/${depName}`]?.version;
+    const resolved = pin && semver.satisfies(pin, range) ? pin : semver.maxSatisfying(published, range);
+    if (!resolved) {
+      throw Object.assign(new Error(`No matching version found for ${depName}@${range}`), {
+        stderr: 'npm ERR! code ETARGET',
+      });
+    }
+    resolvedPackages[`node_modules/${depName}`] = { version: resolved };
+  }
   await fs.writeFile(
-    path.join(packageDir, 'package-lock.json'),
+    lockPath,
     JSON.stringify(
-      {
-        name: localPackage.name,
-        version: localPackage.packageJson.version,
-        lockfileVersion: 3,
-        dependencies: localPackage.packageJson.dependencies ?? {},
-      },
+      { name: diskJson.name, version: diskJson.version, lockfileVersion: 3, packages: resolvedPackages },
       null,
       2
     ) + '\n'
@@ -149,14 +194,26 @@ describe('versionWorkspace registry reconciliation', () => {
     await fs.rm(tmp, { recursive: true, force: true });
   });
 
-  /** A package dir that is its own git repo, pushed to a local bare origin (so `@{u}` resolves). */
-  const initPackageRepo = async (dirName: string, packageJson: any): Promise<string> => {
+  /**
+   * A package dir that is its own git repo, pushed to a local bare origin (so `@{u}` resolves).
+   * `lockPackages` stages committed lockfile resolution pins (`packages` entries) — the shape
+   * the attempt-13 fixture uses to plant a stale-but-satisfying pin.
+   */
+  const initPackageRepo = async (
+    dirName: string,
+    packageJson: any,
+    lockPackages?: Record<string, { version: string }>
+  ): Promise<string> => {
     const dir = path.join(ws, 'packages', dirName);
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify(packageJson, null, 2) + '\n');
     await fs.writeFile(
       path.join(dir, 'package-lock.json'),
-      JSON.stringify({ name: packageJson.name, version: packageJson.version, lockfileVersion: 3 }, null, 2) + '\n'
+      JSON.stringify(
+        { name: packageJson.name, version: packageJson.version, lockfileVersion: 3, packages: lockPackages ?? {} },
+        null,
+        2
+      ) + '\n'
     );
     await fs.writeFile(path.join(dir, '.gitignore'), 'node_modules/\n');
     await fs.writeFile(path.join(dir, 'src.txt'), 'initial\n');
@@ -179,7 +236,8 @@ describe('versionWorkspace registry reconciliation', () => {
     await git(dir, 'commit', '-m', message);
   };
 
-  const run = () => versionWorkspace({ workspacePath: ws, seams: { registry: fake, buildAndTest: fakeBuildAndTest } });
+  const run = () =>
+    versionWorkspace({ workspacePath: ws, seams: { registry: fake, buildAndTest: makeFakeBuildAndTest(fake) } });
 
   const headJson = async (dir: string, file: string) => JSON.parse((await git(dir, 'show', `HEAD:${file}`)).stdout);
   const isClean = async (dir: string) => (await git(dir, 'status', '--porcelain')).stdout.trim() === '';
@@ -250,6 +308,10 @@ describe('versionWorkspace registry reconciliation', () => {
     const range = (await headJson(spaceServer, 'package.json')).dependencies['@test/chat-common'];
     expect(range).toEqual('^1.24.1');
     expect(semver.maxSatisfying(fake.published('@test/chat-common'), range)).toEqual('1.24.1');
+    // And the dependent's install actually RESOLVED this run's release (the recorded lockfile
+    // carries the resolution the build ran against).
+    const lock = await headJson(spaceServer, 'package-lock.json');
+    expect(lock.packages['node_modules/@test/chat-common'].version).toEqual('1.24.1');
     // The cascade released the dependent too, in dependency order.
     expect(fake.published('@test/space-server')).toContain('2.0.1');
     expect((await headJson(spaceServer, 'package.json')).version).toEqual('2.0.1');
@@ -366,6 +428,71 @@ describe('versionWorkspace registry reconciliation', () => {
     expect(fake.published('@test/space-server')).toContain('2.0.1');
     const publishOrder = fake.publishEvents.map((e) => e.name);
     expect(publishOrder.indexOf('@test/chat-common')).toBeLessThan(publishOrder.indexOf('@test/space-server'));
+  });
+
+  it('attempt-13 shape: a release recorded by an interrupted run reaches dependents on the re-run — the install resolves it, never a stale range lockfile pin', async () => {
+    // The 2026-08-12 train, attempts 12+13 (train-release5.log), exactly. Attempt 12 released
+    // chat-common@1.25.0 past the sibling shadow (registry max 1.24.0, pre-ops content) and
+    // RECORDED it (commit + tag pushed) — then died at a later package's publish step, and the
+    // revert put that dependent's working tree back to the OLD attempt's state: range ^1.22.1,
+    // committed lockfile pinning chat-common at the sibling's 1.24.0. Attempt 13 then had
+    // nothing to ship for chat-common (released + recorded), so the run-scoped acceptedVersions
+    // never carried 1.25.0: the rewrite left ^1.22.1 in place, the still-SATISFYING lock pin
+    // bound `npm install` to the sibling's pre-ops 1.24.0, and space-common's build died on
+    // missing exports. Durable acceptance lives on the REGISTRY, not in one run's memory: the
+    // re-run must rewrite the dependent's floor to 1.25.0 — which also invalidates the lower
+    // pin — so the install can only resolve this train's release.
+    const chatCommon = await initPackageRepo('chat-common', packageJsonFor('@test/chat-common', '1.24.0'));
+    await git(chatCommon, 'tag', '-a', '@test/chat-common@1.24.0', '-m', 'Release @test/chat-common@1.24.0');
+    fake.seed('@test/chat-common', ['1.22.1', '1.23.0', '1.24.0']);
+    await addUnpushedCommit(chatCommon, 'feat: ops exports');
+    // Dependent: own unreleased change, stale recorded range from an old attempt, and that
+    // attempt's committed lockfile pin at the sibling's pre-ops 1.24.0 (still satisfies ^1.22.1).
+    const spaceCommon = await initPackageRepo(
+      'space-common',
+      packageJsonFor('@test/space-common', '1.14.0', { '@test/chat-common': '^1.22.1' }),
+      { 'node_modules/@test/chat-common': { version: '1.24.0' } }
+    );
+    await git(spaceCommon, 'tag', '-a', '@test/space-common@1.14.0', '-m', 'Release @test/space-common@1.14.0');
+    fake.seed('@test/space-common', ['1.14.0']);
+    await addUnpushedCommit(spaceCommon, 'feat: case panel gates');
+    // Attempt 12's death point: the dependent's publish fails once (the 403-flap class);
+    // attempt 13's publish goes through.
+    let spaceCommonPublishAttempts = 0;
+    fake.publishBehavior.set('@test/space-common', (localPackage) => {
+      spaceCommonPublishAttempts += 1;
+      if (spaceCommonPublishAttempts === 1) {
+        throw Object.assign(new Error('forbidden'), { stderr: 'npm ERR! code E403' });
+      }
+      fake.accept(localPackage.name, localPackage.packageJson.version);
+      fake.publishEvents.push({ name: localPackage.name, version: localPackage.packageJson.version });
+    });
+
+    await expect(run()).rejects.toThrow();
+
+    // Attempt 12 recorded the upstream release and reverted the dependent mid-flight — the
+    // staged field state, reproduced by the flow itself rather than hand-written.
+    expect(fake.published('@test/chat-common')).toContain('1.25.0');
+    expect(await originTags('chat-common')).toContain('@test/chat-common@1.25.0');
+    expect(await isClean(spaceCommon)).toBe(true);
+    expect((await headJson(spaceCommon, 'package.json')).dependencies['@test/chat-common']).toEqual('^1.22.1');
+    const revertedLock = await headJson(spaceCommon, 'package-lock.json');
+    expect(revertedLock.packages['node_modules/@test/chat-common'].version).toEqual('1.24.0');
+
+    // Attempt 13: chat-common has nothing to ship; the dependent must still build against 1.25.0.
+    await run();
+
+    // THE assertion: the dependent's install resolved the prior run's release, not the pin.
+    const lock = await headJson(spaceCommon, 'package-lock.json');
+    expect(lock.packages['node_modules/@test/chat-common'].version).toEqual('1.25.0');
+    const range = (await headJson(spaceCommon, 'package.json')).dependencies['@test/chat-common'];
+    expect(range).toEqual('^1.25.0');
+    expect(fake.published('@test/space-common')).toContain('1.15.0');
+    // Healing happens in the DEPENDENT's record — the upstream is not gratuitously re-released.
+    expect(fake.published('@test/chat-common').sort(semver.compare).pop()).toEqual('1.25.0');
+    expect(await isClean(spaceCommon)).toBe(true);
+    expect(await originHead('space-common')).toEqual(await localHead(spaceCommon));
+    expect(await originTags('space-common')).toContain('@test/space-common@1.15.0');
   });
 
   it('stale baseline: a target at-or-below the registry max is refused loudly, never recorded as a resume', async () => {
@@ -486,7 +613,7 @@ describe('versionWorkspace registry reconciliation', () => {
 });
 
 describe('registry transient classification', () => {
-  const { isNetworkError } = require('../src/PackageRegistry');
+  const { isNetworkError, retryOnNetworkError } = require('../src/PackageRegistry');
   it('treats GitHub Packages 403 flaps as retryable transients', () => {
     expect(
       isNetworkError({ stderr: 'npm error 403 403 Forbidden - GET https://npm.pkg.github.com/@n3xah%2fthought-common' })
@@ -496,5 +623,37 @@ describe('registry transient classification', () => {
   it('does not retry plain not-found or validation failures', () => {
     expect(isNetworkError({ stderr: 'npm error code E404 Not Found' })).toBe(false);
     expect(isNetworkError({ stderr: 'npm error notarget No matching version found' })).toBe(false);
+  });
+  it('retry wrapper survives a transient and returns the wrapped call value (the metadata-GET path)', async () => {
+    let calls = 0;
+    const result = await retryOnNetworkError(
+      async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw Object.assign(new Error('flap'), { stderr: 'npm error 403 403 Forbidden - GET' });
+        }
+        return { stdout: '["1.25.0"]' };
+      },
+      'test',
+      3,
+      1
+    );
+    expect(result).toEqual({ stdout: '["1.25.0"]' });
+    expect(calls).toBe(2);
+  });
+  it('retry wrapper rethrows non-transient failures immediately', async () => {
+    let calls = 0;
+    await expect(
+      retryOnNetworkError(
+        async () => {
+          calls += 1;
+          throw Object.assign(new Error('not found'), { stderr: 'npm error code E404' });
+        },
+        'test',
+        3,
+        1
+      )
+    ).rejects.toThrow('not found');
+    expect(calls).toBe(1);
   });
 });
