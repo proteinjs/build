@@ -177,7 +177,13 @@ export function isNetworkError(error: any): boolean {
     /EAI_AGAIN/i.test(output) ||
     /ECONNREFUSED/i.test(output) ||
     /socket hang up/i.test(output) ||
-    /network/i.test(output)
+    /network/i.test(output) ||
+    // GitHub Packages surfaces rate limiting and transient auth-path flaps as 403 with a generic
+    // "forbidden by your security policy" body (observed killing train attempt 12 on a plain
+    // metadata GET that succeeded seconds later) — a REAL permission problem still exhausts the
+    // retry budget and surfaces, so retrying 403s trades ~45s for surviving the flap.
+    /npm error 403/i.test(output) ||
+    /E403/i.test(output)
   );
 }
 

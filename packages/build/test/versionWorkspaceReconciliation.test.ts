@@ -484,3 +484,17 @@ describe('versionWorkspace registry reconciliation', () => {
     expect(JSON.parse(untouched).name).toEqual('@test/extras');
   });
 });
+
+describe('registry transient classification', () => {
+  const { isNetworkError } = require('../src/PackageRegistry');
+  it('treats GitHub Packages 403 flaps as retryable transients', () => {
+    expect(
+      isNetworkError({ stderr: 'npm error 403 403 Forbidden - GET https://npm.pkg.github.com/@n3xah%2fthought-common' })
+    ).toBe(true);
+    expect(isNetworkError({ stderr: 'npm error code E403' })).toBe(true);
+  });
+  it('does not retry plain not-found or validation failures', () => {
+    expect(isNetworkError({ stderr: 'npm error code E404 Not Found' })).toBe(false);
+    expect(isNetworkError({ stderr: 'npm error notarget No matching version found' })).toBe(false);
+  });
+});
