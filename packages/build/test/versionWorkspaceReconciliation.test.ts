@@ -228,9 +228,12 @@ describe('versionWorkspace registry reconciliation', () => {
   });
 
   it('lineage collision: dependent ranges resolve to this run release, not the sibling shadow', async () => {
-    // Our lineage recorded 1.22.0; a sibling workspace's releases pushed the registry to 1.24.0.
+    // Our lineage recorded 1.22.0; a sibling workspace's releases pushed the registry to 1.24.0,
+    // and our shadowed 1.22.1 landed chronologically LAST — so the versions list (publish order,
+    // what the `latest` dist-tag tracks) ends below the numeric max. The baseline must be the
+    // numeric max across the full list, never the latest/last entry (2026-08-12 train shape).
     const chatCommon = await initPackageRepo('chat-common', packageJsonFor('@test/chat-common', '1.22.0'));
-    fake.seed('@test/chat-common', ['1.22.0', '1.23.0', '1.24.0']);
+    fake.seed('@test/chat-common', ['1.22.0', '1.23.0', '1.24.0', '1.22.1']);
     await addUnpushedCommit(chatCommon, 'fix: ops permission guard');
     // Dependent with no changes of its own — pure cascade.
     const spaceServer = await initPackageRepo(
