@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.12.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.11.3...@proteinjs/build@2.12.0) (2026-08-13)
+
+
+### Features
+
+* pull-forward verb; supervisor escape hatch + live state mirror; doctor build-failure honesty ([031defb](https://github.com/proteinjs/build/commit/031defb36a2d8d143d74b79af35ce837375a1fef))
+
+
+
+
+
 ## [2.10.2](https://github.com/proteinjs/build/compare/@proteinjs/build@2.10.1...@proteinjs/build@2.10.2) (2026-08-11)
 
 
