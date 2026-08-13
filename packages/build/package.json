@@ -16,6 +16,7 @@
     "lint-workspace": "dist/src/bin/runLintWorkspace.js",
     "verify-workspace": "dist/src/bin/runVerifyWorkspace.js",
     "sync-workspace": "dist/src/bin/runSyncWorkspace.js",
+    "pull-forward": "dist/src/bin/runPullForward.js",
     "serve-package": "dist/src/bin/runServePackage.js"
   },
   "publishConfig": {
@@ -34,6 +35,7 @@
   "scripts": {
     "clean": "rm -rf dist/ node_modules/",
     "build": "tsc",
+    "test": "jest",
     "watch": "tsc -w -p .",
     "build-dist": "tsc && webpack --mode production"
   },

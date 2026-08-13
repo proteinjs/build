@@ -938,6 +938,301 @@ describe('ServePackageSupervisor', () => {
   });
 
   /**
+   * The S1 parked-coherence-wait class: a forced restart into a workspace nobody is healing
+   * parks CHILDLESS in waitForCoherence, re-diagnosing every 2s up to the ceiling. Two ratified
+   * defects: (1) the documented escape hatch (rs/SIGUSR2 → restart()) silently no-opped on the
+   * re-entrancy guard for the whole park — a "dead" supervisor for hours; (2) state.json froze
+   * on the trigger-time snapshot, so operators could not see the LIVE blocker list.
+   */
+  describe('parked coherence wait: escape hatch + live state.json mirror', () => {
+    const readState = async () =>
+      JSON.parse(await fs.readFile(path.join(consumerDir, '.serve-package', 'state.json'), 'utf-8'));
+
+    // The persistent-incoherence shape (no build running, nothing healing it): the workspace
+    // symlink becomes a registry-copy real directory.
+    const clobberLibSymlink = async () => {
+      const linkPath = path.join(consumerDir, 'node_modules', '@test', 'lib');
+      await fs.rm(linkPath, { recursive: true, force: true });
+      await fs.mkdir(linkPath, { recursive: true });
+      await fs.copyFile(path.join(libDir, 'package.json'), path.join(linkPath, 'package.json'));
+    };
+
+    const healWorkspace = async () => {
+      const linkPath = path.join(consumerDir, 'node_modules', '@test', 'lib');
+      await fs.rm(linkPath, { recursive: true, force: true });
+      const { packageMap } = await PackageUtil.getWorkspaceMetadata(workspacePath);
+      await PackageUtil.symlinkDependencies(packageMap['@test/consumer'], packageMap);
+    };
+
+    it('rs/SIGUSR2 during the childless park spawns anyway — the escape hatch is never a silent no-op', async () => {
+      const firstPid = await startSupervisor();
+      await clobberLibSymlink();
+      // Forced restart parks childless: the kill succeeds, then the wait loops on the finding.
+      void supervisor!.restart('test: park in the coherence wait');
+      // The live mirror appearing proves a diagnose pass has completed INSIDE the wait — the
+      // chain is parked, not merely killing.
+      await waitFor(
+        async () => {
+          const state = await readState();
+          return state.state === 'restarting' && state.coherenceFindings !== undefined;
+        },
+        10000,
+        'parked in the coherence wait'
+      );
+      expect(() => process.kill(firstPid, 0)).toThrow(); // childless: the kill really happened
+      // The operator's escape (what the CLI's SIGUSR2 handler invokes). Pre-fix: a silent
+      // return on the re-entrancy guard — the park continued and nothing ever spawned.
+      await supervisor!.restart('SIGUSR2');
+      await waitFor(
+        async () => {
+          const pid = await childPid();
+          return pid !== undefined && pid !== firstPid;
+        },
+        10000,
+        'child spawned despite outstanding findings'
+      );
+      const state = await readState();
+      expect(state.state).toBe('running');
+      expect(() => process.kill(state.childPid, 0)).not.toThrow(); // the advertised pid is REAL
+      expect(state.coherenceFindings).toBeUndefined(); // the spawn reset cleared the mirror
+      expect(state.coherenceCheckedAt).toBeUndefined();
+    }, 25000);
+
+    it('state.json mirrors the LIVE blocker list during the park: findings + an advancing coherenceCheckedAt, cleared on coherence', async () => {
+      const firstPid = await startSupervisor();
+      await clobberLibSymlink();
+      void supervisor!.restart('test: park in the coherence wait');
+      // Pre-fix: state.json froze on the trigger snapshot — these fields never appeared.
+      await waitFor(async () => (await readState()).coherenceFindings !== undefined, 10000, 'live findings mirrored');
+      const first = await readState();
+      expect(first.state).toBe('restarting');
+      // The doctor's own WorkspaceFinding vocabulary — not a renamed mirror shape.
+      expect(first.coherenceFindings).toEqual([{ packageName: '@test/consumer', kind: 'clobbered-symlink' }]);
+      expect(typeof first.coherenceCheckedAt).toBe('number');
+      // LIVE, not written-once: the next diagnose pass (2s cadence) advances the stamp.
+      await waitFor(
+        async () => ((await readState()).coherenceCheckedAt ?? 0) > first.coherenceCheckedAt,
+        10000,
+        'coherenceCheckedAt advanced on the next pass'
+      );
+      expect((await readState()).coherenceFindings).toEqual(first.coherenceFindings);
+      // Heal: the wait exits with zero findings, the chain spawns, the mirror is cleared.
+      await healWorkspace();
+      await waitFor(
+        async () => {
+          const pid = await childPid();
+          return pid !== undefined && pid !== firstPid;
+        },
+        10000,
+        'spawn after coherence restored'
+      );
+      const final = await readState();
+      expect(final.state).toBe('running');
+      expect(final.coherenceFindings).toBeUndefined();
+      expect(final.coherenceCheckedAt).toBeUndefined();
+    }, 25000);
+
+    it("the pre-kill gate ('waiting-coherence', child alive) mirrors live findings every pass too", async () => {
+      const firstPid = await startSupervisor();
+      await clobberLibSymlink();
+      await touchLibDist();
+      // The automatic path: stale + quiet + unheld, but incoherent — the poll parks in
+      // 'waiting-coherence' with the child STILL SERVING, re-diagnosing every tick.
+      await waitFor(
+        async () => {
+          const state = await readState();
+          return state.state === 'waiting-coherence' && state.coherenceFindings !== undefined;
+        },
+        10000,
+        'waiting-coherence with live findings mirrored'
+      );
+      const first = await readState();
+      expect(first.coherenceFindings).toEqual([{ packageName: '@test/consumer', kind: 'clobbered-symlink' }]);
+      expect(await childPid()).toBe(firstPid); // the child stayed alive through the gate
+      await waitFor(
+        async () => ((await readState()).coherenceCheckedAt ?? 0) > first.coherenceCheckedAt,
+        10000,
+        'coherenceCheckedAt advanced on a later poll pass'
+      );
+      // Heal: the deferred restart lands and the mirror is cleared with it.
+      await healWorkspace();
+      await waitFor(async () => (await childPid()) !== firstPid, 10000, 'restart after coherence restored');
+      const final = await readState();
+      expect(final.state).toBe('running');
+      expect(final.coherenceFindings).toBeUndefined();
+    }, 25000);
+
+    it('a superseded restart chain goes fully inert: no stale-findings rewrites of state.json after the supersede, and the next parked chain still escapes', async () => {
+      // The zombie-chain class: chain 1 parks in the REAL coherence wait; a queued
+      // restart-request supersedes it (recoverChild bumps the generation and spawns). Pre-fix
+      // nothing in the wait checked the generation, so chain 1 kept looping — stamping stale
+      // findings + setState('running') into state.json every ~2s pass right after the healthy
+      // spawn, and (at its eventual exit) clearing the escape flag out from under a newer chain.
+      supervisor = new ServePackageSupervisor({
+        packageName: '@test/consumer',
+        command: ['node', 'server.js'],
+        workspacePath,
+        pollMs: 100,
+        quietMs: 200,
+        graceMs: 1500,
+        restartSupersedeMs: 700,
+      });
+      await supervisor.start();
+      await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
+      const firstPid = (await childPid())!;
+      await clobberLibSymlink();
+      // Chain 1 parks childless (the kill succeeds, then the wait loops on the finding).
+      void supervisor.restart('test: park chain 1');
+      await waitFor(
+        async () => {
+          const state = await readState();
+          return state.state === 'restarting' && state.coherenceFindings !== undefined;
+        },
+        10000,
+        'chain 1 parked in the coherence wait'
+      );
+      // Queued request + lane owned past restartSupersedeMs → recoverChild supersedes chain 1
+      // and spawns despite the (advisory-in-recovery) incoherence. Chain 1 is now a zombie.
+      expect(await ServePackageSupervisor.requestRestart(consumerDir, 'post-npm-op')).toBe(true);
+      await waitFor(
+        async () => {
+          const pid = await childPid();
+          return pid !== undefined && pid !== firstPid;
+        },
+        10000,
+        'supersede spawned a fresh child'
+      );
+      const secondPid = (await childPid())!;
+      await waitFor(async () => (await readState()).state === 'running', 2000, 'state.json settled on running');
+      // Watch state.json across multiple would-be zombie passes (~2s cadence): the mirror must
+      // stay pinned to the new chain's truth — running, no blockers.
+      const cleanUntil = Date.now() + 3000;
+      while (Date.now() < cleanUntil) {
+        const state = await readState();
+        expect(state.state).toBe('running');
+        expect(state.coherenceFindings).toBeUndefined();
+        await sleep(50);
+      }
+      // The escape hatch belongs to the CURRENT chain: park again (workspace still clobbered)
+      // and fire rs — the newer chain must spawn despite findings.
+      void supervisor.restart('test: park chain 2');
+      await waitFor(
+        async () => {
+          const state = await readState();
+          return state.state === 'restarting' && state.coherenceFindings !== undefined;
+        },
+        10000,
+        'chain 2 parked in the coherence wait'
+      );
+      await supervisor.restart('SIGUSR2');
+      await waitFor(
+        async () => {
+          const pid = await childPid();
+          return pid !== undefined && pid !== secondPid;
+        },
+        10000,
+        'chain 2 escaped and spawned despite findings'
+      );
+      expect((await readState()).state).toBe('running');
+    }, 30000);
+
+    it('rs during the KILL window (before the park begins) arms the escape: the chain spawns despite findings, never a consumed no-op', async () => {
+      // A SIGTERM-ignoring child stretches the kill phase to graceMs — the multi-second window
+      // where pre-fix an rs/SIGUSR2 was answered with "ignoring" (the chain was not yet inside
+      // the wait), and the chain then parked with no escape armed: the operator's lever did
+      // nothing. Post-fix restart() arms unconditionally while a chain is in flight.
+      await fs.writeFile(
+        path.join(consumerDir, 'server.js'),
+        [
+          "const fs = require('fs');",
+          "fs.writeFileSync('child.pid', String(process.pid));",
+          "process.on('SIGTERM', () => {});",
+          'setInterval(() => {}, 1000);',
+        ].join('\n')
+      );
+      supervisor = new ServePackageSupervisor({
+        packageName: '@test/consumer',
+        command: ['node', 'server.js'],
+        workspacePath,
+        pollMs: 100,
+        quietMs: 200,
+        graceMs: 1500,
+      });
+      await supervisor.start();
+      await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
+      const firstPid = (await childPid())!;
+      await clobberLibSymlink(); // without the escape, the chain parks after the kill
+      void supervisor.restart('test: restart with a slow kill');
+      // Lands deterministically inside the SIGTERM→SIGKILL window: the chain is parked in
+      // killChild's grace await, nowhere near the coherence wait yet.
+      await supervisor.restart('rs');
+      await waitFor(
+        async () => {
+          const pid = await childPid();
+          return pid !== undefined && pid !== firstPid;
+        },
+        8000,
+        'spawned despite findings — escape armed during the kill window'
+      );
+      expect((await readState()).state).toBe('running');
+    }, 20000);
+
+    it('the escape does not wait on a diagnose: with a HANGING doctor the spawn lands within one deadline cycle (loop-top check pinned)', async () => {
+      // Pins the escape check's placement at the iteration TOP, before the diagnose await: a
+      // wedged scan must never keep the hatch from working. Every diagnose here hangs forever;
+      // only the per-scan deadline unparks the loop, so an escape checked anywhere on the
+      // findings-resolved path would never fire.
+      const realDiagnose = WorkspaceDoctor.prototype.diagnose;
+      WorkspaceDoctor.prototype.diagnose = function () {
+        return new Promise<never>(() => undefined);
+      };
+      try {
+        supervisor = new ServePackageSupervisor({
+          packageName: '@test/consumer',
+          command: ['node', 'server.js'],
+          workspacePath,
+          pollMs: 100,
+          quietMs: 200,
+          graceMs: 1500,
+          coherenceDeadlineMs: 400,
+        });
+        await supervisor.start();
+        await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
+        const firstPid = (await childPid())!;
+        void supervisor.restart('test: park on hanging diagnoses');
+        await waitFor(
+          async () => {
+            try {
+              process.kill(firstPid, 0);
+              return false;
+            } catch {
+              return true;
+            }
+          },
+          5000,
+          'child killed; chain heading into the wait'
+        );
+        await sleep(600); // > coherenceDeadlineMs: the chain is mid-loop, cycling hung scans
+        const armedAt = Date.now();
+        await supervisor.restart('rs');
+        await waitFor(
+          async () => {
+            const pid = await childPid();
+            return pid !== undefined && pid !== firstPid;
+          },
+          4000,
+          'spawned while every diagnose still hangs'
+        );
+        // Bounded by ONE deadline cycle plus spawn overhead — never by a scan resolving
+        // (none ever do).
+        expect(Date.now() - armedAt).toBeLessThan(3000);
+      } finally {
+        WorkspaceDoctor.prototype.diagnose = realDiagnose;
+      }
+    }, 20000);
+  });
+
+  /**
    * The 2026-08-09 starvation class: the request-activity hold is refreshed by ANY HTTP request
    * — including background poll timers from merely-open tabs (~20s cadence, zero human
    * interaction) — so a queued restart-request waiting for FULL hold expiry starved from 13:32

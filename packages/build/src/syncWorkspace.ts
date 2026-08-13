@@ -32,14 +32,7 @@ export const syncWorkspace = async () => {
   const workspacePath = await WorkspaceDoctor.findWorkspaceRoot(process.cwd());
 
   if (args.repos && args.repos.length > 0) {
-    for (const repo of args.repos) {
-      const repoPath = path.join(workspacePath, 'packages', repo);
-      try {
-        await fs.access(path.join(repoPath, '.git'));
-      } catch {
-        throw new Error(`Repo (${repo}) does not exist at ${repoPath}`);
-      }
-    }
+    await assertWorkspaceReposExist(workspacePath, args.repos);
     logger.info({ message: `> Pulling ${args.repos.map((r) => cw.color(r, secondaryLogColor)).join(', ')}` });
   } else {
     logger.info({ message: `> Pulling all workspace repos` });
@@ -90,7 +83,7 @@ export type PullFailure = {
  */
 export const pullWorkspaceRepos = async (workspacePath: string, repos?: string[]): Promise<PullFailure[]> => {
   const failures: PullFailure[] = [];
-  const pullOne = async (repoPath: string) => {
+  await visitWorkspaceRepos(workspacePath, repos, async (repoPath) => {
     const display = path.relative(workspacePath, repoPath) || '.';
     try {
       await cmd('git', ['pull', '--rebase', '--autostash'], { cwd: repoPath }, { logPrefix: `[${display}] ` });
@@ -98,27 +91,48 @@ export const pullWorkspaceRepos = async (workspacePath: string, repos?: string[]
       const err = e as Error & { stderr?: string };
       failures.push({ repoPath: display, detail: (err.stderr?.trim() || err.message).trim() });
     }
-  };
+  });
+  return failures;
+};
 
+/**
+ * Visit a repo set in sweep order: each named repo (dir names under packages/) followed by its
+ * nested submodules, or every workspace submodule when none are named. The workspace root itself
+ * is never visited; a repo is visited before its nested submodules are enumerated, so the sweep
+ * sees each repo's post-visit submodule set.
+ */
+export const visitWorkspaceRepos = async (
+  workspacePath: string,
+  repos: string[] | undefined,
+  visit: (repoPath: string) => Promise<void>
+): Promise<void> => {
   const roots =
     repos && repos.length > 0 ? repos.map((repo) => path.join(workspacePath, 'packages', repo)) : [workspacePath];
   for (const root of roots) {
-    // The workspace root itself is not pulled in all-repos mode (same scope as before); a named
-    // repo is pulled directly. Parents pull before their nested submodules are enumerated, so
-    // the sweep sees each repo's post-pull submodule set.
     if (root !== workspacePath) {
-      await pullOne(root);
+      await visit(root);
     }
     for (const submodulePath of await listInitializedSubmodules(root)) {
-      await pullOne(submodulePath);
+      await visit(submodulePath);
     }
   }
-  return failures;
+};
+
+/** Throws unless every named repo exists as a git checkout under packages/. */
+export const assertWorkspaceReposExist = async (workspacePath: string, repos: string[]): Promise<void> => {
+  for (const repo of repos) {
+    const repoPath = path.join(workspacePath, 'packages', repo);
+    try {
+      await fs.access(path.join(repoPath, '.git'));
+    } catch {
+      throw new Error(`Repo (${repo}) does not exist at ${repoPath}`);
+    }
+  }
 };
 
 /** Initialized submodule paths under repoPath, recursive — uninitialized (`-` prefixed) entries
  * have no checkout to pull and are skipped, matching `git submodule foreach` scope. */
-const listInitializedSubmodules = async (repoPath: string): Promise<string[]> => {
+export const listInitializedSubmodules = async (repoPath: string): Promise<string[]> => {
   const result = await cmd(
     'git',
     ['submodule', 'status', '--recursive'],

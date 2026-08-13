@@ -4,7 +4,12 @@ import { LocalPackage, PackageUtil, WorkspaceMetadata, cmd } from '@proteinjs/ut
 import { Logger } from '@proteinjs/logger';
 import { materializeDependencies } from './materializeDependencies';
 
-export type WorkspaceFindingKind = 'clobbered-symlink' | 'missing-install' | 'stale-dist';
+/**
+ * `build-failed` is synthesized ONLY by `fix()`: it marks a build it ran that exited nonzero yet
+ * still freshened dist (no noEmitOnError), which would otherwise re-diagnose as coherent.
+ * `diagnose()` never produces it — mtime comparison cannot observe exit codes.
+ */
+export type WorkspaceFindingKind = 'clobbered-symlink' | 'missing-install' | 'stale-dist' | 'build-failed';
 
 export type WorkspaceFinding = {
   packageName: string;
@@ -25,6 +30,8 @@ export type WorkspaceFinding = {
  *    freshly PULLED package.json dependency addition that was never installed).
  *  - `stale-dist` — a package's source is newer than its dist (edited but not rebuilt; consumers
  *    and the app dev server read dist).
+ *  - `build-failed` — `fix` only: a build it ran exited nonzero but still emitted dist, so the
+ *    mtime check alone would certify broken output as coherent.
  *
  * Diagnosis never mutates. `fix` applies the smallest deterministic remediation per finding, in
  * dependency order: install → re-symlink → build.
@@ -80,7 +87,12 @@ export class WorkspaceDoctor {
   /**
    * Apply the deterministic remediation for each finding, in workspace dependency order:
    * missing installs first (then re-link the package), then re-link clobbered packages, then
-   * rebuild stale dists. Returns the re-diagnosis afterwards (empty = fully repaired).
+   * rebuild stale dists (a `build-failed` finding from a prior fix pass legitimately retries the
+   * build). A failing build does not abort the pass — remaining packages still get their fixes —
+   * and it must always surface in the returned set: on the package's surviving stale-dist finding
+   * (noEmitOnError builds leave dist untouched, so re-diagnosis keeps it), or, when the failed
+   * build still emitted and freshened dist, as a synthesized `build-failed` finding.
+   * Returns the re-diagnosis afterwards (empty = fully repaired).
    */
   async fix(findings: WorkspaceFinding[], forPackages?: string[]): Promise<WorkspaceFinding[]> {
     const metadata = await PackageUtil.getWorkspaceMetadata(this.workspacePath);
@@ -88,6 +100,7 @@ export class WorkspaceDoctor {
     for (const finding of findings) {
       byPackage.set(finding.packageName, [...(byPackage.get(finding.packageName) ?? []), finding]);
     }
+    const buildFailures = new Map<string, string>();
     for (const packageName of metadata.sortedPackageNames) {
       const packageFindings = byPackage.get(packageName);
       if (!packageFindings) {
@@ -104,12 +117,36 @@ export class WorkspaceDoctor {
         this.logger.info({ message: `[${packageName}] re-symlinking workspace dependencies` });
         await PackageUtil.symlinkDependencies(localPackage, metadata.packageMap);
       }
-      if (kinds.has('stale-dist')) {
+      if (kinds.has('stale-dist') || kinds.has('build-failed')) {
         this.logger.info({ message: `[${packageName}] npm run build (stale dist)` });
-        await cmd('npm', ['run', 'build'], { cwd: packageDir }, { logPrefix: `[${packageName}] ` });
+        try {
+          await cmd('npm', ['run', 'build'], { cwd: packageDir }, { logPrefix: `[${packageName}] ` });
+        } catch (e) {
+          const tail = this.buildOutputTail(e);
+          buildFailures.set(packageName, tail);
+          this.logger.error({
+            message: `[${packageName}] build FAILED — continuing with remaining packages\n${tail}`,
+          });
+        }
       }
     }
-    return this.diagnose(forPackages);
+    const remaining = await this.diagnose(forPackages);
+    buildFailures.forEach((buildFailure, packageName) => {
+      const survivingStaleDist = remaining.find((f) => f.packageName === packageName && f.kind === 'stale-dist');
+      if (survivingStaleDist) {
+        survivingStaleDist.detail = `${survivingStaleDist.detail} — build FAILED:\n${buildFailure}`;
+        return;
+      }
+      // The failed build still emitted (no noEmitOnError), freshening dist and erasing the
+      // stale-dist finding — synthesize so a failed build can never certify coherent.
+      remaining.push({
+        packageName,
+        kind: 'build-failed',
+        detail: `npm run build exited nonzero but still emitted dist (output is not trustworthy):\n${buildFailure}`,
+        remediation: `npm run workspace-package ${packageName} npm run build`,
+      });
+    });
+    return remaining;
   }
 
   /** Scope: the named packages plus their transitive workspace closures; default = everything. */
@@ -277,6 +314,13 @@ export class WorkspaceDoctor {
         remediation: `npm run workspace-package ${localPackage.name} npm run build`,
       },
     ];
+  }
+
+  /** Last lines of a failed build's output, stderr then stdout (tsc reports type errors on stdout). */
+  private buildOutputTail(e: unknown): string {
+    const err = e as Error & { stdout?: string; stderr?: string };
+    const output = [err.stderr?.trim(), err.stdout?.trim()].filter(Boolean).join('\n') || err.message;
+    return output.split('\n').slice(-20).join('\n');
   }
 
   /** Newest mtime (ms) under a file or directory tree; 0 when absent. */

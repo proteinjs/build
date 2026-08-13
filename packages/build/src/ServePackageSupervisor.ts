@@ -277,6 +277,20 @@ export class ServePackageSupervisor {
   private lastHoldAnnounceAt = 0;
   private lastCoherenceAnnounceAt = 0;
   private coherenceCheckInFlight = false;
+  // rs/SIGUSR2 while a restart chain is in flight: the re-entrancy guard keeps restart() from
+  // running a second chain, and a silent return left the documented escape hatch dead for the
+  // whole childless coherence park (observed as a "dead" supervisor for hours). restart() arms
+  // this flag instead — unconditionally, kill phase included: a signal landing in the
+  // multi-second SIGTERM→SIGKILL window must arm the hatch the chain honors when it parks.
+  // Armed until a wait consumes it (the parked loop exits into the spawn) or a child spawns
+  // (spawnChild's reset).
+  private coherenceEscapeArmed = false;
+  // Live blocker mirror for state.json while a coherence gate loops on findings: the trigger-time
+  // stalePackages snapshot alone froze the file for the whole park, so operators read hours-stale
+  // truth while the live findings were only in the log. Entries keep the doctor's own
+  // WorkspaceFinding vocabulary — the doctor stays the shape's one owner.
+  private coherenceFindings?: Pick<WorkspaceFinding, 'packageName' | 'kind'>[];
+  private coherenceCheckedAt = 0;
   // Liveness invariant (see enforceChildLiveness): a restart chain stamps its generation and
   // heartbeats its progress, so a chain that stalls between kill and spawn is detectable —
   // and recoverable — instead of silently owning the lane forever.
@@ -357,7 +371,20 @@ export class ServePackageSupervisor {
     // child is no reason to refuse: post-self-exit (daemon posture parks as 'exited') a
     // SIGUSR2 restart is exactly how a fresh child gets spawned — killChild guards on child
     // liveness itself, so this path never awaits a stop that cannot complete.
-    if (this.restarting || this.stopping || !this.started) {
+    if (this.stopping || !this.started) {
+      return;
+    }
+    if (this.restarting) {
+      // The lane is latched, so this call cannot run a second chain — but it must never be a
+      // SILENT no-op: rs/SIGUSR2 is the documented escape and the operator's only lever, and it
+      // must work wherever in the chain it lands. Arming only while parked left a signal during
+      // the kill phase (the multi-second SIGTERM→SIGKILL window) consumed as "ignoring" — the
+      // chain then parked with no escape armed. Arm ALWAYS; the flag only takes effect where
+      // the wait loop checks it, and any spawn clears it.
+      this.coherenceEscapeArmed = true;
+      this.logger.warn({
+        message: `> Restart (${reason}) — restart already in flight; escape hatch armed: the chain will spawn without waiting for coherence if it parks`,
+      });
       return;
     }
     this.restarting = true;
@@ -382,7 +409,7 @@ export class ServePackageSupervisor {
       // child whose own verify gate exits 1, and mirroring that exit killed the supervisor —
       // a rebuild-in-progress became permanent downtime (observed 2026-07-29). Coherence is
       // moments away by definition (a build is running); wait for it.
-      await this.waitForCoherence();
+      await this.waitForCoherence(generation);
       if (this.stopping || this.restartGeneration !== generation) {
         return;
       }
@@ -761,6 +788,10 @@ export class ServePackageSupervisor {
       return;
     }
     if (findings.length > 0) {
+      // Same live mirror as the childless wait: this gate loops on findings across poll ticks,
+      // and state.json must track the current blocker list, not the trigger snapshot.
+      this.coherenceFindings = findings.map((f) => ({ packageName: f.packageName, kind: f.kind }));
+      this.coherenceCheckedAt = Date.now();
       this.setState('waiting-coherence');
       if (Date.now() - this.lastCoherenceAnnounceAt >= 30_000) {
         this.lastCoherenceAnnounceAt = Date.now();
@@ -772,6 +803,8 @@ export class ServePackageSupervisor {
       }
       return;
     }
+    this.coherenceFindings = undefined;
+    this.coherenceCheckedAt = 0;
     this.lastCoherenceAnnounceAt = 0;
     await this.restart(`stale: ${Array.from(this.stalePackages).join(', ')}`);
   }
@@ -1159,6 +1192,10 @@ export class ServePackageSupervisor {
     // ANY spawn satisfies a queued restart-request: the fresh child loads dists as of now,
     // which is at or after the request's filing.
     this.restartRequestedAt = 0;
+    // A spawn ends any coherence park: the live-findings mirror and the escape hatch are history.
+    this.coherenceFindings = undefined;
+    this.coherenceCheckedAt = 0;
+    this.coherenceEscapeArmed = false;
     this.spawnedByRestart = viaRestart;
     this.spawnedAt = Date.now();
     this.lastChildExit = undefined;
@@ -1327,7 +1364,15 @@ export class ServePackageSupervisor {
 
   /**
    * Poll the workspace doctor (scoped to this package's closure) until no findings remain,
-   * announcing every 30s. stop() interrupts it.
+   * announcing every 30s and mirroring each pass's findings into state.json. stop() interrupts
+   * it, and rs/SIGUSR2 escapes it (restart() arms coherenceEscapeArmed; the loop exits into
+   * the spawn despite outstanding findings).
+   *
+   * GENERATION-SCOPED: `generation` is the restart chain this wait belongs to, and a mismatch
+   * against restartGeneration means the chain was SUPERSEDED (recoverChild bumped it and owns
+   * the lane) — the frame must exit silently and touch NOTHING shared. A superseded frame that
+   * kept looping stamped stale findings + setState into state.json right after its successor's
+   * healthy spawn, and its cleanup cleared the escape flag out from under the newer chain.
    *
    * CEILINGED, not unbounded: this wait only ever runs CHILDLESS (the poll gates the kill on
    * coherence, so a chain reaching here has already lost its child). Mid-build, coherence is
@@ -1339,12 +1384,28 @@ export class ServePackageSupervisor {
    * child beats no child, and a genuinely unbootable child still ends supervision honestly
    * through the bounded boot-retry mirror.
    */
-  private async waitForCoherence(): Promise<void> {
+  private async waitForCoherence(generation: number): Promise<void> {
     const doctor = new WorkspaceDoctor(this.workspacePathResolved);
     const waitStartedAt = Date.now();
     let lastAnnounceAt = 0;
     for (;;) {
-      if (this.stopping) {
+      // Superseded (or stopping): exit with no side effects — the current generation owns every
+      // shared field, and restart() aborts its spawn on the same mismatch right after.
+      if (this.stopping || this.restartGeneration !== generation) {
+        return;
+      }
+      // rs/SIGUSR2 landed while this chain owned the lane (see restart): exit into the spawn.
+      // Checked at the iteration top so a timing-out diagnose can never keep the hatch from
+      // working. Consumed here — a later rs must arm its own escape.
+      // rs/SIGUSR2 landed while this chain owned the lane (see restart): exit into the spawn.
+      // Checked at the iteration top so a timing-out diagnose can never keep the hatch from
+      // working. Consumed here — a later rs must arm its own escape.
+      if (this.coherenceEscapeArmed) {
+        this.coherenceEscapeArmed = false;
+        const overriding = this.coherenceFindings?.map((f) => `${f.packageName} ${f.kind}`).join(', ');
+        this.logger.warn({
+          message: `> Escape hatch: abandoning the coherence wait and spawning despite outstanding findings${overriding ? ` (${overriding})` : ''}`,
+        });
         return;
       }
       if (Date.now() - waitStartedAt >= this.coherenceWaitCeilingMs()) {
@@ -1361,6 +1422,11 @@ export class ServePackageSupervisor {
         doctor.diagnose(this.options.coherencePackages ?? [this.options.packageName]),
         this.coherenceDeadlineMs()
       );
+      // The diagnose await is where a supersede typically lands (the frame parks here for up to
+      // the deadline): re-check ownership before touching any shared field.
+      if (this.stopping || this.restartGeneration !== generation) {
+        return;
+      }
       this.touchRestartProgress();
       if (findings === undefined) {
         this.logger.error({
@@ -1369,8 +1435,15 @@ export class ServePackageSupervisor {
         continue;
       }
       if (findings.length === 0) {
+        this.coherenceFindings = undefined;
+        this.coherenceCheckedAt = 0;
         return;
       }
+      // Mirror the LIVE blocker list into state.json every pass — during a multi-hour park
+      // the file otherwise never updates past the trigger snapshot.
+      this.coherenceFindings = findings.map((f) => ({ packageName: f.packageName, kind: f.kind }));
+      this.coherenceCheckedAt = Date.now();
+      this.setState(this.state);
       const now = Date.now();
       if (now - lastAnnounceAt >= 30_000) {
         lastAnnounceAt = now;
@@ -1471,6 +1544,11 @@ export class ServePackageSupervisor {
       stalePackages: Array.from(this.stalePackages),
       staleSince: this.staleSince || undefined,
       restartRequestedAt: this.restartRequestedAt || undefined,
+      // Live blockers while a coherence gate is parked (see waitForCoherence and the poll's
+      // pre-kill gate) — without them the file froze on the trigger snapshot for the whole park.
+      // Entries are the doctor's own WorkspaceFinding vocabulary: {packageName, kind}.
+      coherenceFindings: this.coherenceFindings,
+      coherenceCheckedAt: this.coherenceCheckedAt || undefined,
     };
     // SYNCHRONOUS write-then-rename. state.json is the one artifact an operator inspects when
     // things are wrong, so it must not be able to lie: the async version left the file
