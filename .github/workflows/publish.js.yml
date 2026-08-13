@@ -5,6 +5,18 @@ on:
     branches:
       - main
 
+# One publish at a time: two overlapping runs race at the publish step — the earlier run's
+# release commit rebases onto the later push and stamps a version/tag whose git history COVERS
+# the later commit, while publishing the tarball built from its own older checkout; the later
+# run then sees "no changed packages" and the newer code never ships (bit the thought repo
+# 2026-07-23 thought-common 3.15.3 and 2026-08-13 thought-ui 3.33.0). The concurrency group
+# serializes publish jobs; the "Abort if main advanced" guard closes the remaining window —
+# only the run whose checkout is still the branch tip publishes, and the tip push's own run
+# releases everything pending.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -53,7 +65,22 @@ jobs:
         run: |
           npm run test-workspace
 
+      # The stale-checkout guard (see race note at top). Runs AFTER the long install/build/test
+      # steps so the unguarded window shrinks from ~30 minutes to the seconds between this check
+      # and lerna's push.
+      - name: Abort if main advanced (stale-checkout guard)
+        id: tip
+        run: |
+          git fetch origin main --quiet
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]; then
+            echo "is_tip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_tip=false" >> "$GITHUB_OUTPUT"
+            echo "origin/main advanced past this run's checkout — skipping version+publish; the tip push's run releases everything pending (see race note at top of the workflow)."
+          fi
+
       - name: Commit package-locks
+        if: steps.tip.outputs.is_tip == 'true'
         run: |
           git add .
           if git diff --staged --exit-code; then
@@ -66,6 +93,7 @@ jobs:
           fi
 
       - name: Version and Publish
+        if: steps.tip.outputs.is_tip == 'true'
         run: |
           npx lerna publish --yes --no-private
         env:
