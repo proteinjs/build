@@ -30,12 +30,13 @@ export type VersionWorkspaceOptions = {
 };
 
 export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
-  const seams: VersionWorkspaceSeams = {
-    registry: options.seams?.registry ?? new NpmPackageRegistry(),
-    buildAndTest: options.seams?.buildAndTest ?? buildAndTest,
-  };
   const dryRun = isDryRun();
   const planOnly = isPlanOnly();
+  const ciMode = isCiMode();
+  const seams: VersionWorkspaceSeams = {
+    registry: options.seams?.registry ?? new NpmPackageRegistry(),
+    buildAndTest: options.seams?.buildAndTest ?? (ciMode ? ciPrepareForPublish : buildAndTest),
+  };
 
   if (planOnly) {
     logger.info({
@@ -45,14 +46,23 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
   } else if (dryRun) {
     logger.info({ message: 'Dry run mode enabled. Publish and push operations will be skipped.' });
   }
+  if (ciMode) {
+    logger.info({
+      message:
+        'CI publish mode enabled. The checkout is the workflow-pinned tip (never pulled); the workflow owns build/test; baselines come from the registry, never the local record.',
+    });
+  }
   const workspacePath = options.workspacePath ?? process.cwd();
   await evictGitLocks(workspacePath);
 
   // Opt-in pre-phase: merge feature-branch work into main per leaf repo before versioning (see
   // mergeToMain.ts). Default (no flag) is unchanged: version in place on each repo's current
   // branch. Repos this phase touches are left ON MAIN; feature branches are never modified.
+  // Never in CI mode: CI publishes exactly the pushed tip it was triggered by.
   const mergeSpec = parseMergeToMainSpec(process.argv.slice(2), process.env.VERSION_WORKSPACE_MERGE_TO_MAIN);
-  await mergeToMain(workspacePath, mergeSpec, planOnly);
+  if (!ciMode) {
+    await mergeToMain(workspacePath, mergeSpec, planOnly);
+  }
 
   // Release-flow idempotency sweep: after clean merges, uncommitted package.json/lock can only be
   // crash residue from a prior interrupted versioning run (in-run failures revert their own
@@ -60,7 +70,7 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
   // recomputes every bump from its registry baseline, healing the interruption without operator
   // surgery. Release mode = --merge-to-main; skip in preview/dry modes (which legitimately leave
   // writes).
-  if (mergeSpec.enabled && !planOnly && !dryRun) {
+  if (!ciMode && mergeSpec.enabled && !planOnly && !dryRun) {
     await revertLeftoverVersionState(workspacePath);
   }
 
@@ -68,7 +78,13 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
   if (workspaceRootDirty) {
     logger.info({ message: `> Workspace root is dirty, will skip pull/push for root repo` });
   }
-  if (dryRun || planOnly) {
+  if (ciMode) {
+    // NEVER pull in CI: the workflow's stale-checkout guard decides whether this checkout may
+    // publish at all. Fast-forwarding here would advance the tree PAST the checkout the
+    // workflow built and tested — the dist on disk would no longer match HEAD, re-opening the
+    // stale-dist-under-newer-tag publish race the guard exists to close.
+    logger.info({ message: `> CI publish mode: skipping pullWorkspace for (${workspacePath})` });
+  } else if (dryRun || planOnly) {
     logger.info({ message: `> Skipping pullWorkspace for (${workspacePath})` });
   } else {
     await pullWorkspace(workspacePath, workspaceRootDirty);
@@ -104,7 +120,7 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
   // release under a sibling lineage's higher versions) still counts as changes to ship. This
   // gives us a map of packages that have their own changes to ship, separate from the
   // traditional "dependency bumped, cascade" trigger.
-  const commitBumps = await scanCommitBumps(filteredPackageNames, packageMap, seams.registry);
+  const commitBumps = await scanCommitBumps(filteredPackageNames, packageMap, seams.registry, ciMode);
   if (commitBumps.size === 0) {
     logger.info({ message: `> No packages have unreleased changes` });
   } else {
@@ -273,6 +289,13 @@ export async function versionWorkspace(options: VersionWorkspaceOptions = {}) {
     workspaceToPackageMap,
     pushWithoutSync
   );
+  if (ciMode) {
+    // Workstation tail phases don't apply in CI: there is no parent metarepo pointer to push
+    // from a leaf repo's workflow checkout, and refreshing workspace symlinks would only churn
+    // a node_modules tree the runner is about to discard.
+    logger.info({ message: `> Finished versioning workspace (${workspacePath}) [ci]` });
+    return;
+  }
   await pushMetarepos(workspacePath, workspaceRootDirty);
   await symlinkWorkspace(workspacePath, filteredPackageNames, packageMap);
   logger.info({ message: `> Finished versioning workspace (${workspacePath})` });
@@ -314,6 +337,39 @@ function isPlanOnly() {
   }
 
   const envFlag = process.env.VERSION_WORKSPACE_PLAN_ONLY ?? process.env.PLAN_ONLY;
+  if (envFlag) {
+    return envFlag === 'true' || envFlag === '1';
+  }
+
+  return false;
+}
+
+/**
+ * CI publish mode: the repo's publish workflow invoking the SAME registry-reconciled release
+ * flow the local train runs — one implementation, not a second brain (the June drift and the
+ * 3.27.0 race class both came from CI versioning off its checkout — package.json, lockfile,
+ * local tags — while concurrent releases advanced the registry past it, minting shadowed
+ * releases dependents' ranges never resolve to).
+ *
+ * What the mode changes is CONTEXT, not versioning semantics:
+ *   - the checkout is the workflow's pinned tip: never pulled, never merged into;
+ *   - the workflow owns install/build/test of the whole workspace BEFORE the publish step, so
+ *     the per-package pipeline reduces to lockfile regeneration (`ciPrepareForPublish`);
+ *   - change detection can never lean on the unpushed scan (a push-event checkout has nothing
+ *     unpushed) — see the CI anchors in `classifyUnreleasedCommits`;
+ *   - workstation tail phases (metarepo pointer pushes, symlink refresh) don't run.
+ * Baselines, cascade rewrites, the release invariant, the resume window, and publish-confirmed
+ * recording are the shared path, unchanged.
+ *
+ * Accepts `--ci` or the VERSION_WORKSPACE_CI env var.
+ */
+function isCiMode() {
+  const args = process.argv.slice(2);
+  if (args.includes('--ci')) {
+    return true;
+  }
+
+  const envFlag = process.env.VERSION_WORKSPACE_CI;
   if (envFlag) {
     return envFlag === 'true' || envFlag === '1';
   }
@@ -585,13 +641,14 @@ async function maxPriorReleasedVersion(
 async function scanCommitBumps(
   packageNames: string[],
   packageMap: LocalPackageMap,
-  registry: PackageRegistry
+  registry: PackageRegistry,
+  ciMode: boolean
 ): Promise<Map<string, CommitBump>> {
   const result = new Map<string, CommitBump>();
   for (const packageName of packageNames) {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
-    const bump = await classifyUnreleasedCommits(localPackage, packageDir, registry);
+    const bump = await classifyUnreleasedCommits(localPackage, packageDir, registry, ciMode);
     if (bump) {
       result.set(packageName, bump);
     }
@@ -623,32 +680,82 @@ async function scanCommitBumps(
  *   - not a publishable package: "released" doesn't exist for it; its bumps only version
  *     git records, and unpushed commits remain the right signal.
  *   - never published (no registry versions): every commit is unreleased and the local
- *     version is the only baseline that exists; `@{u}..HEAD` matches how that baseline
- *     advances.
- *   - registry max has no local release tag (tags never fetched): there is no commit to
- *     anchor on — fall back loudly, because a pushed-but-unreleased change is invisible in
- *     this mode.
+ *     version is the only baseline that exists. Locally `@{u}..HEAD` matches how that
+ *     baseline advances; in CI mode NOTHING is ever unpushed (the push event IS pushed
+ *     commits), so the full path-scoped history is the unreleased content.
+ *   - registry max has no local release tag: locally that usually means tags were never
+ *     fetched — no commit to anchor on, fall back loudly to the unpushed scan. In CI mode
+ *     (tags always fetched by the workflow's full checkout) the same shape means
+ *     REGISTRY-AHEAD-OF-MAIN drift: the registry max was released from a lineage whose
+ *     record never landed in this history (a sibling workspace's train, an overlapping run,
+ *     a burned number). Anchor on the highest release record that IS in this history —
+ *     commits since it are this lineage's unreleased content, and the registry-max BASELINE
+ *     in the main loop still lifts the release past the foreign lineage. With no release
+ *     record in the history at all, the full path-scoped history is unreleased.
  */
 async function classifyUnreleasedCommits(
   localPackage: LocalPackage,
   packageDir: string,
-  registry: PackageRegistry
+  registry: PackageRegistry,
+  ciMode: boolean
 ): Promise<CommitBump | undefined> {
   if (!shouldPublishPackage(localPackage, { quiet: true })) {
     return classifyUnpushedCommits(packageDir);
   }
   const registryMax = maxPublishedVersion(await registry.getPublishedVersions(localPackage));
   if (!registryMax) {
+    if (ciMode) {
+      return classifyCommitRange(packageDir, 'HEAD', '.');
+    }
     return classifyUnpushedCommits(packageDir);
   }
   const releaseTag = `${localPackage.name}@${registryMax}`;
   if (!(await refExists(packageDir, `refs/tags/${releaseTag}`))) {
+    if (ciMode) {
+      const localAnchorTag = await maxLocalReleaseTag(packageDir, localPackage.name);
+      if (localAnchorTag) {
+        logger.warn({
+          message: `(${cw.color(localPackage.name)}) registry max ${registryMax} has no release record in this history (registry-ahead drift: a concurrent lineage released it) — anchoring the change scan on this history's own latest release record (${localAnchorTag}); the registry-max baseline still lifts the release past the foreign lineage`,
+        });
+        return classifyCommitRange(packageDir, `${localAnchorTag}..HEAD`, '.');
+      }
+      logger.warn({
+        message: `(${cw.color(localPackage.name)}) registry max ${registryMax} has no release record in this history, and the history carries no release record at all — treating the full path-scoped history as unreleased`,
+      });
+      return classifyCommitRange(packageDir, 'HEAD', '.');
+    }
     logger.warn({
       message: `(${cw.color(localPackage.name)}) registry max ${registryMax} has no local release tag (${releaseTag}) — cannot anchor the change scan on the release record; falling back to the unpushed-commit scan (a pushed-but-unreleased change is invisible to it)`,
     });
     return classifyUnpushedCommits(packageDir);
   }
   return classifyCommitRange(packageDir, `${releaseTag}..HEAD`, '.');
+}
+
+/**
+ * The highest release record present in THIS history for the package: max-semver among the
+ * repo's `<name>@<version>` tags. `undefined` when no such tag exists. Scoped names contain
+ * `@` themselves, so the version is whatever follows the LAST `@`.
+ */
+async function maxLocalReleaseTag(packageDir: string, packageName: string): Promise<string | undefined> {
+  const tags = await new Promise<string[]>((resolve) => {
+    exec(`git tag --list '${packageName}@*'`, { cwd: packageDir }, (error, stdout) => {
+      resolve(error ? [] : stdout.split('\n').filter((line) => line.trim().length > 0));
+    });
+  });
+  let maxVersion: string | undefined;
+  let maxTag: string | undefined;
+  for (const tag of tags) {
+    const version = tag.slice(tag.lastIndexOf('@') + 1);
+    if (!semver.valid(version)) {
+      continue;
+    }
+    if (!maxVersion || semver.gt(version, maxVersion)) {
+      maxVersion = version;
+      maxTag = tag;
+    }
+  }
+  return maxTag;
 }
 
 /**
@@ -842,12 +949,12 @@ async function syncFixedVersions(workspacePath: string, localPackages: LocalPack
   return syncedFixedVersions ? highestVersion : false;
 }
 
-async function installWithRetry(localPackage: LocalPackage, packageDir: string) {
+async function installWithRetry(localPackage: LocalPackage, packageDir: string, npmArgs: string[] = ['install']) {
   const maxRetries = 10;
   const retryDelayMs = 90_000;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      await cmd('npm', ['install'], { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
+      await cmd('npm', npmArgs, { cwd: packageDir }, { logPrefix: `[${cw.color(localPackage.name)}] ` });
       return;
     } catch (error: any) {
       const output = `${error.stdout ?? ''}${error.stderr ?? ''}`;
@@ -864,6 +971,22 @@ async function installWithRetry(localPackage: LocalPackage, packageDir: string) 
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     }
   }
+}
+
+/**
+ * CI-mode replacement for the per-package clean/install/build/test pipeline. The workflow
+ * already installed, built, and tested the WHOLE workspace against this checkout before the
+ * publish step — repeating that per package would double CI time without adding signal. What
+ * the publish still needs is the lockfile to track the rewritten manifest (dependency ranges
+ * bumped to registry-accepted versions; a stale lock pin that still satisfies a covering range
+ * binds the next CI install to pre-release content — the lockfiles-bind-CI class), so
+ * resolution is regenerated lock-only, with the same registry-propagation retry as the full
+ * install (an upstream published moments earlier in this run may not be readable yet).
+ */
+async function ciPrepareForPublish(localPackage: LocalPackage) {
+  const packageDir = path.dirname(localPackage.filePath);
+  logger.info({ message: `(${cw.color(localPackage.name)}) regenerating lockfile resolution (CI publish mode)` });
+  await installWithRetry(localPackage, packageDir, ['install', '--package-lock-only']);
 }
 
 async function buildAndTest(localPackage: LocalPackage) {

@@ -16,25 +16,32 @@ export const symlinkWorkspace = async () => {
   const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.color('symlink', secondaryLogColor) });
   const args = getArgs();
   const workspacePath = process.cwd();
-  const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
-  const skippedPackages = ['root'];
-  const filteredPackageNames = sortedPackageNames.filter(
-    (packageName) => !(args.skip && args.skip.includes(packageName)) && !skippedPackages.includes(packageName)
-  );
-  if (filteredPackageNames.length == 0) {
+  const { packageMap, packagePathMap } = await PackageUtil.getWorkspaceMetadata(workspacePath);
+  // Iterate the PATH-KEYED discovery map — every discovered package.json, one entry each.
+  // Root-named consumers symlink like everyone else: every workspace root is named `root`
+  // (metarepo root, app root, nested lerna roots), so both the old name-keyed iteration
+  // (same-named packages collide to one entry) and the old blanket `root` skip left those
+  // consumers holding stale registry copies of workspace packages indefinitely. Symlinking
+  // is independent per-package fs work, so dependency order is irrelevant; sort by path for
+  // deterministic logs. The name-keyed map is still what resolves each package's declared
+  // dependency NAMES to workspace members.
+  const packagesToLink = Object.keys(packagePathMap)
+    .sort()
+    .map((packageJsonPath) => packagePathMap[packageJsonPath])
+    .filter((localPackage) => !(args.skip && args.skip.includes(localPackage.name)));
+  if (packagesToLink.length == 0) {
     logger.info({ message: `> There are no packages to symlink in workspace (${workspacePath})` });
     return;
   }
 
   logger.info({
-    message: `> Symlinking ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
+    message: `> Symlinking ${cw.color(`${packagesToLink.length}`, secondaryLogColor)} package${packagesToLink.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
   });
-  for (const packageName of filteredPackageNames) {
-    const localPackage = packageMap[packageName];
+  for (const localPackage of packagesToLink) {
     await PackageUtil.symlinkDependencies(localPackage, packageMap);
   }
   logger.info({
-    message: `> Symlinked ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
+    message: `> Symlinked ${cw.color(`${packagesToLink.length}`, secondaryLogColor)} package${packagesToLink.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
   });
 };
 
