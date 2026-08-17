@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.12.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.12.0...@proteinjs/build@2.12.1) (2026-08-17)
+
+
+### Bug Fixes
+
+* CI publish is the same registry-reconciled release path — --ci swaps the seams, never the logic ([909aa15](https://github.com/proteinjs/build/commit/909aa15e775b778cbb2fb138badff1f9f920e083))
+* floor util-node at the path-keyed identity mint (^1.10.4) ([be34c9c](https://github.com/proteinjs/build/commit/be34c9ce2e6c115b064738aebb5a8abab3dbf391))
+
+
+
+
+
 # [2.12.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.11.3...@proteinjs/build@2.12.0) (2026-08-13)
 
 
