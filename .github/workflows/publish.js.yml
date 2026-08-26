@@ -1,4 +1,4 @@
-name: Publish
+name: Publish Build Packages
 
 on:
   push:
