@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.12.2](https://github.com/proteinjs/build/compare/@proteinjs/build@2.12.1...@proteinjs/build@2.12.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* dev-server supervisor respawns on an unexpected clean child exit (keep local dev available) ([65f8e11](https://github.com/proteinjs/build/commit/65f8e1113e850754f39159b57edd064b4ab2a385))
+
+
+
+
+
 ## [2.12.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.12.0...@proteinjs/build@2.12.1) (2026-08-17)
 
 
