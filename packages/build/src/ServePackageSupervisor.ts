@@ -110,14 +110,16 @@ export type ServePackageOptions = {
   onChildExit?: (code: number) => void;
   /**
    * Daemon posture (the CLI sets this when the invocation was re-launched via --daemon): the
-   * supervisor OUTLIVES a self-exiting child instead of mirroring its exit. A nonzero child
-   * exit respawns through the coherence gate under an expiring budget (`crashRespawnLimit` per
-   * `crashRespawnWindowMs`); a clean exit — or an exhausted budget — parks as state 'exited'
-   * (exit code recorded in state.json) with the poll loop, SIGUSR2 (respawn), and SIGTERM
-   * (clean shutdown) all still live. Plain-run mirroring made sense foregrounded; a daemon
-   * that stays down all night — dead to SIGUSR2, state.json still claiming 'running' — does
-   * not (observed 2026-08-06: the child OOM'd at 9:14 AM and recovery took SIGKILL + a manual
-   * relaunch).
+   * supervisor OUTLIVES a self-exiting child instead of mirroring its exit. ANY unexpected child
+   * exit — a nonzero crash OR a clean drain (code 0 the supervisor did not ask for) — respawns
+   * through the coherence gate under an expiring budget (`crashRespawnLimit` per
+   * `crashRespawnWindowMs`); only an exhausted budget parks as state 'exited' (exit code recorded
+   * in state.json) with the poll loop, SIGUSR2 (respawn), and SIGTERM (clean shutdown) all still
+   * live. The one intended shutdown is a stop signal (SIGTERM/SIGINT → stop()); everything else
+   * keeps local dev available. Plain-run mirroring made sense foregrounded; a daemon that stays
+   * down all night — dead to SIGUSR2, state.json still claiming 'running' — does not (observed
+   * 2026-08-06: the child OOM'd at 9:14 AM and recovery took SIGKILL + a manual relaunch;
+   * 2026-08-26: a clean drain left the server down until two manual relaunches).
    */
   daemon?: boolean;
   /** Daemon posture: max crash respawns within `crashRespawnWindowMs` before parking as 'exited' (default 3). */
@@ -1287,31 +1289,42 @@ export class ServePackageSupervisor {
   }
 
   /**
-   * Daemon posture: the supervisor OUTLIVES a self-exiting child. A crash (nonzero/signal
-   * exit) respawns through the coherence gate under the expiring budget; a clean exit or an
-   * exhausted budget parks as 'exited' (exit recorded in state.json) with the poll loop and
-   * SIGUSR2/SIGTERM still live — recovery is one signal (or one fresh build) away instead of
-   * SIGKILL + a manual relaunch.
+   * Daemon posture: the supervisor OUTLIVES a self-exiting child, to keep local dev AVAILABLE
+   * (the keep-local-dev-available law). The ONLY intended shutdown is stop() (SIGTERM/SIGINT →
+   * this.stopping, caught in the 'exit' handler before this method ever runs) and the deliberate
+   * restart-request exit (86, handled before this). ANY other self-exit that reaches here is
+   * UNEXPECTED and respawns under the expiring budget — both a crash (nonzero/signal exit) AND a
+   * clean DRAIN (code 0 the supervisor did not ask for). A clean self-exit is NOT a reason to
+   * stay down: observed 2026-08-26, the dev child's serve loop ended and it exited 0 without any
+   * stop signal, and the old "clean exit parks as 'exited'" rule left the server down until two
+   * manual relaunches. Only an EXHAUSTED budget (a genuine hot loop) parks as 'exited' — still
+   * alive and signal-responsive (SIGUSR2 respawns, SIGTERM shuts down), recovery one signal (or
+   * one fresh build) away instead of SIGKILL + a manual relaunch.
    */
   private handleDaemonChildExit(code: number | null, signal: NodeJS.Signals | null): void {
     const description = signal ?? `code ${code}`;
     const crashed = (code ?? 1) !== 0;
-    if (crashed && this.consumeCrashRespawnBudget()) {
+    const unexpectedExit = crashed ? `crash (${description})` : `unexpected clean exit (${description})`;
+    if (this.consumeCrashRespawnBudget()) {
       this.logger.warn({
-        message: `> Child crashed (${description}) — respawning (${this.crashRespawnAt.length}/${this.crashRespawnLimit()} respawns in the last ${Math.round(this.crashRespawnWindowMs() / 60_000)}m)`,
+        message: crashed
+          ? `> Child crashed (${description}) — respawning (${this.crashRespawnAt.length}/${this.crashRespawnLimit()} respawns in the last ${Math.round(this.crashRespawnWindowMs() / 60_000)}m)`
+          : `> Child exited cleanly (${description}) but was not asked to stop (no SIGTERM/SIGINT) — respawning to keep local dev available (${this.crashRespawnAt.length}/${this.crashRespawnLimit()} respawns in the last ${Math.round(this.crashRespawnWindowMs() / 60_000)}m)`,
       });
-      void this.restart(`respawn after child crash (${description})`).catch((e) => this.logger.error({ error: e }));
+      void this.restart(`respawn after ${unexpectedExit}`).catch((e) => this.logger.error({ error: e }));
       return;
     }
     this.logger.error({
-      message: crashed
-        ? `> Child crashed (${description}) and the respawn budget (${this.crashRespawnLimit()} per ${Math.round(this.crashRespawnWindowMs() / 60_000)}m) is exhausted — parked as 'exited'; SIGUSR2 respawns, SIGTERM shuts down`
-        : `> Child exited cleanly (${description}) — parked as 'exited'; SIGUSR2 respawns, SIGTERM shuts down`,
+      message: `> Child ${crashed ? `crashed (${description})` : `exited cleanly (${description}) unasked`} and the respawn budget (${this.crashRespawnLimit()} per ${Math.round(this.crashRespawnWindowMs() / 60_000)}m) is exhausted — parked as 'exited'; SIGUSR2 respawns, SIGTERM shuts down`,
     });
     this.setState('exited');
   }
 
-  /** True when a crash respawn is still inside the rolling budget (and consumes one slot). */
+  /**
+   * True when a respawn is still inside the rolling budget (and consumes one slot). Named for its
+   * origin (crash respawns) but it now paces EVERY unexpected daemon self-exit — crash or clean
+   * drain alike (see handleDaemonChildExit) — so an unattended dev child cannot hot-loop.
+   */
   private consumeCrashRespawnBudget(): boolean {
     const now = Date.now();
     this.crashRespawnAt = this.crashRespawnAt.filter((at) => now - at < this.crashRespawnWindowMs());

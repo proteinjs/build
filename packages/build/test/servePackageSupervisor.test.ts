@@ -809,6 +809,86 @@ describe('ServePackageSupervisor', () => {
     expect(exits).toEqual([]); // parked, not mirrored — SIGUSR2/SIGTERM still live
   });
 
+  it('daemon posture: a clean self-exit (code 0) the supervisor never asked for RESPAWNS to keep local dev available, not parked (2026-08-26 clean-drain class)', async () => {
+    // The clean-drain shape: the child's serve loop ends and it exits 0 with NO stop signal
+    // (SIGTERM/SIGINT). Pre-fix daemon posture treated code 0 as an intended exit and parked as
+    // 'exited', so a coordinator had to manually relaunch (twice, 2026-08-26). The ONLY intended
+    // shutdown is stop() (SIGTERM/SIGINT); an unasked clean exit must respawn under the budget.
+    // First boot consumes the marker and drains (exit 0); the respawn boots clean and serves.
+    const marker = path.join(consumerDir, 'drain.marker');
+    await fs.writeFile(marker, '');
+    await fs.writeFile(
+      path.join(consumerDir, 'server.js'),
+      [
+        "const fs = require('fs');",
+        "fs.appendFileSync('boots.log', Date.now() + '\\n');",
+        "if (fs.existsSync('drain.marker')) { fs.unlinkSync('drain.marker'); process.exit(0); }",
+        "fs.writeFileSync('child.pid', String(process.pid));",
+        'setInterval(() => {}, 1000);',
+      ].join('\n')
+    );
+    const exits: number[] = [];
+    supervisor = new ServePackageSupervisor({
+      packageName: '@test/consumer',
+      command: ['node', 'server.js'],
+      workspacePath,
+      pollMs: 100,
+      quietMs: 200,
+      graceMs: 1500,
+      bootFailWindowMs: 1, // the nonzero boot-retry branch never applies to code 0; keep it clear
+      daemon: true,
+      crashRespawnLimit: 3,
+      onChildExit: (code) => exits.push(code),
+    });
+    await supervisor.start();
+    const statePath = path.join(consumerDir, '.serve-package', 'state.json');
+    const readState = async () => JSON.parse(await fs.readFile(statePath, 'utf-8').catch(() => '{}'));
+    // The drained child was respawned: a live child records its pid and state returns to running.
+    await waitFor(async () => (await childPid()) !== undefined, 10000, 'respawn after clean drain');
+    await waitFor(async () => (await readState()).state === 'running', 5000, "state back to 'running'");
+    const boots = (await fs.readFile(path.join(consumerDir, 'boots.log'), 'utf-8')).trim().split('\n').filter(Boolean);
+    expect(boots.length).toBeGreaterThanOrEqual(2); // the initial drain + at least one respawn
+    expect(exits).toEqual([]); // never mirrored, never parked — supervision stayed up
+    const liveChildPid = (await readState()).childPid;
+    expect(() => process.kill(liveChildPid, 0)).not.toThrow(); // the advertised pid is REAL
+  }, 20000);
+
+  it("daemon posture: a clean-drain HOT loop is budgeted too — at the ceiling it parks as 'exited', never spins", async () => {
+    // The respawn budget must bound a clean-drain loop exactly as it bounds a crash loop — an
+    // unattended child that exits 0 every boot cannot spin forever. Budget 2 → 1 initial drain +
+    // 2 respawns, then parked; bootFailWindowMs=1 keeps the restart boot-retry branch clear.
+    await fs.writeFile(
+      path.join(consumerDir, 'server.js'),
+      ["const fs = require('fs');", "fs.appendFileSync('boots.log', 'boot\\n');", 'process.exit(0);'].join('\n')
+    );
+    const boots = async () =>
+      (await fs.readFile(path.join(consumerDir, 'boots.log'), 'utf-8').catch(() => '')).split('\n').filter(Boolean)
+        .length;
+    const exits: number[] = [];
+    supervisor = new ServePackageSupervisor({
+      packageName: '@test/consumer',
+      command: ['node', 'server.js'],
+      workspacePath,
+      pollMs: 100,
+      quietMs: 200,
+      graceMs: 1500,
+      bootFailWindowMs: 1,
+      daemon: true,
+      crashRespawnLimit: 2,
+      crashRespawnWindowMs: 60_000,
+      onChildExit: (code) => exits.push(code),
+    });
+    await supervisor.start();
+    const statePath = path.join(consumerDir, '.serve-package', 'state.json');
+    const readState = async () => JSON.parse(await fs.readFile(statePath, 'utf-8').catch(() => '{}'));
+    await waitFor(async () => (await readState()).state === 'exited', 10000, 'parked at the respawn ceiling');
+    expect(await readState()).toMatchObject({ state: 'exited', exitCode: 0 });
+    expect(await boots()).toBe(3); // 1 initial + 2 budgeted respawns
+    await sleep(700);
+    expect(await boots()).toBe(3); // the ceiling holds
+    expect(exits).toEqual([]); // parked, not mirrored — SIGUSR2/SIGTERM still live
+  }, 20000);
+
   /**
    * The 2026-08-09 early-boot zombie class (observed twice after machine sleep): a child that
    * fails during early boot must resolve to exactly ONE of two outcomes — a FULL mirror-exit
