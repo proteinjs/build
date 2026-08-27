@@ -28,11 +28,12 @@ import { primaryLogColor, secondaryLogColor } from './logColors';
  * --daemon          detach: re-launch this invocation as a daemon that survives the launching
  *                   shell/session, logging to <packageDir>/.serve-package/serve.log, then exit.
  *                   (`rs` stdin input doesn't reach a daemon — use SIGUSR2 to force restarts.)
- *                   The daemon supervisor OUTLIVES a self-exiting child: crashes respawn
- *                   through the coherence gate (3 per 10m, then parked as state 'exited' with
- *                   the exit code recorded), and SIGUSR2 (respawn) / SIGTERM (shutdown) keep
- *                   working after the child dies. Plain (foreground) runs mirror the child's
- *                   exit, unchanged.
+ *                   The daemon supervisor OUTLIVES a self-exiting child: ANY unexpected exit —
+ *                   a crash OR a clean drain (code 0 it was not asked for) — respawns through
+ *                   the coherence gate (3 per 10m, then parked as state 'exited' with the exit
+ *                   code recorded), and SIGUSR2 (respawn) / SIGTERM (shutdown) keep working
+ *                   after the child dies. A stop signal (SIGTERM/SIGINT) is the one intended
+ *                   shutdown. Plain (foreground) runs mirror the child's exit, unchanged.
  */
 export const servePackage = async () => {
   const cw = new LogColorWrapper();
