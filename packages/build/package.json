@@ -2,10 +2,11 @@
   "name": "@proteinjs/build",
   "version": "2.12.2",
   "description": "Workspace build tools",
-  "main": "./dist/generated/index.js",
-  "types": "./dist/generated/index.d.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
     "clean-workspace": "dist/src/bin/runCleanWorkspace.js",
+    "clean-worktrees": "dist/src/bin/runCleanWorktrees.js",
     "build-workspace": "dist/src/bin/runBuildWorkspace.js",
     "test-workspace": "dist/src/bin/runTestWorkspace.js",
     "watch-workspace": "dist/src/bin/runWatchWorkspace.js",
