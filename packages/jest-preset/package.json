@@ -1,6 +1,6 @@
 {
   "name": "@proteinjs/jest-preset",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Shared jest preset: transpile-only ts-jest (tsconfig.isolatedModules), worker/memory convergence knobs, standard setup hooks",
   "main": "jest-preset.js",
   "files": [

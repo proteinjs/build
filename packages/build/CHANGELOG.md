@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.13.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.12.2...@proteinjs/build@2.13.0) (2026-08-31)
+
+
+### Features
+
+* clean-worktrees — worktree lifecycle sweeper (shared classifier core + CLI door) ([969842c](https://github.com/proteinjs/build/commit/969842cd73d05ff4358e03fdd2922eaac63121a2))
+* local estate machinery (RESOURCE_GOVERNANCE §B) — registry, reaper, pressure valve, docker guardianship ([c1fa259](https://github.com/proteinjs/build/commit/c1fa2591e7a0aa62c974a960cf0ca351ddfcd08f))
+
+
+
+
+
 ## [2.12.2](https://github.com/proteinjs/build/compare/@proteinjs/build@2.12.1...@proteinjs/build@2.12.2) (2026-08-27)
 
 
