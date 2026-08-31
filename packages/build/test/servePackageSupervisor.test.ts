@@ -77,6 +77,8 @@ describe('ServePackageSupervisor', () => {
 
   beforeEach(async () => {
     workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), 'serve-package-test-'));
+    // Ambient estate registration must land in the fixture, never the real ~/.n3xa.
+    process.env.N3XA_ESTATE_HOME = path.join(workspacePath, '.n3xa');
     await writeJson(path.join(workspacePath, 'package.json'), { name: 'root', private: true });
 
     libDir = path.join(workspacePath, 'packages', 'lib');
@@ -110,6 +112,7 @@ describe('ServePackageSupervisor', () => {
   afterEach(async () => {
     await supervisor?.stop();
     supervisor = undefined;
+    delete process.env.N3XA_ESTATE_HOME;
     await fs.rm(workspacePath, { recursive: true, force: true });
   });
 
@@ -1613,5 +1616,50 @@ describe('ServePackageSupervisor', () => {
       3000,
       'child terminated'
     );
+  });
+
+  describe('ambient estate registration (RESOURCE_GOVERNANCE §B.1)', () => {
+    const estatesDir = () => path.join(workspacePath, '.n3xa', 'estates');
+
+    const estateRecords = async () => {
+      const entries = await fs.readdir(estatesDir()).catch(() => [] as string[]);
+      const records = [];
+      for (const entry of entries.filter((name) => name.endsWith('.json'))) {
+        records.push(JSON.parse(await fs.readFile(path.join(estatesDir(), entry), 'utf-8')));
+      }
+      return records;
+    };
+
+    it('start() registers the estate (owner label, serving port, ipc dir, supervisor+child pids)', async () => {
+      process.env.SERVER_PORT = '3999';
+      try {
+        const pid = await startSupervisor();
+        const records = await estateRecords();
+        expect(records).toHaveLength(1);
+        expect(records[0]).toMatchObject({
+          owner: 'serve-package:@test/consumer',
+          ports: [3999],
+          dirs: [path.join(consumerDir, '.serve-package')],
+        });
+        expect(records[0].pids).toContain(process.pid);
+        expect(records[0].pids).toContain(pid);
+        expect(records[0].heartbeatAt).toBeGreaterThan(0);
+      } finally {
+        delete process.env.SERVER_PORT;
+      }
+    });
+
+    it('exit reaps the estate: stop() deregisters, and a relaunch re-registers the SAME id (no accumulation)', async () => {
+      await startSupervisor();
+      const [first] = await estateRecords();
+      await supervisor!.stop();
+      supervisor = undefined;
+      expect(await estateRecords()).toHaveLength(0);
+
+      await startSupervisor();
+      const records = await estateRecords();
+      expect(records).toHaveLength(1);
+      expect(records[0].id).toBe(first.id);
+    });
   });
 });

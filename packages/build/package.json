@@ -7,6 +7,10 @@
   "bin": {
     "clean-workspace": "dist/src/bin/runCleanWorkspace.js",
     "clean-worktrees": "dist/src/bin/runCleanWorktrees.js",
+    "estate": "dist/src/bin/runEstate.js",
+    "reap-estates": "dist/src/bin/runReapEstates.js",
+    "estate-watchdog": "dist/src/bin/runEstateWatchdog.js",
+    "docker-repair": "dist/src/bin/runDockerRepair.js",
     "build-workspace": "dist/src/bin/runBuildWorkspace.js",
     "test-workspace": "dist/src/bin/runTestWorkspace.js",
     "watch-workspace": "dist/src/bin/runWatchWorkspace.js",

@@ -6,6 +6,7 @@ import { PackageUtil, WorkspaceMetadata } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
 import { WorkspaceDoctor, WorkspaceFinding } from './WorkspaceDoctor';
 import { NodeModulesIdentityWatcher } from './NodeModulesIdentityWatcher';
+import { EstateRegistry } from './EstateRegistry';
 
 export type ServePackageOptions = {
   /** Workspace package whose process this supervises (e.g. @n3xa/app-server). */
@@ -328,6 +329,14 @@ export class ServePackageSupervisor {
   private consecutiveRespawns = 0;
   private respawnDueAt = 0;
   private respawnTimer?: NodeJS.Timeout;
+  // Ambient estate registration (RESOURCE_GOVERNANCE §B.1): the supervisor registers its estate
+  // on launch and heartbeats on the existing poll cadence (throttled), so the local reaper/valve
+  // machinery can SEE this dev server without any launch-script cooperation. Strictly best-effort:
+  // estate bookkeeping must never own the lane (every call is wrapped; failures log once).
+  private estateRegistry?: EstateRegistry;
+  private estateId?: string;
+  private lastEstateHeartbeatAt = 0;
+  private estateErrorLogged = false;
 
   constructor(private options: ServePackageOptions) {
     this.logger = new Logger({ name: `serve:${options.packageName.split('/').pop()}` });
@@ -362,9 +371,82 @@ export class ServePackageSupervisor {
     });
     this.started = true;
     await this.spawnChild();
+    await this.registerEstate();
     this.lastTickAt = Date.now();
     this.startIpcWatchers();
     this.armTick();
+  }
+
+  /**
+   * Register this supervisor's estate ambiently (id is stable per package dir, so restarts
+   * re-register the same record instead of accumulating). The estate owns only what dies with
+   * it: the ipc dir, the supervisor+child pids, and the serving port (from SERVER_PORT/PORT).
+   * The valve is NOT enforced here — refusing registration would not stop an already-running
+   * process, only blind the machinery to it (see RegisterOptions.enforceValve).
+   */
+  private async registerEstate(): Promise<void> {
+    try {
+      this.estateRegistry = new EstateRegistry();
+      const portEnv = Number(process.env.SERVER_PORT || process.env.PORT);
+      const ports = Number.isInteger(portEnv) && portEnv > 0 ? [portEnv] : [];
+      this.estateId = `serve-${this.options.packageName.split('/').pop()}${ports.length ? `-${ports[0]}` : ''}-${ServePackageSupervisor.pathHash(this.packageDir)}`;
+      await this.estateRegistry.register(
+        {
+          id: this.estateId,
+          owner: `serve-package:${this.options.packageName}`,
+          ports,
+          dirs: [this.ipcDir],
+          pids: this.currentPids(),
+          note: this.packageDir,
+        },
+        { enforceValve: false }
+      );
+      this.lastEstateHeartbeatAt = Date.now();
+    } catch (error) {
+      this.estateId = undefined;
+      this.logEstateErrorOnce(error);
+    }
+  }
+
+  /** Throttled estate heartbeat off the poll cadence (fresh pids ride along). */
+  private heartbeatEstate(now: number): void {
+    if (!this.estateId || !this.estateRegistry || now - this.lastEstateHeartbeatAt < 30_000) {
+      return;
+    }
+    this.lastEstateHeartbeatAt = now;
+    this.estateRegistry
+      .heartbeat(this.estateId, { pids: this.currentPids() })
+      .then((updated) => {
+        // The record can vanish under us (a reap of a wrongly-dead-looking estate, a manual rm):
+        // re-register rather than heartbeat into the void.
+        if (!updated) {
+          return this.registerEstate();
+        }
+      })
+      .catch((error) => this.logEstateErrorOnce(error));
+  }
+
+  private currentPids(): number[] {
+    return this.child?.pid ? [process.pid, this.child.pid] : [process.pid];
+  }
+
+  private logEstateErrorOnce(error: unknown): void {
+    if (this.estateErrorLogged) {
+      return;
+    }
+    this.estateErrorLogged = true;
+    this.logger.warn({
+      message: `> Estate registration unavailable (${error instanceof Error ? error.message : error}) — continuing unregistered; the reaper will not manage this estate`,
+    });
+  }
+
+  /** Short stable hash so two checkouts serving the same package name keep distinct estates. */
+  private static pathHash(value: string): string {
+    let hash = 5381;
+    for (let i = 0; i < value.length; i++) {
+      hash = ((hash << 5) + hash + value.charCodeAt(i)) >>> 0;
+    }
+    return hash.toString(16).padStart(8, '0');
   }
 
   /** Force a restart now, regardless of staleness or holds. */
@@ -571,9 +653,22 @@ export class ServePackageSupervisor {
     await this.killChild();
     // Sync, like every exit path: no exit may leave a pid file behind (zombie-shape guard).
     fsSync.rmSync(path.join(this.ipcDir, 'pid'), { force: true });
+    this.unregisterEstateSync();
     // Callers exit the process right after stop() resolves — setState writes synchronously, so
     // the final state is on disk by then (wedge #6 class).
     this.setState('stopped');
+  }
+
+  /** Exit reaps the estate (cleanup-as-contract). Sync, so the atomic exit paths can call it. */
+  private unregisterEstateSync(): void {
+    if (this.estateId && this.estateRegistry) {
+      try {
+        this.estateRegistry.unregisterSync(this.estateId);
+      } catch {
+        // best-effort: a leftover record goes dead-by-heartbeat and reaps on schedule
+      }
+      this.estateId = undefined;
+    }
   }
 
   /**
@@ -608,6 +703,7 @@ export class ServePackageSupervisor {
   private tick(): void {
     this.lastTickAt = Date.now();
     this.armTick();
+    this.heartbeatEstate(this.lastTickAt);
     void this.poll().catch((e) => this.logger.error({ error: e }));
   }
 
@@ -1172,6 +1268,7 @@ export class ServePackageSupervisor {
     } catch {
       // best-effort: a leftover pid file from a dead process fails the alive-check on relaunch
     }
+    this.unregisterEstateSync();
     this.setState('exited');
     this.options.onChildExit?.(code);
   }
