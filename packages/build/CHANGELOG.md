@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.14.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.14.0...@proteinjs/build@2.14.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* worktree activity spare — git-clean is not dead (the voicesmoke incident, 2026-08-31) ([09356df](https://github.com/proteinjs/build/commit/09356df04407c1dc91592930487449ec69e9f9a9))
+
+
+
+
+
 # [2.14.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.13.0...@proteinjs/build@2.14.0) (2026-09-01)
 
 
