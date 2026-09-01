@@ -126,6 +126,45 @@ describe('ServePackageSupervisor', () => {
     expect(state).toMatchObject({ state: 'running', packageName: '@test/consumer' });
   });
 
+  it('daemon posture rotates an over-cap serve.log at the spawn boundary and hands the child a fresh fd', async () => {
+    // The child now TALKS on stdout so the fresh-fd handoff is observable in serve.log.
+    await fs.writeFile(
+      path.join(consumerDir, 'server.js'),
+      [
+        "const fs = require('fs');",
+        "fs.writeFileSync('child.pid', String(process.pid));",
+        "console.log('child-hello');",
+        'setInterval(() => {}, 1000);',
+      ].join('\n')
+    );
+    const ipcDir = path.join(consumerDir, '.serve-package');
+    const logPath = path.join(ipcDir, 'serve.log');
+    await fs.mkdir(ipcDir, { recursive: true });
+    await fs.writeFile(logPath, Buffer.alloc(2048, 111)); // over the 1KB test cap
+
+    supervisor = new ServePackageSupervisor({
+      packageName: '@test/consumer',
+      command: ['node', 'server.js'],
+      workspacePath,
+      pollMs: 100,
+      quietMs: 200,
+      graceMs: 1500,
+      daemon: true,
+      logCapBytes: 1024,
+    });
+    await supervisor.start();
+    await waitFor(async () => (await childPid()) !== undefined, 5000, 'child boot');
+
+    const prev = await fs.readFile(`${logPath}.prev`);
+    expect(prev.length).toBe(2048); // the over-cap log rotated at the spawn boundary
+    await waitFor(
+      async () => (await fs.readFile(logPath, 'utf-8').catch(() => '')).includes('child-hello'),
+      5000,
+      'child stdout landing in the fresh serve.log'
+    );
+    expect((await fs.stat(logPath)).size).toBeLessThan(1024); // fresh file, not the old firehose
+  });
+
   it('daemonize launches a DETACHED process logging to .serve-package/serve.log, rotating the previous log', async () => {
     const { pid, logPath } = await ServePackageSupervisor.daemonize({
       packageName: '@test/consumer',

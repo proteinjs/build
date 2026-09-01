@@ -144,6 +144,29 @@ describe('PressureValve', () => {
     expect(evaluation.pressure.level).toBe('soft'); // 200 < the configured 300 soft line
   });
 
+  test('a held over-cap log forces the pressure note even at green watermarks (needs a human act)', async () => {
+    const { LogGovernor } = await import('../src/LogGovernor');
+    const logPath = path.join(home, 'app-server', 'dev-server.log');
+    await fs.mkdir(path.dirname(logPath), { recursive: true });
+    await fs.writeFile(logPath, Buffer.alloc(2048, 120));
+
+    const evaluation = await valve(200, 40, {
+      logGovernor: new LogGovernor({
+        registry,
+        capBytes: 1024,
+        watchLogs: [logPath],
+        writerProbe: async () => [777],
+      }),
+    }).evaluate();
+
+    expect(evaluation.pressure.level).toBe('ok');
+    expect(evaluation.logs!.held).toHaveLength(1);
+    const note = await fs.readFile(path.join(home, 'PRESSURE.md'), 'utf-8');
+    expect(note).toMatch(/HELD by live writer/);
+    expect(note).toMatch(/restart the holding server/);
+    expect((await fs.stat(logPath)).size).toBe(2048); // surfaced, never truncated
+  });
+
   test('probe mode (apply: false) evaluates without writing anything', async () => {
     const evaluation = await valve(11, 95, { apply: false, sweepOnPressure: false }).evaluate();
 

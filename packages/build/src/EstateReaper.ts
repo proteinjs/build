@@ -53,6 +53,10 @@ export type EstateReaperOptions = {
   pidProbe?: (pid: number, estateDirs: string[]) => Promise<PidLiveness>;
   /** Docker runner; undefined result = docker unavailable (container acts fail, dirs still sweep). */
   dockerRun?: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string } | undefined>;
+  /** Published HOST ports of a container (default: `docker port` parse; [] when gone/unpublished). */
+  containerPortsProbe?: (container: string) => Promise<number[]>;
+  /** ESTABLISHED connection count on a local port (default lsof). Idle = 0 across all ports. */
+  establishedConnsProbe?: (port: number) => Promise<number>;
   /** Kill runner for owner-scoped sweeps (default: SIGTERM the pid's process group, then SIGKILL). */
   killPid?: (pid: number) => Promise<void>;
   now?: () => number;
@@ -65,7 +69,9 @@ export type EstateReaperOptions = {
  *  - Only REGISTERED estates are ever touched — unregistered things are outside the boundary.
  *  - Never a live estate: fresh heartbeat (< TTL), an answering port, or a live cwd-verified pid
  *    each pin the estate (a serving instance is never swept, even with a stale heartbeat — it is
- *    SURFACED as a refusal instead).
+ *    SURFACED as a refusal instead). For CONTAINERS the port proof is ESTABLISHED client
+ *    connections, not LISTEN — docker-proxy listens for the container's whole life, so LISTEN
+ *    proves nothing and would immortalize idle lane emulators.
  *  - Never unpushed git work: every git repo/worktree found under an estate's dirs must have no
  *    uncommitted non-lockfile dirt, no stashes, and no commits missing from the remote (with a
  *    patch-id equivalence check so re-landed work — the "orphaned lane" dup class — still sweeps).
@@ -126,13 +132,40 @@ export class EstateReaper {
     }
 
     // ── Liveness proofs: a serving estate is never swept, whatever its heartbeat says ────────
+    // Container-published ports are excluded from the LISTEN probe: docker-proxy LISTENs for the
+    // container's whole life, idle or not — for containers, life is ESTABLISHED client
+    // connections (probed below), so an idle emulator can actually reap (the idle-emulator
+    // class: lane emulators that outlive their lanes while docker-proxy keeps the port warm).
+    const containerPorts: { container: string; ports: number[] }[] = [];
+    for (const container of estate.containers) {
+      containerPorts.push({ container, ports: await this.containerPorts(container) });
+    }
+    const dockerBackedPorts = new Set<number>();
+    for (const { ports } of containerPorts) {
+      for (const port of ports) {
+        dockerBackedPorts.add(port);
+      }
+    }
     for (const port of estate.ports) {
+      if (dockerBackedPorts.has(port)) {
+        continue;
+      }
       if (await this.probePort(port)) {
         report.reason = ownerScoped
           ? `port ${port} still answering — stop the service before an owner sweep`
           : `port ${port} answering with a stale heartbeat (${EstateReaper.formatAge(heartbeatAgeMs)}) — serving instance, refusing; investigate the missing heartbeat`;
         report.refusals.push(report.reason);
         return report;
+      }
+    }
+    for (const { container, ports } of containerPorts) {
+      for (const port of ports) {
+        const conns = await this.establishedConns(port);
+        if (conns > 0) {
+          report.reason = `container ${container} has ${conns} live client connection${conns !== 1 ? 's' : ''} on :${port} — in use, refusing${ownerScoped ? ' (owner sweep: disconnect clients first)' : ''}`;
+          report.refusals.push(report.reason);
+          return report;
+        }
       }
     }
     const livePids: { pid: number; cwd?: string }[] = [];
@@ -422,6 +455,43 @@ export class EstateReaper {
       return { state: inside ? 'alive-ours' : 'alive-foreign', cwd };
     } catch {
       return { state: 'alive-unverifiable' };
+    }
+  }
+
+  /** Published host ports of a live container via `docker port` (e.g. `9010/tcp -> 0.0.0.0:9367`). */
+  private async containerPorts(container: string): Promise<number[]> {
+    if (this.options.containerPortsProbe) {
+      return this.options.containerPortsProbe(container);
+    }
+    const result = await this.dockerRun(['port', container]);
+    if (!result || result.code !== 0) {
+      return []; // gone or unpublished — nothing to probe
+    }
+    const ports = new Set<number>();
+    const pattern = /->\s*[\d.:\][]*:(\d+)\s*$/gm;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(result.stdout)) !== null) {
+      const port = Number(match[1]);
+      if (Number.isFinite(port)) {
+        ports.add(port);
+      }
+    }
+    return Array.from(ports);
+  }
+
+  /** ESTABLISHED connections on a local TCP port (lsof; docker-proxy's own LISTEN never counts). */
+  private async establishedConns(port: number): Promise<number> {
+    if (this.options.establishedConnsProbe) {
+      return this.options.establishedConnsProbe(port);
+    }
+    try {
+      const result = await cmd('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:ESTABLISHED', '-t'], undefined, this.quiet());
+      if (result.code !== 0) {
+        return 0; // lsof exits 1 for no matches — idle
+      }
+      return result.stdout.split('\n').filter((line) => line.trim().length > 0).length;
+    } catch {
+      return 0;
     }
   }
 

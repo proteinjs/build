@@ -97,6 +97,7 @@ describe('EstateReaper', () => {
     expect(await exists(estateDir)).toBe(false);
     expect(await registry.get(record.id)).toBeUndefined();
     expect(dockerCalls).toEqual([
+      ['port', 'spanner-lane-x'], // the idle probe: published ports checked for live client conns
       ['stop', 'spanner-lane-x'],
       ['rm', 'spanner-lane-x'],
     ]);
@@ -283,6 +284,56 @@ describe('EstateReaper', () => {
         // already dead — the expected case
       }
     }
+  });
+
+  test('an IDLE emulator container reaps despite docker-proxy LISTEN on its published port', async () => {
+    // docker-proxy LISTENs for the container's whole life — a real socket stands in for it here.
+    const proxy = net.createServer();
+    const port = await new Promise<number>((resolve) => {
+      proxy.listen(0, '127.0.0.1', () => resolve((proxy.address() as net.AddressInfo).port));
+    });
+    try {
+      const dockerCalls: string[][] = [];
+      const { record, estateDir } = await registerStale({ ports: [port], containers: ['spanner-idle-lane'] });
+
+      const result = await new EstateReaper({
+        registry,
+        apply: true,
+        containerPortsProbe: async () => [port],
+        establishedConnsProbe: async () => 0, // no clients — idle
+        dockerRun: async (args) => {
+          dockerCalls.push(args);
+          return { code: 0, stdout: '', stderr: '' };
+        },
+      }).sweep();
+
+      expect(result.reports[0].verdict).toBe('reaped');
+      expect(dockerCalls).toEqual([
+        ['stop', 'spanner-idle-lane'],
+        ['rm', 'spanner-idle-lane'],
+      ]);
+      expect(await exists(estateDir)).toBe(false);
+      expect(await registry.get(record.id)).toBeUndefined();
+    } finally {
+      proxy.close();
+    }
+  });
+
+  test('a container with ESTABLISHED client connections is IN USE — spared and surfaced', async () => {
+    const { record, estateDir } = await registerStale({ containers: ['spanner-busy-lane'] });
+
+    const result = await new EstateReaper({
+      registry,
+      apply: true,
+      containerPortsProbe: async () => [9367],
+      establishedConnsProbe: async (port) => (port === 9367 ? 2 : 0),
+      dockerRun: async () => ({ code: 0, stdout: '', stderr: '' }),
+    }).sweep();
+
+    expect(result.reports[0].verdict).toBe('spared');
+    expect(result.reports[0].refusals.join('\n')).toMatch(/spanner-busy-lane has 2 live client connections/);
+    expect(await exists(estateDir)).toBe(true);
+    expect(await registry.get(record.id)).toBeDefined();
   });
 
   test('a corrupt estate file is reported unreadable and never touched', async () => {

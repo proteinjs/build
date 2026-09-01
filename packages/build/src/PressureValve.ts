@@ -6,6 +6,7 @@ import { cmd } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
 import { EstateRegistry, PressureLevel, PressureState } from './EstateRegistry';
 import { EstateReaper, ReapEstatesResult } from './EstateReaper';
+import { LogGovernor, LogGovernorReport } from './LogGovernor';
 
 /**
  * Declared local watermarks (RESOURCE_GOVERNANCE D-2 defaults). Overridable via
@@ -16,6 +17,10 @@ export type ValveConfig = {
   diskHardFreeGb: number;
   memSoftPct: number;
   memHardPct: number;
+  /** Dev-log rotation cap (LogGovernor), in GiB. */
+  logCapGb: number;
+  /** Extra absolute log paths the governor watches (the manual `nohup > dev-server.log` class). */
+  watchLogs: string[];
 };
 
 export const DEFAULT_VALVES: ValveConfig = {
@@ -23,6 +28,8 @@ export const DEFAULT_VALVES: ValveConfig = {
   diskHardFreeGb: 15,
   memSoftPct: 80,
   memHardPct: 92,
+  logCapGb: 1,
+  watchLogs: [],
 };
 
 export type ValveEvaluation = {
@@ -31,6 +38,8 @@ export type ValveEvaluation = {
   acts: string[];
   /** The dead-by-contract sweep triggered at soft+ (undefined when below soft or sweeping disabled). */
   sweep?: ReapEstatesResult;
+  /** The dev-log governor pass (every run — a runaway log is its own contract, not a pressure act). */
+  logs?: LogGovernorReport;
 };
 
 export type PressureValveOptions = {
@@ -44,6 +53,7 @@ export type PressureValveOptions = {
   diskFacts?: () => Promise<{ totalGb: number; freeGb: number }>;
   memoryFacts?: () => Promise<{ totalGb: number; availableGb: number }>;
   reaper?: EstateReaper;
+  logGovernor?: LogGovernor;
   now?: () => number;
 };
 
@@ -138,6 +148,19 @@ export class PressureValve {
       evaluation.acts.push('jest-workers advisory cleared (memory pressure gone)');
     }
 
+    // The dev-log governor runs EVERY evaluation: a runaway dev-server.log is its own contract
+    // (the 21GB incident grew under an otherwise-green disk), not a pressure-gated act.
+    const governor =
+      this.options.logGovernor ??
+      new LogGovernor({
+        registry: this.registry,
+        capBytes: valves.logCapGb * 1024 * 1024 * 1024,
+        watchLogs: valves.watchLogs,
+        apply,
+      });
+    evaluation.logs = await governor.govern();
+    evaluation.acts.push(...evaluation.logs.acts);
+
     // Soft+ triggers the dead-by-contract sweep (the reaper's own safety rules gate every act).
     if (level !== 'ok' && (this.options.sweepOnPressure ?? true)) {
       const reaper = this.options.reaper ?? new EstateReaper({ registry: this.registry, apply });
@@ -150,9 +173,10 @@ export class PressureValve {
       );
     }
 
-    // The pressure note the coordinator's next turn surfaces.
+    // The pressure note the coordinator's next turn surfaces. A held over-cap log forces the
+    // note even at level ok — it needs a human act (restart the holding server) to resolve.
     if (apply) {
-      if (level !== 'ok') {
+      if (level !== 'ok' || (evaluation.logs?.held.length ?? 0) > 0) {
         this.writeNoteSync(pressure, evaluation);
         evaluation.acts.push(`pressure note written (${this.notePath()})`);
       } else {
@@ -268,7 +292,9 @@ export class PressureValve {
       '',
       pressure.level === 'hard'
         ? 'Refusal flag is UP: `estate register` refuses new estates. Reap or park before launching new work (`reap-estates`, `clean-worktrees`). No processes were killed (local valve never kills — D-3).'
-        : 'Soft watermark: dead-by-contract sweep ran; consider `reap-estates` / `clean-worktrees --apply` before launching heavy work.',
+        : pressure.level === 'soft'
+          ? 'Soft watermark: dead-by-contract sweep ran; consider `reap-estates` / `clean-worktrees --apply` before launching heavy work.'
+          : 'Watermarks are green; this note stands only for the held over-cap log(s) above — restart the holding server so the governor can rotate.',
       '',
     ];
     fsSync.mkdirSync(this.registry.homePath(), { recursive: true });

@@ -7,6 +7,8 @@ import { Logger } from '@proteinjs/logger';
 import { WorkspaceDoctor, WorkspaceFinding } from './WorkspaceDoctor';
 import { NodeModulesIdentityWatcher } from './NodeModulesIdentityWatcher';
 import { EstateRegistry } from './EstateRegistry';
+import { EstateReaper } from './EstateReaper';
+import { LogGovernor } from './LogGovernor';
 
 export type ServePackageOptions = {
   /** Workspace package whose process this supervises (e.g. @n3xa/app-server). */
@@ -127,6 +129,12 @@ export type ServePackageOptions = {
   crashRespawnLimit?: number;
   /** Daemon posture: rolling window for the crash-respawn budget (default 10 minutes). */
   crashRespawnWindowMs?: number;
+  /**
+   * Daemon posture: serve.log size above which a child (re)spawn rotates it to serve.log.prev
+   * and hands the child a fresh fd (default 1 GiB — the LogGovernor cap). In-run growth between
+   * respawns is governed externally by the estate-watchdog's LogGovernor.
+   */
+  logCapBytes?: number;
 };
 
 type SupervisorState =
@@ -657,6 +665,38 @@ export class ServePackageSupervisor {
     // Callers exit the process right after stop() resolves — setState writes synchronously, so
     // the final state is on disk by then (wedge #6 class).
     this.setState('stopped');
+  }
+
+  /**
+   * Daemon posture, at a child (re)spawn boundary: when serve.log is over the cap, rotate it to
+   * serve.log.prev (the daemonize convention — one bounded generation) and open a fresh fd for
+   * the child; the returned fd is the child's stdout/stderr and the caller closes its copy after
+   * spawn. Returns undefined (child inherits fd1 as before) when not daemonized, under cap, or on
+   * any rotation error — log hygiene must never block a spawn. The daemon's OWN few lines keep
+   * flowing to the rotated inode (its fd1 is fixed at daemonize); the child firehose — the volume
+   * that grew a dev log to 21GB (2026-08-31) — starts fresh.
+   */
+  private rotateDaemonLogSync(): number | undefined {
+    if (!this.options.daemon) {
+      return undefined;
+    }
+    const logPath = path.join(this.ipcDir, 'serve.log');
+    try {
+      const size = fsSync.statSync(logPath).size;
+      const cap = this.options.logCapBytes ?? LogGovernor.DEFAULT_CAP_BYTES;
+      if (size <= cap) {
+        return undefined;
+      }
+      fsSync.rmSync(`${logPath}.prev`, { force: true });
+      fsSync.renameSync(logPath, `${logPath}.prev`);
+      const fd = fsSync.openSync(logPath, 'a');
+      this.logger.info({
+        message: `> Rotated serve.log (${EstateReaper.formatBytes(size)} > cap) → serve.log.prev; child logs to a fresh file`,
+      });
+      return fd;
+    } catch {
+      return undefined; // no log yet, or rotation failed — spawn proceeds on the inherited fd
+    }
   }
 
   /** Exit reaps the estate (cleanup-as-contract). Sync, so the atomic exit paths can call it. */
@@ -1299,15 +1339,24 @@ export class ServePackageSupervisor {
     this.spawnedAt = Date.now();
     this.lastChildExit = undefined;
     const [cmd, ...args] = this.options.command;
+    const childLogFd = this.rotateDaemonLogSync();
     this.child = spawn(cmd, args, {
       cwd: this.packageDir,
-      stdio: ['ignore', 'inherit', 'inherit'],
+      stdio: ['ignore', childLogFd ?? 'inherit', childLogFd ?? 'inherit'],
       env: { ...process.env, SERVE_PACKAGE_IPC: this.ipcDir },
       // Own process group, so killChild can signal the WHOLE tree — wrapper commands
       // (npm run dev → node server) would otherwise orphan the real server on restart,
       // leaving it squatting the port.
       detached: true,
     });
+    if (childLogFd !== undefined) {
+      // The child holds its own dup from spawn; ours must not leak.
+      try {
+        fsSync.closeSync(childLogFd);
+      } catch {
+        // already closed
+      }
+    }
     // A child is serving again: the failed-restart recovery budget resets.
     this.lostChildToFailedRestart = false;
     this.recoveryAttempts = 0;

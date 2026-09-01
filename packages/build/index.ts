@@ -11,3 +11,4 @@ export * from './src/EstateRegistry';
 export * from './src/EstateReaper';
 export * from './src/PressureValve';
 export * from './src/DockerGuardian';
+export * from './src/LogGovernor';
