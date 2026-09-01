@@ -276,10 +276,16 @@ export class WorktreeCleaner {
       report.reason = `git-locked${candidate.locked ? `: ${candidate.locked}` : ''}`;
       return report;
     }
+    // Keep pins match the path OR any ancestor: a kept ESTATE dir (e.g. a registered estate's
+    // root passed by the reap-estates delegation) protects every worktree inside it.
     const keepPaths = (this.options.keep ?? []).map((keepPath) => path.resolve(keepPath));
-    if (keepPaths.includes(path.resolve(candidate.path))) {
+    const resolvedCandidate = path.resolve(candidate.path);
+    const keeper = keepPaths.find(
+      (keepPath) => resolvedCandidate === keepPath || resolvedCandidate.startsWith(keepPath + path.sep)
+    );
+    if (keeper) {
       report.verdict = 'pinned';
-      report.reason = 'pinned by --keep';
+      report.reason = keeper === resolvedCandidate ? 'pinned by --keep' : `pinned by --keep on ancestor ${keeper}`;
       return report;
     }
     if (await this.exists(path.join(candidate.path, KEEP_MARKER_FILENAME))) {

@@ -1,6 +1,7 @@
 import { LogColorWrapper, parseArgsMap } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
 import { EstateReaper, EstateSweepReport } from './EstateReaper';
+import { EstateRegistry } from './EstateRegistry';
 import { WorktreeCleaner } from './WorktreeCleaner';
 import { WorkspaceDoctor } from './WorkspaceDoctor';
 import { primaryLogColor, secondaryLogColor } from './logColors';
@@ -64,7 +65,18 @@ export const reapEstates = async () => {
         typeof argsMap['root'] === 'string'
           ? (argsMap['root'] as string)
           : await WorkspaceDoctor.findWorkspaceRoot(process.cwd());
-      worktreeResult = await new WorktreeCleaner({ workspaceRoot, apply }).clean();
+      // Registered estates' dirs are the estate reaper's jurisdiction (heartbeats, pins, liveness
+      // grammar) — the worktree pass must never sweep inside them (single owner per dir).
+      const { estates } = await new EstateRegistry().list();
+      const estateDirs: string[] = [];
+      for (const estate of estates) {
+        for (const dir of estate.dirs) {
+          if (estateDirs.indexOf(dir) === -1) {
+            estateDirs.push(dir);
+          }
+        }
+      }
+      worktreeResult = await new WorktreeCleaner({ workspaceRoot, apply, keep: estateDirs }).clean();
     } catch (error) {
       logger.warn({
         message: `> Worktree pass skipped: ${error instanceof Error ? error.message : error} (run clean-worktrees --root=... directly)`,

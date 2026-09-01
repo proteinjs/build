@@ -160,6 +160,18 @@ describe('WorktreeCleaner', () => {
     expect(await exists(wt)).toBe(true);
   });
 
+  test('--keep on an ANCESTOR dir pins every worktree inside it (registered-estate protection)', async () => {
+    const estateRoot = path.join(workspaceRoot, '.scratch', 'kept-estate');
+    const wt = await addWorktree(repoDir, path.join(estateRoot, 'repo-a'), 'lane/kept');
+
+    const result = await cleaner({ apply: true, keep: [estateRoot] }).clean();
+
+    const report = reportFor(result, wt);
+    expect(report!.verdict).toBe('pinned');
+    expect(report!.reason).toMatch(/ancestor/);
+    expect(await exists(wt)).toBe(true);
+  });
+
   test('classifies a clean committed worktree as safe, with a measured size', async () => {
     const wt = await addWorktree(repoDir, path.join(workspaceRoot, '.scratch', 'lane1', 'repo-a'), 'lane/one');
 
