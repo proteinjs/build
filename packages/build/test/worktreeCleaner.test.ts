@@ -59,8 +59,30 @@ describe('WorktreeCleaner', () => {
       workspaceRoot,
       scanRoots: [],
       processScan: async () => [],
+      // Git-safety semantics under test use inherently-fresh fixtures; the activity contract
+      // has its own tests below (which pass real TTLs / use the default).
+      activityTtlMs: 0,
       ...overrides,
     });
+
+  /** Backdate every file/dir in a worktree (skipping .git) so it is contract-dead. */
+  const backdate = async (dir: string, ageMs: number) => {
+    const when = new Date(Date.now() - ageMs);
+    const walk = async (current: string) => {
+      for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+        if (entry.name === '.git') {
+          continue;
+        }
+        const entryPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          await walk(entryPath);
+        }
+        await fs.utimes(entryPath, when, when);
+      }
+      await fs.utimes(current, when, when);
+    };
+    await walk(dir);
+  };
 
   const reportFor = (result: { worktrees: WorktreeReport[] }, wtPath: string) =>
     result.worktrees.find((worktree) => worktree.path === wtPath);
@@ -77,6 +99,65 @@ describe('WorktreeCleaner', () => {
 
   afterEach(async () => {
     await fs.rm(fixtureRoot, { recursive: true, force: true });
+  });
+
+  test('the voicesmoke rule: a clean landed worktree with RECENT activity is pinned, not swept (2026-08-31 incident)', async () => {
+    // Exactly the incident shape: git-clean, commits landed, but the lane is actively using it —
+    // bursty agent activity means no process holds the path at snapshot instant; fresh mtimes are
+    // the durable liveness signal. The >36h dead-by-contract window is the DEFAULT (no option).
+    const wt = await addWorktree(repoDir, path.join(workspaceRoot, '.scratch', 'voicelane', 'repo-a'), 'lane/voice');
+
+    const result = await new WorktreeCleaner({
+      workspaceRoot,
+      scanRoots: [],
+      processScan: async () => [],
+      apply: true,
+    }).clean();
+
+    const report = reportFor(result, wt);
+    expect(report!.verdict).toBe('pinned');
+    expect(report!.reason).toMatch(/recent activity/);
+    expect(report!.removed).toBeUndefined();
+    expect(await exists(wt)).toBe(true);
+  });
+
+  test('a contract-dead worktree (all mtimes past the TTL) still sweeps under the default window', async () => {
+    const wt = await addWorktree(repoDir, path.join(workspaceRoot, '.scratch', 'oldlane', 'repo-a'), 'lane/old');
+    await backdate(wt, 40 * 3600_000); // past the 36h dead-by-contract window
+
+    const result = await new WorktreeCleaner({
+      workspaceRoot,
+      scanRoots: [],
+      processScan: async () => [],
+      apply: true,
+    }).clean();
+
+    const report = reportFor(result, wt);
+    expect(report!.verdict).toBe('safe');
+    expect(report!.removed).toBe(true);
+    expect(await exists(wt)).toBe(false);
+  });
+
+  test('removal re-probes activity: a worktree that becomes active MID-PASS is refused (TOCTOU guard)', async () => {
+    // The incident's second bite: the pass classified early, removed 25 minutes later, and ate a
+    // worktree the lane had REBUILT in between. The remover re-checks recency at act time.
+    const wt = await addWorktree(repoDir, path.join(workspaceRoot, '.scratch', 'reblane', 'repo-a'), 'lane/rebuilt');
+    await backdate(wt, 40 * 3600_000);
+    const activeCleaner = new WorktreeCleaner({
+      workspaceRoot,
+      scanRoots: [],
+      processScan: async () => [],
+      apply: true,
+    });
+    // Classify via a dry pass first (safe), then the lane "rebuilds" (fresh mtime), then removal.
+    const dry = await new WorktreeCleaner({ workspaceRoot, scanRoots: [], processScan: async () => [] }).clean();
+    const report = reportFor(dry, wt)!;
+    expect(report.verdict).toBe('safe');
+    await fs.writeFile(path.join(wt, 'rebuilt.ts'), 'export const back = 1;\n'); // mid-pass activity
+    await expect(
+      (activeCleaner as unknown as { removeWorktree(r: WorktreeReport): Promise<void> }).removeWorktree(report)
+    ).rejects.toThrow(/active/);
+    expect(await exists(wt)).toBe(true);
   });
 
   test('classifies a clean committed worktree as safe, with a measured size', async () => {

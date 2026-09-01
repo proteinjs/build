@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { cmd } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
+import { EstateReaper } from './EstateReaper';
 
 /** Marker file a human (or lane) drops at a worktree root to pin it against sweeps. */
 export const KEEP_MARKER_FILENAME = '.worktree-keep';
@@ -82,6 +83,13 @@ export type WorktreeCleanerOptions = {
   apply?: boolean;
   /** Override / test seam for the process-hold snapshot. Default: one lsof pass over all processes. */
   processScan?: ProcessScan;
+  /**
+   * The dead-by-contract window (PROCESS.md session-scratch ruling, default 36h): a worktree with
+   * ANY mtime younger than this is IN USE and pinned, however git-clean it is — agent-lane
+   * activity is bursty (short-lived npm/tsc processes), so instantaneous process holds miss live
+   * estates (the 2026-08-31 voicesmoke incident). 0 disables the activity spare.
+   */
+  activityTtlMs?: number;
 };
 
 /** How a worktree came to be known before classification. */
@@ -99,6 +107,8 @@ type WorktreeCandidate = {
 
 const MAX_SCAN_DEPTH = 6;
 const SKIP_DIR_NAMES = new Set(['node_modules', 'dist', '.git', '.nx', '.cache', 'coverage', '.Trash']);
+/** Activity probe skips (regenerable churn that would false-pin); `dist` deliberately INCLUDED. */
+const ACTIVITY_SKIP_DIR_NAMES = new Set(['node_modules', '.nx', '.cache', 'coverage', '.Trash']);
 
 /**
  * Worktree lifecycle sweeper (PROCESS.md "Temp and workspace hygiene", ruled 2026-08-20):
@@ -302,6 +312,20 @@ export class WorktreeCleaner {
     }
     report.lockOnlyDirt = dirtPaths.length > 0;
 
+    // The activity spare (the 2026-08-31 voicesmoke rule): git-clean is NOT dead. Agent-lane use
+    // is bursty — short-lived processes leave no hold to snapshot — so recent mtimes are the
+    // durable liveness signal, and the session-scratch ruling's >36h window is the contract.
+    const activityTtl = this.activityTtlMs();
+    if (activityTtl > 0) {
+      const newestMs = await this.newestMtimeMs(candidate.path);
+      const age = Date.now() - newestMs;
+      if (age < activityTtl) {
+        report.verdict = 'pinned';
+        report.reason = `recent activity: newest change ${EstateReaper.formatAge(Math.max(age, 0))} ago — inside the ${EstateReaper.formatAge(activityTtl)} dead-by-contract window`;
+        return report;
+      }
+    }
+
     if (!holds) {
       report.reason = 'process-hold snapshot unavailable — cannot prove no live process is inside';
       return report;
@@ -328,6 +352,18 @@ export class WorktreeCleaner {
    * --force does not override a lock.
    */
   private async removeWorktree(report: WorktreeReport): Promise<void> {
+    // Act-time re-probe (the incident's second bite): classification and removal can be many
+    // minutes apart on a big pass, and a lane can rebuild a worktree IN that window — the
+    // voicesmoke lane rebuilt chat/ at 16:34 between a 16:13 snapshot and 16:36+ removals.
+    const activityTtl = this.activityTtlMs();
+    if (activityTtl > 0) {
+      const age = Date.now() - (await this.newestMtimeMs(report.path));
+      if (age < activityTtl) {
+        throw new Error(
+          `refused: worktree became active during the pass (newest change ${EstateReaper.formatAge(Math.max(age, 0))} ago)`
+        );
+      }
+    }
     this.logger.info({ message: `Removing worktree ${report.path} (${report.reason})` });
     await this.git(report.repoGitDir, [`--git-dir=${report.repoGitDir}`, 'worktree', 'remove', '--force', report.path]);
   }
@@ -491,6 +527,52 @@ export class WorktreeCleaner {
       });
   }
 
+  private activityTtlMs(): number {
+    return this.options.activityTtlMs ?? WorktreeCleaner.DEFAULT_ACTIVITY_TTL_MS;
+  }
+
+  /**
+   * Newest mtime (ms) under a worktree: bounded walk (depth + stat budget), skipping `.git` and
+   * heavy regenerable dirs but INCLUDING `dist` — a rebuild is exactly the activity evidence the
+   * spare exists for. Directory mtimes count (creates/deletes bump the parent). On any stat
+   * failure the entry is skipped; an unreadable tree yields the root's own mtime.
+   */
+  private async newestMtimeMs(dirPath: string): Promise<number> {
+    let newest = 0;
+    let budget = WorktreeCleaner.MAX_ACTIVITY_STATS;
+    const probe = async (target: string, depth: number): Promise<void> => {
+      if (budget-- <= 0) {
+        return;
+      }
+      let stat;
+      try {
+        stat = await fs.lstat(target);
+      } catch {
+        return;
+      }
+      if (stat.mtimeMs > newest) {
+        newest = stat.mtimeMs;
+      }
+      if (!stat.isDirectory() || depth >= WorktreeCleaner.MAX_ACTIVITY_DEPTH) {
+        return;
+      }
+      let entries;
+      try {
+        entries = await fs.readdir(target, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.name === '.git' || ACTIVITY_SKIP_DIR_NAMES.has(entry.name)) {
+          continue;
+        }
+        await probe(path.join(target, entry.name), depth + 1);
+      }
+    };
+    await probe(dirPath, 0);
+    return newest;
+  }
+
   /** Measured disk usage in bytes, or undefined when measurement failed — never an estimate. */
   private async measure(dirPath: string): Promise<number | undefined> {
     try {
@@ -547,4 +629,9 @@ export class WorktreeCleaner {
       return false;
     }
   }
+
+  /** The PROCESS.md session-scratch ruling: younger than 36h = in use, whatever git says. */
+  static readonly DEFAULT_ACTIVITY_TTL_MS = 36 * 3600_000;
+  private static readonly MAX_ACTIVITY_DEPTH = 4;
+  private static readonly MAX_ACTIVITY_STATS = 4000;
 }
