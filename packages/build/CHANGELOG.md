@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.14.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.13.0...@proteinjs/build@2.14.0) (2026-09-01)
+
+
+### Features
+
+* dev-log governor + idle emulator-container reaping (RESOURCE_GOVERNANCE §B scope additions) ([4b6c524](https://github.com/proteinjs/build/commit/4b6c524acb689df3271dece7d8de40a17836c26b))
+
+
+
+
+
 # [2.13.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.12.2...@proteinjs/build@2.13.0) (2026-08-31)
 
 
