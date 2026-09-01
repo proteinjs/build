@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.15.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.14.1...@proteinjs/build@2.15.0) (2026-09-01)
+
+
+### Features
+
+* registered-estate protection in the worktree pass — keep pins match ancestors ([5e468e2](https://github.com/proteinjs/build/commit/5e468e2b8e85f21b104ce8d722c6696a54f6cdcc))
+
+
+
+
+
 ## [2.14.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.14.0...@proteinjs/build@2.14.1) (2026-09-01)
 
 
