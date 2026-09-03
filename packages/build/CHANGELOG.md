@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.15.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.15.0...@proteinjs/build@2.15.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **build): floor @proteinjs/util-node at ^1.11.0 — the workspace commands build the DECLARED workspace, never a crawl. build-workspace, test-workspace, watch-workspace, workspace clean, lint/symlink/verify all take their package set from PackageUtil.getWorkspaceMetadata, whose membership is now WorkspaceDeclaration's (util-node 1.11.0:** a root's lerna.json `packages` plus the root package.json `workspacePackages` extra roots name exactly its members; a declared root owns its subtree; a declared literal with no package.json and two leaf packages sharing a name are hard errors naming their paths. The public surface (bins, --skip/--no-build/--no-lint/--lint) is unchanged; a caret floor at 1.10.x would have let a committed lock keep the crawl. Why: n3xah/app Deploy to Test run 33747781291 (2026-09-03) built "1 package in workspace" because fixture package.jsons had shadowed the app's own packages in the crawl — the image shipped with no packages/server/dist. Suite: packages/build 17 suites / 202 tests green against util-node 1.11.0 (all pre-existing; the membership pins live in util-node's WorkspaceDeclaration.test.ts). ([b5113ee](https://github.com/proteinjs/build/commit/b5113eec4df9c550c708b629c1faaf67645e1327))
+
+
+
+
+
 # [2.15.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.14.1...@proteinjs/build@2.15.0) (2026-09-01)
 
 
