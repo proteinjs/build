@@ -1,6 +1,6 @@
-import { LogColorWrapper, parseArgsMap } from '@proteinjs/util-node';
+import { ArgsMap, LogColorWrapper, parseArgsMap } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
-import { EstateReaper, EstateSweepReport, ReapEstatesResult } from './EstateReaper';
+import { EstateReaper, EstateReaperOptions, EstateSweepReport, ReapEstatesResult } from './EstateReaper';
 import { EstateDatabaseSweep } from './EstateDatabaseSweep';
 import { EstateRegistry } from './EstateRegistry';
 import { WorktreeCleaner } from './WorktreeCleaner';
@@ -42,6 +42,12 @@ Optional args:
                        the environment (source ~/.zshrc) — nothing about it is ever printed.
                        ie: --db-fence=n3xa-app/n3xa-dev/est-
 --db-orphan-days=<n>   the orphan horizon in days (default 7)
+--db-client-from=<dir>[,<dir>]
+                       durable dirs to borrow @google-cloud/spanner from, tried after the cwd and the
+                       registered estates' own dirs — the scheduled job's cwd has no app install, and
+                       once the estates that would lend the client are reaped the orphan sweep would
+                       otherwise be inert in the very case it exists for.
+                       ie: --db-client-from=/Users/<you>/repos/farm/n3xa2/packages/app/packages/server
 --no-worktrees         skip the delegated clean-worktrees pass
 --root=/path           workspace root for the worktree pass (default: discovered from cwd)
 --json                 machine-readable result on stdout
@@ -59,31 +65,10 @@ export const reapEstates = async () => {
     console.log(HELP);
     return;
   }
-  const apply = argsMap['apply'] === true;
-  const owner = typeof argsMap['owner'] === 'string' ? (argsMap['owner'] as string) : undefined;
-  const ttlHours = typeof argsMap['ttl'] === 'string' ? Number(argsMap['ttl']) : undefined;
-  if (ttlHours !== undefined && (!Number.isFinite(ttlHours) || ttlHours <= 0)) {
-    throw new Error(`--ttl must be a positive number of hours, got: ${argsMap['ttl']}`);
-  }
-
-  const fence =
-    typeof argsMap['db-fence'] === 'string' ? EstateDatabaseSweep.parseFence(argsMap['db-fence'] as string) : undefined;
-  const orphanDays = typeof argsMap['db-orphan-days'] === 'string' ? Number(argsMap['db-orphan-days']) : undefined;
-  if (orphanDays !== undefined && (!Number.isFinite(orphanDays) || orphanDays <= 0)) {
-    throw new Error(`--db-orphan-days must be a positive number of days, got: ${argsMap['db-orphan-days']}`);
-  }
-  if (orphanDays !== undefined && !fence) {
-    throw new Error('--db-orphan-days needs --db-fence=<project>/<instance>/<prefix>');
-  }
-
-  const reaper = new EstateReaper({
-    apply,
-    owner,
-    ttlMs: ttlHours !== undefined ? ttlHours * 3600_000 : undefined,
-    databases: fence
-      ? { fence, orphanAfterMs: orphanDays !== undefined ? orphanDays * 24 * 3600_000 : undefined }
-      : undefined,
-  });
+  const options = reapEstatesOptions(argsMap);
+  const apply = !!options.apply;
+  const owner = options.owner;
+  const reaper = new EstateReaper(options);
   const result = await reaper.sweep();
 
   let worktreeResult;
@@ -130,6 +115,43 @@ export const reapEstates = async () => {
     process.exit(1);
   }
 };
+
+/** The CLI flags as the reaper's options — the one place the flag surface maps onto {@link EstateReaperOptions}. */
+export function reapEstatesOptions(argsMap: ArgsMap): EstateReaperOptions {
+  const stringArg = (name: string) => (typeof argsMap[name] === 'string' ? (argsMap[name] as string) : undefined);
+  const ttlHours = stringArg('ttl') !== undefined ? Number(stringArg('ttl')) : undefined;
+  if (ttlHours !== undefined && (!Number.isFinite(ttlHours) || ttlHours <= 0)) {
+    throw new Error(`--ttl must be a positive number of hours, got: ${argsMap['ttl']}`);
+  }
+  const fenceArg = stringArg('db-fence');
+  const fence = fenceArg !== undefined ? EstateDatabaseSweep.parseFence(fenceArg) : undefined;
+  const orphanDays = stringArg('db-orphan-days') !== undefined ? Number(stringArg('db-orphan-days')) : undefined;
+  if (orphanDays !== undefined && (!Number.isFinite(orphanDays) || orphanDays <= 0)) {
+    throw new Error(`--db-orphan-days must be a positive number of days, got: ${argsMap['db-orphan-days']}`);
+  }
+  if (orphanDays !== undefined && !fence) {
+    throw new Error('--db-orphan-days needs --db-fence=<project>/<instance>/<prefix>');
+  }
+  const clientFrom = stringArg('db-client-from')
+    ?.split(',')
+    .map((dir) => dir.trim())
+    .filter((dir) => dir.length > 0);
+  if (clientFrom !== undefined && !fence) {
+    throw new Error('--db-client-from needs --db-fence=<project>/<instance>/<prefix>');
+  }
+  return {
+    apply: argsMap['apply'] === true,
+    owner: stringArg('owner'),
+    ttlMs: ttlHours !== undefined ? ttlHours * 3600_000 : undefined,
+    databases: fence
+      ? {
+          fence,
+          orphanAfterMs: orphanDays !== undefined ? orphanDays * 24 * 3600_000 : undefined,
+          resolvePaths: clientFrom,
+        }
+      : undefined,
+  };
+}
 
 function printDatabases(result: ReapEstatesResult, logger: Logger) {
   const databases = result.databases;

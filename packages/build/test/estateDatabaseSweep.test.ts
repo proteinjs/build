@@ -215,6 +215,106 @@ describe('EstateDatabaseSweep — the orphan sweep', () => {
   });
 });
 
+describe('EstateDatabaseSweep — a credential that cannot list (present but denied)', () => {
+  const denied: SpannerAdminClient = {
+    instance: () => ({
+      getDatabases: async () => {
+        throw new Error("7 PERMISSION_DENIED: Operation denied by [IAM permission 'spanner.databases.list']");
+      },
+      database: () => ({
+        delete: async () => {
+          throw new Error('never reached');
+        },
+      }),
+    }),
+    close: () => undefined,
+  };
+
+  test('the row path is a refusal naming the list failure, never a throw; the client is still closed', async () => {
+    let closed = 0;
+    const instance = new EstateDatabaseSweep({
+      fence: FENCE,
+      env: { GCP_SA_KEY: KEY },
+      spannerFactory: () => ({
+        ...denied,
+        close: () => {
+          closed += 1;
+        },
+      }),
+    });
+    const report = await instance.dropForEstate(['n3xa-app/n3xa-dev/est-x'], true);
+    expect(report.acts).toEqual([]);
+    expect(report.refusals).toHaveLength(1);
+    expect(report.refusals[0]).toMatch(
+      /databases n3xa-app\/n3xa-dev\/est-x: could not list n3xa-app\/n3xa-dev \(.*spanner\.databases\.list.*\) — not dropped/
+    );
+    expect(closed).toBe(1);
+  });
+
+  test('the orphan path is a SAID skip naming the list failure, never a throw', async () => {
+    const instance = new EstateDatabaseSweep({ fence: FENCE, env: { GCP_SA_KEY: KEY }, spannerFactory: () => denied });
+    const report = await instance.sweepOrphans(new Set(), true);
+    expect(report.skipped).toMatch(
+      /could not list n3xa-app\/n3xa-dev \(.*spanner\.databases\.list.*\) — orphan sweep skipped/
+    );
+    expect(report.acts).toEqual([]);
+  });
+});
+
+describe('EstateDatabaseSweep — the default client is borrowed from resolvePaths (the --db-client-from door)', () => {
+  test('a @google-cloud/spanner install under a resolve path is found when cwd has none; the credential is decoded in-process', async () => {
+    const fs = await import('fs/promises');
+    const os = await import('os');
+    const path = await import('path');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'estate-sweep-client-'));
+    const moduleDir = path.join(root, 'app', 'packages', 'server', 'node_modules', '@google-cloud', 'spanner');
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.writeFile(path.join(moduleDir, 'package.json'), '{"name":"@google-cloud/spanner","main":"index.js"}');
+    // The fake module records its construction options and lists one aged orphan.
+    await fs.writeFile(
+      path.join(moduleDir, 'index.js'),
+      `const created = []; const dropped = [];
+       class Spanner {
+         constructor(options) { created.push(options); }
+         instance(name) { return {
+           getDatabases: async () => [[{ formattedName_: 'projects/n3xa-app/instances/' + name + '/databases/est-old', metadata: { createTime: { seconds: ${Math.floor((NOW - 30 * DAY) / 1000)}, nanos: 0 } } }]],
+           database: (dbName) => ({ delete: async () => { dropped.push(dbName); } }),
+         }; }
+         close() {}
+       }
+       module.exports = { Spanner, created, dropped };`
+    );
+    try {
+      const instance = new EstateDatabaseSweep({
+        fence: FENCE,
+        env: { GCP_SA_KEY: KEY },
+        now: () => NOW,
+        resolvePaths: [root], // the reaper adds <dir>/app/packages/server itself
+      });
+      const report = await instance.sweepOrphans(new Set(), true);
+      expect(report.skipped).toBeUndefined();
+      expect(report.acts).toEqual(['drop orphan database n3xa-app/n3xa-dev/est-old (30.0d old, no registered estate)']);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const fake = require(path.join(moduleDir, 'index.js'));
+      expect(fake.dropped).toEqual(['est-old']);
+      expect(fake.created[0].projectId).toBe('n3xa-app');
+      expect(fake.created[0].credentials).toEqual({ type: 'service_account', client_email: 'fake@example.iam' });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('with no resolvable client the orphan sweep is skipped and names the missing install', async () => {
+    const instance = new EstateDatabaseSweep({
+      fence: FENCE,
+      env: { GCP_SA_KEY: KEY },
+      resolvePaths: ['/nonexistent/estate'],
+    });
+    const report = await instance.sweepOrphans(new Set(), true);
+    expect(report.skipped).toMatch(/no @google-cloud\/spanner client resolvable/);
+  });
+});
+
 describe('EstateDatabaseSweep — references and fences', () => {
   test('parseRef / formatRef round-trip; parseFence names the shape on a bad flag', () => {
     expect(EstateDatabaseSweep.parseRef('n3xa-app/n3xa-dev/est-x')).toEqual({

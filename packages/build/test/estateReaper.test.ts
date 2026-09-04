@@ -33,6 +33,12 @@ const exists = async (p: string) => {
 
 const STALE = 40 * 3600_000; // past the 36h dead-by-contract TTL
 
+// Real git fixtures (init, commit, a bare remote, push) plus the reaper's own git walk (status,
+// stash, log, patch-id over the remote) take seconds on a loaded Mac — jest's 5 s default reds
+// them spuriously at a 1-min load of ~15 (measured 2026-09-05), and a departure verifier runs
+// under exactly that load. The suite's budget is generous; nothing here waits on a real timeout.
+jest.setTimeout(60_000);
+
 describe('EstateReaper', () => {
   let fixtureRoot: string;
   let home: string;
@@ -454,6 +460,101 @@ describe('EstateReaper', () => {
     expect(spanner.dropped).toEqual(['est-mine']);
     expect(result.databases).toBeUndefined();
     expect(await registry.get(record.id)).toBeUndefined();
+  });
+
+  test("a dead row's database that ANOTHER registered (live) estate names is refused — the row stays, nothing drops", async () => {
+    const spanner = fakeSpanner(['est-shared']);
+    const liveDir = path.join(fixtureRoot, 'live-estate');
+    await fs.mkdir(liveDir, { recursive: true });
+    const live = await registry.register(
+      { owner: 'lane-live', dirs: [liveDir], databases: ['n3xa-app/n3xa-dev/est-shared'] },
+      { enforceValve: false }
+    );
+    const { record: dead } = await registerStale({ owner: 'lane-dead', databases: ['n3xa-app/n3xa-dev/est-shared'] });
+
+    const result = await new EstateReaper({
+      registry,
+      apply: true,
+      databases: { fence: FENCE, env: { GCP_SA_KEY: KEY }, spannerFactory: () => spanner.client },
+    }).sweep();
+
+    const deadReport = result.reports.find((r) => r.estate.id === dead.id)!;
+    expect(deadReport.verdict).toBe('failed');
+    expect(deadReport.refusals.join('\n')).toMatch(
+      /database n3xa-app\/n3xa-dev\/est-shared: also named by registered estate '.*' \(owner lane-live\) — not dropped/
+    );
+    expect(spanner.dropped).toEqual([]); // the live estate's database survived
+    expect(await registry.get(dead.id)).toBeDefined(); // the refusal stays visible on the row
+    expect(await registry.get(live.id)).toBeDefined();
+    expect(result.databases!.kept).toEqual(['n3xa-app/n3xa-dev/est-shared: named by a registered estate']);
+  });
+
+  test('a credential DENIED the list never wedges the sweep: that row is retained with the refusal, later estates still reap, receipts land, the orphan sweep says why it skipped', async () => {
+    const denied: SpannerAdminClient = {
+      instance: () => ({
+        getDatabases: async () => {
+          throw new Error("7 PERMISSION_DENIED: Operation denied by [IAM permission 'spanner.databases.list']");
+        },
+        database: () => ({
+          delete: async () => {
+            throw new Error('never reached');
+          },
+        }),
+      }),
+      close: () => undefined,
+    };
+    const withDb = await registerStale({ owner: 'lane-db', databases: ['n3xa-app/n3xa-dev/est-lane-db'] });
+    const plain = await registerStale({ owner: 'lane-plain' });
+
+    const result = await new EstateReaper({
+      registry,
+      apply: true,
+      databases: { fence: FENCE, env: { GCP_SA_KEY: KEY }, spannerFactory: () => denied },
+    }).sweep();
+
+    const dbReport = result.reports.find((r) => r.estate.id === withDb.record.id)!;
+    expect(dbReport.verdict).toBe('failed');
+    expect(dbReport.refusals.join('\n')).toMatch(
+      /could not list n3xa-app\/n3xa-dev \(.*spanner\.databases\.list.*\) — not dropped/
+    );
+    expect(await registry.get(withDb.record.id)).toBeDefined();
+    const plainReport = result.reports.find((r) => r.estate.id === plain.record.id)!;
+    expect(plainReport.verdict).toBe('reaped');
+    expect(await exists(plain.estateDir)).toBe(false);
+    expect(await registry.get(plain.record.id)).toBeUndefined();
+    expect(result.databases!.skipped).toMatch(/could not list .* — orphan sweep skipped/);
+    const receipts = await fs.readFile(path.join(registry.logsDir(), 'reap.log'), 'utf-8');
+    expect(receipts).toContain(withDb.record.id);
+    expect(receipts).toContain(plain.record.id);
+    expect(receipts).toContain('"estate":"(orphan-databases)"');
+  });
+
+  test('an estate whose sweep THROWS is reported failed and the sweep continues to the next estate', async () => {
+    const boom = await registerStale({ owner: 'lane-boom', pids: [process.pid] }); // a pid so the probe runs
+    const fine = await registerStale({ owner: 'lane-fine' });
+
+    const result = await new EstateReaper({
+      registry,
+      apply: true,
+      pidProbe: async (_pid, dirs) => {
+        if (dirs.includes(boom.estateDir)) {
+          throw new Error('lsof exploded');
+        }
+        return { state: 'dead' };
+      },
+    }).sweep();
+
+    expect(result.reports).toHaveLength(2);
+    const boomReport = result.reports.find((r) => r.estate.id === boom.record.id)!;
+    expect(boomReport.verdict).toBe('failed');
+    expect(boomReport.reason).toMatch(/lsof exploded/);
+    expect(await exists(boom.estateDir)).toBe(true); // nothing acted on the estate that threw
+    expect(await registry.get(boom.record.id)).toBeDefined();
+    const fineReport = result.reports.find((r) => r.estate.id === fine.record.id)!;
+    expect(fineReport.verdict).toBe('reaped');
+    expect(await exists(fine.estateDir)).toBe(false);
+    const receipts = await fs.readFile(path.join(registry.logsDir(), 'reap.log'), 'utf-8');
+    expect(receipts).toContain(boom.record.id);
   });
 
   test('a corrupt estate file is reported unreadable and never touched', async () => {

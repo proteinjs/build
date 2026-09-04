@@ -102,7 +102,17 @@ export class EstateDatabaseSweep {
       return report;
     }
     try {
-      const existing = new Set((await this.listDatabases(client.instance)).map((database) => database.name));
+      // A credential that is PRESENT but denied the list (dev-83@ today — measured, DEV_ESTATES.md
+      // §10 correction 1) is a refusal on this row, never a throw out of the whole sweep.
+      let existing: Set<string>;
+      try {
+        existing = new Set((await this.listDatabases(client.instance)).map((database) => database.name));
+      } catch (error) {
+        report.refusals.push(
+          `databases ${inside.map(EstateDatabaseSweep.formatRef).join(', ')}: could not list ${fence.project}/${fence.instance} (${EstateDatabaseSweep.message(error)}) — not dropped`
+        );
+        return report;
+      }
       for (const ref of inside) {
         const label = EstateDatabaseSweep.formatRef(ref);
         if (!existing.has(ref.name)) {
@@ -144,7 +154,16 @@ export class EstateDatabaseSweep {
     const horizonMs = this.options.orphanAfterMs ?? EstateDatabaseSweep.DEFAULT_ORPHAN_AFTER_MS;
     const now = (this.options.now ?? Date.now)();
     try {
-      for (const database of await this.listDatabases(client.instance)) {
+      let databases: { name: string; createdAtMs?: number }[];
+      try {
+        databases = await this.listDatabases(client.instance);
+      } catch (error) {
+        // Denied the list: the class SAYS it could not judge (the skip line) — the scheduled job
+        // must never die here, before its receipt.
+        report.skipped = `could not list ${fence.project}/${fence.instance} (${EstateDatabaseSweep.message(error)}) — orphan sweep skipped`;
+        return report;
+      }
+      for (const database of databases) {
         if (!database.name.startsWith(fence.prefix)) {
           continue; // outside the family — never judged, never named
         }

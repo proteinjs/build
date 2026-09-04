@@ -124,7 +124,15 @@ export class EstateReaper {
       if (this.options.owner !== undefined && estate.owner !== this.options.owner) {
         continue;
       }
-      const report = await this.sweepEstate(estate, apply);
+      // One estate's failure (a probe that threw, a client that exploded) never wedges the sweep:
+      // it is reported failed with the reason, receipted, and the next estate is judged.
+      let report: EstateSweepReport;
+      try {
+        report = await this.sweepEstate(estate, apply);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        report = { estate, verdict: 'failed', reason: `sweep threw: ${message}`, acts: [], refusals: [message] };
+      }
       result.reports.push(report);
       result.reclaimedBytes += report.reclaimedBytes ?? 0;
       this.appendReceipt(report, apply);
@@ -139,7 +147,16 @@ export class EstateReaper {
           registered.add(ref);
         }
       }
-      result.databases = await this.databaseSweep.sweepOrphans(registered, apply);
+      try {
+        result.databases = await this.databaseSweep.sweepOrphans(registered, apply);
+      } catch (error) {
+        result.databases = {
+          acts: [],
+          refusals: [],
+          kept: [],
+          skipped: `orphan sweep threw: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
       this.appendOrphanReceipt(result.databases, apply);
     }
     return result;
@@ -268,12 +285,29 @@ export class EstateReaper {
     report.reclaimedBytes = reclaimed;
 
     // Databases go with the row, after its dirs and containers, before the registration — and
-    // only when the whole estate reaps: a partial estate (refused dirs) keeps its data too.
+    // only when the whole estate reaps: a partial estate (refused dirs) keeps its data too. A
+    // database ANOTHER registered row still names (a hand-registered claim, an allocator's row)
+    // is that row's too — refused here exactly as the composer's reap-estate refuses it; the
+    // registry is read now, not at the sweep's start, so a row reaped earlier no longer claims.
     const databases = estate.databases ?? [];
     if (refusedDirs.length === 0 && databases.length > 0) {
-      const databaseReport = await this.databaseSweep.dropForEstate(databases, apply);
-      report.acts.push(...databaseReport.acts);
-      report.refusals.push(...databaseReport.refusals);
+      const claimants = await this.claimedElsewhere(estate);
+      const unclaimed: string[] = [];
+      for (const ref of databases) {
+        const claimant = claimants.get(ref);
+        if (claimant) {
+          report.refusals.push(
+            `database ${ref}: also named by registered estate '${claimant.id}' (owner ${claimant.owner}) — not dropped; reap that estate or unregister its claim first`
+          );
+        } else {
+          unclaimed.push(ref);
+        }
+      }
+      if (unclaimed.length > 0) {
+        const databaseReport = await this.databaseSweep.dropForEstate(unclaimed, apply);
+        report.acts.push(...databaseReport.acts);
+        report.refusals.push(...databaseReport.refusals);
+      }
     }
 
     if (refusedDirs.length === 0) {
@@ -303,6 +337,22 @@ export class EstateReaper {
       }
     }
     return report;
+  }
+
+  /** Database references on every OTHER registered row (ref → the claiming row), read fresh. */
+  private async claimedElsewhere(estate: EstateRecord): Promise<Map<string, EstateRecord>> {
+    const claimants = new Map<string, EstateRecord>();
+    for (const row of (await this.registry.list()).estates) {
+      if (row.id === estate.id) {
+        continue;
+      }
+      for (const ref of row.databases ?? []) {
+        if (!claimants.has(ref)) {
+          claimants.set(ref, row);
+        }
+      }
+    }
+    return claimants;
   }
 
   // ── Git safety ─────────────────────────────────────────────────────────────
