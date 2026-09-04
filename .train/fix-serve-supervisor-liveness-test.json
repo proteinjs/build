@@ -1,6 +1,0 @@
-{
-  "branch": "fix/serve-supervisor-liveness-test",
-  "packages": ["build"],
-  "suites": ["packages/build/test/servePackageSupervisor.test.ts"],
-  "removes": []
-}
