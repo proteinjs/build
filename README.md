@@ -6,7 +6,10 @@ A set of tools for managing workspace build operations, working directly on top 
 
 1. Install as a dev dependency of your workspace root package `npm i --save-dev @proteinjs/build`
 2. The following commands are now available
-    - `npx build-workspace` runs `npm install` and `npm run build` for each package, in dependency order, until the workspace is built
+    - `npx build-workspace` runs `npm install` and `npm run build` for each package, in dependency order, until the workspace is built — incrementally and concurrently:
+        - a package's `npm install` is skipped while its `node_modules/.proteinjs-install-stamp` matches the normalized hash of its package-lock.json under the current node/npm majors; its `npm run build` is skipped while `node_modules/.proteinjs-build-stamp` matches the hash of its inputs (its own sources — what git tracks or would track, minus release bookkeeping — plus every transitive workspace dependency's sources and outputs) AND the hash of its own outputs (what git ignores: dist, generated, …). Nothing changed = nothing runs; one source change rebuilds exactly that package and its dependents. `--force` ignores every stamp; a package's `clean` script (which removes node_modules) is a cold start.
+        - independent packages install and build in parallel, bounded by the CPU count or `BUILD_WORKSPACE_CONCURRENCY=<n>`; every output line carries the package name; the first failure stops the graph, kills the process groups still running, and names the package.
+        - `--no-install=…`, `--no-build=…`, `--no-lint=…`, `--skip=…`, `--lint` as before; lint (CI or `--lint`) runs only for packages whose build ran.
     - `npx watch-workspace` runs `npm run watch` for each package
     - `npx workspace <command>` runs `npm run <command>` for each package
 

@@ -1,86 +1,45 @@
-import * as path from 'path';
-import { LogColorWrapper, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node';
-import { Logger } from '@proteinjs/logger';
-import { primaryLogColor, secondaryLogColor } from './logColors';
-import { hasLintConfig } from './lintWorkspace';
-import { materializeDependencies } from './materializeDependencies';
+import { parseArgsMap } from '@proteinjs/util-node';
+import { PackageProcessRunner } from './PackageProcessRunner';
+import { BuildWorkspaceArgs, WorkspaceBuilder } from './WorkspaceBuilder';
 
 /**
- * Install and build workspace, in dependency order.
+ * Install and build workspace, in dependency order — incrementally (only what changed since
+ * the last run) and concurrently (independent packages in parallel, bounded by the CPU count
+ * or `BUILD_WORKSPACE_CONCURRENCY`). See `WorkspaceBuilder` for the skip rules.
  *
  * Linting (prettier --write + eslint --fix) runs on CI ONLY (CI=true, set by GitHub Actions) or
- * locally behind an explicit `--lint`. A default local lint --fix reformats files across the whole
- * workspace and strands them unstaged on top of unrelated work; CI commits its own lint fallout.
+ * locally behind an explicit `--lint`, and only for packages whose build ran. A default local
+ * lint --fix reformats files across the whole workspace and strands them unstaged on top of
+ * unrelated work; CI commits its own lint fallout.
  *
  * Optional args:
  *
+ * --force (ignore the install/build stamps: install and build everything)
  * --lint (force linting locally)
  * --no-install=@some/package,@another/package
  * --no-build=@some/package,@another/package
  * --no-lint=@some/package,@another/package (CI: skip linting these packages)
  * --skip=@some/package,@another/package
+ *
+ * Env: BUILD_WORKSPACE_CONCURRENCY=<n> caps the package processes in flight (default: CPU count).
  */
 export async function buildWorkspace() {
-  const cw = new LogColorWrapper();
-  const logger = new Logger({
-    name: cw.color('workspace:', primaryLogColor) + cw.color('build', secondaryLogColor),
-  });
+  PackageProcessRunner.forwardSignals();
   const args = getArgs();
   // CI=true is set by GitHub Actions; locally, linting is opt-in via --lint.
-  const lintEnabled = process.env.CI === 'true' || !!args.lint;
-  const workspacePath = process.cwd();
-  const { packageMap, sortedPackageNames } = await PackageUtil.getWorkspaceMetadata(workspacePath);
-  const skippedPackages = ['root'];
-  const filteredPackageNames = sortedPackageNames.filter((packageName) => {
-    return (
-      !!packageMap[packageName].packageJson.scripts?.build &&
-      !(args.skip && args.skip.includes(packageName)) &&
-      !skippedPackages.includes(packageName)
-    );
+  const ci = process.env.CI === 'true';
+  const builder = new WorkspaceBuilder({
+    workspacePath: process.cwd(),
+    args,
+    concurrency: WorkspaceBuilder.defaultConcurrency(),
+    lintEnabled: ci || !!args.lint,
+    ci,
   });
-
-  logger.info({
-    message: `> Installing, building, and linting ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
-  });
-  logger.debug({ message: `packageMap:`, obj: packageMap });
-  logger.debug({ message: `filteredPackageNames:`, obj: filteredPackageNames });
-  for (const packageName of filteredPackageNames) {
-    const localPackage = packageMap[packageName];
-    const packageDir = path.dirname(localPackage.filePath);
-
-    if (!args.noInstall || !args.noInstall.includes(packageName)) {
-      await materializeDependencies(packageDir, { logPrefix: `[${cw.color(packageName)}] ` });
-      await PackageUtil.symlinkDependencies(localPackage, packageMap);
-      logger.info({ message: `Installed ${cw.color(packageName)} (${packageDir})` });
-    }
-
-    if (!args.noBuild || !args.noBuild.includes(packageName)) {
-      await cmd('npm', ['run', 'build'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
-      logger.info({ message: `Built ${cw.color(packageName)} (${packageDir})` });
-    }
-
-    if (lintEnabled && hasLintConfig(packageMap[packageName]) && (!args.noLint || !args.noLint.includes(packageName))) {
-      await cmd('npx', ['prettier', '.', '--write'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
-      await cmd('npx', ['eslint', '.', '--fix'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
-      logger.info({ message: `Linted ${cw.color(packageName)} (${packageDir})` });
-    }
-  }
-
-  logger.info({
-    message: `> Installed, built, and linted ${cw.color(`${filteredPackageNames.length}`, secondaryLogColor)} package${filteredPackageNames.length != 1 ? 's' : ''} in workspace (${workspacePath})`,
-  });
+  await builder.run();
 }
 
-type Args = {
-  noInstall?: string[];
-  noBuild?: string[];
-  noLint?: string[];
-  skip?: string[];
-  lint?: boolean;
-};
-
 function getArgs() {
-  const args: Args = {};
+  const args: BuildWorkspaceArgs = {};
   const argsMap = parseArgsMap(process.argv.slice(2));
   for (const argName in argsMap) {
     const argValue = argsMap[argName];
@@ -94,6 +53,8 @@ function getArgs() {
       args.skip = argValue.split(',');
     } else if (argName == 'lint') {
       args.lint = true;
+    } else if (argName == 'force') {
+      args.force = true;
     }
   }
 

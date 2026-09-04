@@ -1,6 +1,5 @@
-import * as path from 'path';
-import * as fs from 'fs/promises';
 import { cmd, LogOptions } from '@proteinjs/util-node';
+import { LockfileSnapshot } from './LockfileSnapshot';
 
 /**
  * Install a package's dependencies WITHOUT mutating its committed lockfile.
@@ -13,10 +12,10 @@ import { cmd, LogOptions } from '@proteinjs/util-node';
  * <pkg>`) are the explicit path and keep updating lockfiles; every implicit install goes
  * through here instead.
  *
- * Mechanism: snapshot the lockfile, install (the lockfile still drives resolution), restore the
- * snapshot if the install changed it. A lockfile that was already dirty before the install is
- * restored to exactly that dirty content — this helper only guarantees the install itself adds
- * no churn; it never cleans up anyone else's.
+ * Mechanism (`LockfileSnapshot`): snapshot the lockfile, install (the lockfile still drives
+ * resolution), restore the snapshot if the install changed it. A lockfile that was already dirty
+ * before the install is restored to exactly that dirty content — this helper only guarantees the
+ * install itself adds no churn; it never cleans up anyone else's.
  *
  * CI is the exception, same split as linting in buildWorkspace: CI COMMITS its own fallout —
  * the "commit package-locks" release step depends on CI installs regenerating locks after
@@ -25,27 +24,20 @@ import { cmd, LogOptions } from '@proteinjs/util-node';
  */
 export const materializeDependencies = async (packageDir: string, logOptions?: LogOptions): Promise<void> => {
   if (process.env.CI === 'true') {
-    await cmd('npm', ['install'], { cwd: packageDir }, logOptions);
+    await cmd('npm', MATERIALIZE_INSTALL_ARGS, { cwd: packageDir }, logOptions);
     return;
   }
 
-  const lockfilePath = path.join(packageDir, 'package-lock.json');
-  let before: string | undefined;
-  try {
-    before = await fs.readFile(lockfilePath, 'utf-8');
-  } catch {
-    before = undefined;
-  }
-
-  await cmd('npm', ['install'], { cwd: packageDir }, logOptions);
-
-  if (before === undefined) {
-    // No lockfile existed — materialization must not introduce one.
-    await fs.rm(lockfilePath, { force: true });
-    return;
-  }
-  const after = await fs.readFile(lockfilePath, 'utf-8').catch(() => undefined);
-  if (after !== before) {
-    await fs.writeFile(lockfilePath, before);
-  }
+  const snapshot = await LockfileSnapshot.take(packageDir);
+  await cmd('npm', MATERIALIZE_INSTALL_ARGS, { cwd: packageDir }, logOptions);
+  await snapshot.restore();
 };
+
+/**
+ * The materialization install: node_modules state is the whole intent, so the audit report and
+ * the funding notice — output nobody reads at this point, each a registry round trip of its own
+ * — are off. Measured 2026-09-04 on the founder's Mac: with the audit call `npm install left-pad`
+ * took 5 min 00 s (the advisories endpoint hung to npm's timeout), without it 0.3 s; the same
+ * stall sat inside every package install of a cold `build-workspace`.
+ */
+export const MATERIALIZE_INSTALL_ARGS: readonly string[] = ['install', '--no-audit', '--no-fund'];

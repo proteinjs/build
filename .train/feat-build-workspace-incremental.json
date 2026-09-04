@@ -1,0 +1,14 @@
+{
+  "branch": "feat/build-workspace-incremental",
+  "packages": ["build"],
+  "suites": [
+    "packages/build/test/workspaceBuilder.test.ts",
+    "packages/build/test/packageTreeHasher.test.ts",
+    "packages/build/test/dependencyScheduler.test.ts",
+    "packages/build/test/packageProcessRunner.test.ts",
+    "packages/build/test/materializeDependencies.test.ts",
+    "packages/build/test/symlinkWorkspace.test.ts",
+    "packages/build/test/workspaceDoctor.test.ts"
+  ],
+  "removes": []
+}
