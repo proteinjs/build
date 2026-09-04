@@ -454,10 +454,29 @@ describe('ServePackageSupervisor', () => {
     type SupervisorInternals = {
       spawnChild: (viaRestart?: boolean) => Promise<void>;
       waitForCoherence: () => Promise<void>;
+      setState: (state: string) => void;
       child?: { pid?: number; removeAllListeners: (event: string) => unknown };
     };
-    const readState = async () =>
-      JSON.parse(await fs.readFile(path.join(consumerDir, '.serve-package', 'state.json'), 'utf-8'));
+    const statePath = () => path.join(consumerDir, '.serve-package', 'state.json');
+    const readState = async () => JSON.parse(await fs.readFile(statePath(), 'utf-8'));
+    /**
+     * Every state the supervisor persists from this call on, in order, each read back from
+     * state.json the moment its transition lands (setState writes synchronously). A TRANSIENT
+     * state can only be proven by observing the transition: 'failed' after a failed restart
+     * lives until the next poll tick (≤ pollMs) replaces it with the watchdog's 'restarting',
+     * so sampling state.json afterwards races the tick timer — CI 2026-09-04 (proteinjs/build
+     * run 33861198733) read 'restarting' from the async readFile that had been the assertion.
+     */
+    const recordPersistedStates = (): string[] => {
+      const internals = supervisor as unknown as SupervisorInternals;
+      const realSetState = internals.setState.bind(supervisor);
+      const persisted: string[] = [];
+      internals.setState = (state: string) => {
+        realSetState(state);
+        persisted.push(JSON.parse(fsSync.readFileSync(statePath(), 'utf-8')).state);
+      };
+      return persisted;
+    };
 
     it('a restart whose spawn throws reports honestly, then respawns (our failure, not an external kill)', async () => {
       const exits: number[] = [];
@@ -469,11 +488,14 @@ describe('ServePackageSupervisor', () => {
         internals.spawnChild = realSpawn;
         throw new Error('spawn exploded');
       };
+      const persisted = recordPersistedStates();
       // Pre-fix this rejected into the caller's un-caught `void supervisor.restart(...)`.
       await expect(supervisor!.restart('test-spawn-failure')).resolves.toBeUndefined();
-      // The one artifact an operator inspects must never claim a running child that is dead.
-      const failedState = await readState();
-      expect(failedState.state).toBe('failed');
+      // The one artifact an operator inspects must never claim a running child that is dead:
+      // the chain's own 'restarting', then the honest 'failed' — persisted BEFORE restart()
+      // resolved, which is the only moment nothing else (the poll tick that recovers it) can
+      // have written since.
+      expect(persisted).toEqual(['restarting', 'failed']);
       // …and the supervisor must get a child serving again rather than going quiet or exiting.
       await waitFor(
         async () => {
@@ -486,6 +508,9 @@ describe('ServePackageSupervisor', () => {
       const state = await readState();
       expect(state.state).toBe('running');
       expect(() => process.kill(state.childPid, 0)).not.toThrow();
+      // The recovery is the watchdog's own chain — 'restarting' then 'running' — never a second
+      // 'failed' and never an 'exited' mirror.
+      expect(persisted).toEqual(['restarting', 'failed', 'restarting', 'running']);
       expect(exits).toEqual([]); // supervision never ended for a transient spawn failure
     }, 20000);
 
