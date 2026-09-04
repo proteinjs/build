@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as os from 'os';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { PackageUtil } from '@proteinjs/util-node';
 import { ServePackageOptions, ServePackageSupervisor } from '../src/ServePackageSupervisor';
 import { WorkspaceDoctor } from '../src/WorkspaceDoctor';
@@ -12,12 +12,64 @@ import { WorkspaceDoctor } from '../src/WorkspaceDoctor';
  * command is a tiny node script that records its pid. Each behavior is exercised end-to-end
  * through the real poll loop with short timings: staleness restart, hold deferral + TTL expiry,
  * forced restart while held, plain-run exit mirroring, and stop().
+ *
+ * LOAD-PROOF WAITS. Real children, real fs, real timers, the platform's own fs-event channel:
+ * under machine load every one of them stretches — the child's spawn and node boot, the poll's
+ * fs work on a contended threadpool, and (on macOS) fseventsd's delivery of the ipc watcher's
+ * events, which is system-wide and starves behind other lanes' file churn. A fixed millisecond
+ * deadline therefore reds without a defect (proteinjs/build departure 3, 2026-09-04 11:58Z: the
+ * revive test's 8 s bound at load ~8 with three verifiers churning files — reproduced on the Mac
+ * beside four file-churn hogs; never in a CPU-quota'd container, where inotify delivers at once).
+ * Every "eventually" wait below is bounded by what THIS machine measurably costs right now —
+ * `beat()`, derived from the slowest child boot the suite has observed — plus the supervisor's
+ * own timers the scenario passes through (read from `TIMINGS` and the test's configured
+ * options), never a bare count of milliseconds. The one leg no supervisor timer bounds, the
+ * platform's fs-event delivery, is observed directly and given the environment's allowance.
+ * Assertions about ORDER and STATE are untouched; only how long the fixture will wait is derived.
  */
+
+/** The supervisor timings every test here runs with (one owner; the bounds below read them). */
+const TIMINGS = { pollMs: 100, quietMs: 200, graceMs: 1500 };
+
+/** A child boot is never budgeted below this (the quiet-Mac generosity the suite always had)… */
+const BEAT_FLOOR_MS = 5000;
+/** …nor below this many times the slowest boot the suite has measured on this machine. */
+const BEAT_FACTOR = 10;
+/**
+ * The environment's allowance for the platform to deliver an fs event to the supervisor's ipc
+ * watcher (macOS fseventsd, measured 2026-09-04 at load ~11 with three departures verifying: p50
+ * 0.2 s, p90 3.0 s, max 3.5 s; beside a file-churn hog, nothing for the burst's whole duration).
+ */
+const IPC_CHANNEL_ALLOWANCE_MS = 30_000;
+// Each test's budget: derived bounds grow with the machine (a 1 s boot makes a restart cycle
+// ~11.5 s, and the boot-retry scenarios pass through three), and the revive test carries the
+// channel allowance on top — a budget that outgrows every bound is what keeps a slow machine
+// from reading as a hung supervisor.
+jest.setTimeout(120_000);
+
+/** What the fixture has measured about this machine so far. */
+const cadence = {
+  /** Slowest child boot observed (spawn → node boot → its pid on disk); every first boot re-measures it. */
+  bootMs: 0,
+  observeBoot(ms: number) {
+    this.bootMs = Math.max(this.bootMs, ms);
+  },
+};
+
+/** The fixture's unit of liveness: what one child boot (or one poll's worth of fs work) may cost here, now. */
+const beat = () => Math.max(BEAT_FLOOR_MS, BEAT_FACTOR * cadence.bootMs);
+/** Bound for `n` child boots (each: spawn, node boot, the child's first writes). */
+const boot = (n: number) => n * beat();
+/** Bound for `n` kill → spawn cycles: each the supervisor's own kill grace plus a boot. */
+const restart = (n: number) => n * (TIMINGS.graceMs + beat());
+/** `n` poll periods of the supervisor's tick chain. */
+const ticks = (n: number) => n * TIMINGS.pollMs;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const waitFor = async (condition: () => Promise<boolean> | boolean, timeoutMs: number, label: string) => {
-  const deadline = Date.now() + timeoutMs;
+/** Poll `condition` every 50 ms (the observation cadence, never a bound) until it holds or `boundMs` passes. */
+const waitFor = async (condition: () => Promise<boolean> | boolean, boundMs: number, label: string) => {
+  const deadline = Date.now() + boundMs;
   while (Date.now() < deadline) {
     if (await condition()) {
       return;
@@ -60,20 +112,51 @@ describe('ServePackageSupervisor', () => {
     );
   };
 
+  /**
+   * start() the supervisor the caller built and wait for its first child's pid — measuring that
+   * boot into `cadence`, so every later bound in the suite knows how slow this machine is.
+   */
+  const bootSupervisor = async (): Promise<number> => {
+    const startedAt = Date.now();
+    await supervisor!.start();
+    await waitFor(async () => (await childPid()) !== undefined, boot(1), 'first child boot');
+    cadence.observeBoot(Date.now() - startedAt);
+    return (await childPid())!;
+  };
+
   const startSupervisor = async (onChildExit?: (code: number) => void) => {
     supervisor = new ServePackageSupervisor({
       packageName: '@test/consumer',
       command: ['node', 'server.js'],
       workspacePath,
-      pollMs: 100,
-      quietMs: 200,
-      graceMs: 1500,
+      ...TIMINGS,
       onChildExit,
     });
-    await supervisor.start();
-    await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
-    return (await childPid())!;
+    return bootSupervisor();
   };
+
+  /**
+   * Calibrate `cadence` before the first bound is derived: boot one child the way the fixture's
+   * server boots (spawn → node → a pid on disk), observed the way every test observes one.
+   */
+  beforeAll(async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'serve-package-cadence-'));
+    const pidPath = path.join(dir, 'child.pid');
+    const startedAt = Date.now();
+    spawn(process.execPath, ['-e', "require('fs').writeFileSync(process.argv[1], String(process.pid))", pidPath], {
+      stdio: 'ignore',
+    });
+    try {
+      await waitFor(
+        async () => (await fs.readFile(pidPath, 'utf-8').catch(() => undefined)) !== undefined,
+        boot(1),
+        'the calibration child boot'
+      );
+      cadence.observeBoot(Date.now() - startedAt);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
 
   beforeEach(async () => {
     workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), 'serve-package-test-'));
@@ -146,20 +229,17 @@ describe('ServePackageSupervisor', () => {
       packageName: '@test/consumer',
       command: ['node', 'server.js'],
       workspacePath,
-      pollMs: 100,
-      quietMs: 200,
-      graceMs: 1500,
+      ...TIMINGS,
       daemon: true,
       logCapBytes: 1024,
     });
-    await supervisor.start();
-    await waitFor(async () => (await childPid()) !== undefined, 5000, 'child boot');
+    await bootSupervisor();
 
     const prev = await fs.readFile(`${logPath}.prev`);
     expect(prev.length).toBe(2048); // the over-cap log rotated at the spawn boundary
     await waitFor(
       async () => (await fs.readFile(logPath, 'utf-8').catch(() => '')).includes('child-hello'),
-      5000,
+      boot(1),
       'child stdout landing in the fresh serve.log'
     );
     expect((await fs.stat(logPath)).size).toBeLessThan(1024); // fresh file, not the old firehose
@@ -180,7 +260,7 @@ describe('ServePackageSupervisor', () => {
       expect(Number(pgid)).toBe(pid);
       await waitFor(
         async () => (await fs.readFile(logPath, 'utf-8').catch(() => '')).includes('daemon-alive'),
-        5000,
+        boot(1),
         'daemon output in serve.log'
       );
       const second = await ServePackageSupervisor.daemonize({
@@ -220,20 +300,25 @@ describe('ServePackageSupervisor', () => {
   it('restarts the child when an upstream closure dist changes (quiet period respected)', async () => {
     const firstPid = await startSupervisor();
     await touchLibDist();
-    await waitFor(async () => (await childPid()) !== firstPid, 5000, 'restart after dist change');
+    await waitFor(
+      async () => (await childPid()) !== firstPid,
+      TIMINGS.quietMs + restart(1),
+      'restart after dist change'
+    );
     // The old process is really gone.
     expect(() => process.kill(firstPid, 0)).toThrow();
   });
 
   it('defers a stale restart while a hold lease is active, then restarts when it expires', async () => {
     const firstPid = await startSupervisor();
-    await writeHold('test-holder', 1200);
+    const leaseTtlMs = 1200;
+    await writeHold('test-holder', leaseTtlMs);
     await touchLibDist();
     // Well past poll+quiet, still held: no restart.
     await sleep(800);
     expect(await childPid()).toBe(firstPid);
     // Lease expiry releases the restart.
-    await waitFor(async () => (await childPid()) !== firstPid, 5000, 'restart after hold expiry');
+    await waitFor(async () => (await childPid()) !== firstPid, leaseTtlMs + restart(1), 'restart after hold expiry');
   });
 
   it('requestRestart files a request a live supervisor absorbs — restart without any dist change', async () => {
@@ -243,7 +328,7 @@ describe('ServePackageSupervisor', () => {
       'workspace-package(@test/consumer) npm i'
     );
     expect(accepted).toBe(true);
-    await waitFor(async () => (await childPid()) !== firstPid, 5000, 'restart after request');
+    await waitFor(async () => (await childPid()) !== firstPid, TIMINGS.quietMs + restart(1), 'restart after request');
     // The request lease was consumed, not left to re-trigger forever.
     await expect(fs.readFile(path.join(consumerDir, '.serve-package', 'restart-request'), 'utf-8')).rejects.toThrow();
   });
@@ -252,13 +337,18 @@ describe('ServePackageSupervisor', () => {
     // No supervisor: nothing to ask.
     expect(await ServePackageSupervisor.requestRestart(consumerDir, 'nobody-home')).toBe(false);
     const firstPid = await startSupervisor();
-    await writeHold('mid-chat-turn', 1200);
+    const leaseTtlMs = 1200;
+    await writeHold('mid-chat-turn', leaseTtlMs);
     expect(await ServePackageSupervisor.requestRestart(consumerDir, 'workspace-package npm update')).toBe(true);
     // Well past poll+quiet, still held: the request never bulldozes the hold.
     await sleep(800);
     expect(await childPid()).toBe(firstPid);
     // Lease expiry releases the requested restart.
-    await waitFor(async () => (await childPid()) !== firstPid, 5000, 'requested restart after hold expiry');
+    await waitFor(
+      async () => (await childPid()) !== firstPid,
+      leaseTtlMs + restart(1),
+      'requested restart after hold expiry'
+    );
   });
 
   it('restart() forces through an active hold, and the spawn clears stale leases', async () => {
@@ -268,11 +358,15 @@ describe('ServePackageSupervisor', () => {
     await sleep(800);
     expect(await childPid()).toBe(firstPid); // held
     await supervisor!.restart('test-force');
-    await waitFor(async () => (await childPid()) !== firstPid, 5000, 'forced restart');
+    await waitFor(async () => (await childPid()) !== firstPid, restart(1), 'forced restart');
     // The long-lived lease was cleared by the respawn: new staleness restarts unaided.
     const secondPid = (await childPid())!;
     await touchLibDist();
-    await waitFor(async () => (await childPid()) !== secondPid, 5000, 'restart after hold cleared');
+    await waitFor(
+      async () => (await childPid()) !== secondPid,
+      TIMINGS.quietMs + restart(1),
+      'restart after hold cleared'
+    );
   });
 
   it('mirrors a self-exiting child through onChildExit and stops supervising', async () => {
@@ -287,12 +381,11 @@ describe('ServePackageSupervisor', () => {
       packageName: '@test/consumer',
       command: ['node', 'server.js'],
       workspacePath,
-      pollMs: 100,
-      quietMs: 200,
+      ...TIMINGS,
       onChildExit: (code) => exits.push(code),
     });
     await supervisor.start();
-    await waitFor(async () => exits.length > 0, 5000, 'onChildExit');
+    await waitFor(async () => exits.length > 0, boot(1), 'onChildExit');
     expect(exits).toEqual([3]);
     // pid file removed by stop()
     await waitFor(
@@ -301,7 +394,7 @@ describe('ServePackageSupervisor', () => {
           .access(path.join(consumerDir, '.serve-package', 'pid'))
           .then(() => true)
           .catch(() => false)),
-      2000,
+      boot(1),
       'pid file removal'
     );
   });
@@ -318,12 +411,11 @@ describe('ServePackageSupervisor', () => {
       packageName: '@test/consumer',
       command: ['node', 'server.js'],
       workspacePath,
-      pollMs: 100,
-      quietMs: 200,
+      ...TIMINGS,
       onChildExit: (code) => exits.push(code),
     });
     await supervisor.start();
-    await waitFor(async () => exits.length > 0, 5000, 'onChildExit');
+    await waitFor(async () => exits.length > 0, boot(1), 'onChildExit');
     // The overnight incident left state.json claiming 'running' with a dead childPid because
     // the final state write raced process.exit. onChildExit firing is the contract that the
     // truth has already LANDED on disk — read it right now, no settling allowed.
@@ -354,20 +446,16 @@ describe('ServePackageSupervisor', () => {
       packageName: '@test/consumer',
       command: ['node', 'server.js'],
       workspacePath,
-      pollMs: 100,
-      quietMs: 200,
-      graceMs: 1500,
+      ...TIMINGS,
       bootFailWindowMs: 3000,
       onChildExit: (code) => exits.push(code),
     });
-    await supervisor.start();
-    await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
-    const firstPid = (await childPid())!;
+    const firstPid = await bootSupervisor();
     // Arm the marker and trigger a staleness restart: the restart's spawn dies at boot,
     // the retry's spawn boots clean.
     await fs.writeFile(marker, '');
     await touchLibDist();
-    await waitFor(async () => (await childPid()) !== firstPid, 10000, 'retried child booted');
+    await waitFor(async () => (await childPid()) !== firstPid, TIMINGS.quietMs + restart(2), 'retried child booted');
     expect(exits).toEqual([]); // the supervisor never mirrored an exit — it stayed alive through the retry
     const markerGone = await fs
       .access(marker)
@@ -395,7 +483,7 @@ describe('ServePackageSupervisor', () => {
     await fs.rm(linkPath, { recursive: true, force: true });
     const { packageMap } = await PackageUtil.getWorkspaceMetadata(workspacePath);
     await PackageUtil.symlinkDependencies(packageMap['@test/consumer'], packageMap);
-    await waitFor(async () => (await childPid()) !== firstPid, 10000, 'restart after coherence restored');
+    await waitFor(async () => (await childPid()) !== firstPid, restart(1), 'restart after coherence restored');
     expect(() => process.kill(firstPid, 0)).toThrow();
   });
 
@@ -405,18 +493,15 @@ describe('ServePackageSupervisor', () => {
     // boot-time loader config and the broken bundle STICKS, because the post-op re-symlink
     // restores identical mtimes AND the identical symlink set. Detection must therefore latch
     // on any observed change, not compare endpoints.
+    const identityPollMs = 150;
     supervisor = new ServePackageSupervisor({
       packageName: '@test/consumer',
       command: ['node', 'server.js'],
       workspacePath,
-      pollMs: 100,
-      quietMs: 200,
-      graceMs: 1500,
-      identityPollMs: 150,
+      ...TIMINGS,
+      identityPollMs,
     });
-    await supervisor.start();
-    await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
-    const firstPid = (await childPid())!;
+    const firstPid = await bootSupervisor();
     const readState = async () =>
       JSON.parse(await fs.readFile(path.join(consumerDir, '.serve-package', 'state.json'), 'utf-8'));
     // The bare-npm-i shape: the workspace symlink becomes a registry-copy real directory.
@@ -426,7 +511,7 @@ describe('ServePackageSupervisor', () => {
     await fs.copyFile(path.join(libDir, 'package.json'), path.join(linkPath, 'package.json'));
     await waitFor(
       async () => ((await readState()).stalePackages ?? []).includes('node_modules package identity'),
-      5000,
+      identityPollMs + boot(1),
       'identity churn latched as staleness'
     );
     // Same gate as a dist change: the workspace is incoherent (clobbered symlink), so the
@@ -439,9 +524,13 @@ describe('ServePackageSupervisor', () => {
     await PackageUtil.symlinkDependencies(packageMap['@test/consumer'], packageMap);
     // The latched staleness lands the restart even though the final fingerprint equals the
     // baseline — the whole point of latching.
-    await waitFor(async () => (await childPid()) !== firstPid, 10000, 'restart after churn settled');
+    await waitFor(
+      async () => (await childPid()) !== firstPid,
+      TIMINGS.quietMs + restart(1),
+      'restart after churn settled'
+    );
     expect(() => process.kill(firstPid, 0)).toThrow();
-  }, 20000);
+  });
 
   /**
    * The 2026-08-04 wedge class: a restart killed its child, the spawn never happened, and the
@@ -502,7 +591,7 @@ describe('ServePackageSupervisor', () => {
           const pid = await childPid();
           return pid !== undefined && pid !== firstPid;
         },
-        10000,
+        ticks(1) + restart(1),
         'respawn after the failed restart'
       );
       const state = await readState();
@@ -512,23 +601,20 @@ describe('ServePackageSupervisor', () => {
       // 'failed' and never an 'exited' mirror.
       expect(persisted).toEqual(['restarting', 'failed', 'restarting', 'running']);
       expect(exits).toEqual([]); // supervision never ended for a transient spawn failure
-    }, 20000);
+    });
 
     it('recovers when a restart stalls between the kill and the spawn (never childless forever)', async () => {
       // Stand in for the observed stall: the chain parks after killing the child and never
       // reaches the spawn. Pre-fix this owned the lane permanently — no child, no recovery.
+      const restartStallMs = 700;
       supervisor = new ServePackageSupervisor({
         packageName: '@test/consumer',
         command: ['node', 'server.js'],
         workspacePath,
-        pollMs: 100,
-        quietMs: 200,
-        graceMs: 1500,
-        restartStallMs: 700,
+        ...TIMINGS,
+        restartStallMs,
       });
-      await supervisor.start();
-      await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
-      const firstPid = (await childPid())!;
+      const firstPid = await bootSupervisor();
       const internals = supervisor as unknown as SupervisorInternals;
       internals.waitForCoherence = () => new Promise<void>(() => undefined); // never resolves
       void supervisor!.restart('test-stalled-restart');
@@ -541,7 +627,7 @@ describe('ServePackageSupervisor', () => {
             return true;
           }
         },
-        5000,
+        restart(1),
         'child killed by the stalling restart'
       );
       // The watchdog must abandon the stalled attempt and get a child serving again.
@@ -550,13 +636,13 @@ describe('ServePackageSupervisor', () => {
           const pid = await childPid();
           return pid !== undefined && pid !== firstPid;
         },
-        10000,
+        restartStallMs + restart(1),
         'fresh child spawned after the stall'
       );
       const state = await readState();
       expect(state.state).toBe('running');
       expect(() => process.kill(state.childPid, 0)).not.toThrow(); // the advertised pid is REAL
-    }, 20000);
+    });
 
     it('mirrors plain-run semantics when a child vanishes without its exit event (no resurrect)', async () => {
       const exits: number[] = [];
@@ -564,19 +650,15 @@ describe('ServePackageSupervisor', () => {
         packageName: '@test/consumer',
         command: ['node', 'server.js'],
         workspacePath,
-        pollMs: 100,
-        quietMs: 200,
-        graceMs: 1500,
+        ...TIMINGS,
         onChildExit: (code) => exits.push(code),
       });
-      await supervisor.start();
-      await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
-      const firstPid = (await childPid())!;
+      const firstPid = await bootSupervisor();
       // Simulate the documented npm-wrapper class: the child dies but its 'exit' never fires.
       const internals = supervisor as unknown as SupervisorInternals;
       internals.child!.removeAllListeners('exit');
       process.kill(firstPid, 'SIGKILL');
-      await waitFor(async () => exits.length > 0, 5000, 'onChildExit from the liveness watchdog');
+      await waitFor(async () => exits.length > 0, boot(1), 'onChildExit from the liveness watchdog');
       expect(exits).toEqual([1]);
       // No resurrect: an externally killed child must not come back.
       expect(await childPid()).toBe(firstPid);
@@ -599,10 +681,19 @@ describe('ServePackageSupervisor', () => {
       const firstPid = await startSupervisor();
       await writeHold('active-holder', 60_000);
       await touchLibDist();
-      await waitFor(async () => (await readState()).state === 'waiting-holds', 5000, 'holds gate reached');
+      await waitFor(
+        async () => (await readState()).state === 'waiting-holds',
+        TIMINGS.quietMs + boot(1),
+        'holds gate reached'
+      );
       // Simulate the observed failure: the process-wide JS timer subsystem stopped scheduling,
       // which for the supervisor means its one tick source silently dies mid waiting-holds.
-      const internals = supervisor as unknown as { pollTimer?: NodeJS.Timeout; tickTimer?: NodeJS.Timeout };
+      const internals = supervisor as unknown as {
+        pollTimer?: NodeJS.Timeout;
+        tickTimer?: NodeJS.Timeout;
+        tickStallMs: () => number;
+        onIpcActivity: () => void;
+      };
       if (internals.pollTimer) {
         clearInterval(internals.pollTimer);
       }
@@ -611,22 +702,49 @@ describe('ServePackageSupervisor', () => {
       }
       // The holder crashes: its lease is gone from this world, nothing renews it.
       await fs.rm(path.join(holdsDir(), 'active-holder.json'), { force: true });
-      // Let the dead cadence become detectable (well past the tick stall threshold: 5 × poll)…
-      await sleep(700);
+      // Let the dead cadence become detectable (past the supervisor's own tick stall threshold)…
+      await sleep(internals.tickStallMs() + ticks(2));
       // …then the only remaining external signal arrives: another holder writes a short lease
-      // (in the live wedge, lease writes kept landing every few seconds the whole time).
-      await writeHold('late-holder', 250);
-      // The lane must come back: once the late lease expires it is reaped and the pending
-      // stale restart lands — with NO further external events (the revived cadence carries it).
+      // and keeps renewing it, as holders do (in the live wedge, lease writes kept landing every
+      // few seconds the whole time). The supervisor learns of them through its ipc watcher — the
+      // platform's fs-event channel, the one leg here no supervisor timer bounds: macOS fseventsd
+      // is system-wide, delivers late under other lanes' file churn, and never delivers at all
+      // the events a watcher registered DURING a churn burst would have gotten — the next write
+      // after the burst arrives fine (measured 2026-09-04; see IPC_CHANNEL_ALLOWANCE_MS). So one
+      // write is no signal; the renewals are. Observe the delivery itself, so the platform's
+      // latency gets the environment's allowance and the supervisor's own work from there — the
+      // last lease's TTL, the reaping tick, the restart — gets its derived bound. A stale event
+      // delivered late (the holder's crash above) revives the chain just as honestly; the
+      // outcome asserted is the same either way.
+      const realOnIpcActivity = internals.onIpcActivity.bind(supervisor);
+      let ipcActivityAt: number | undefined;
+      internals.onIpcActivity = () => {
+        ipcActivityAt = ipcActivityAt ?? Date.now();
+        realOnIpcActivity();
+      };
+      const leaseTtlMs = 250;
+      const renewals = setInterval(() => void writeHold('late-holder', leaseTtlMs), leaseTtlMs / 2);
+      try {
+        await waitFor(
+          async () => ipcActivityAt !== undefined || (await childPid()) !== firstPid,
+          IPC_CHANNEL_ALLOWANCE_MS,
+          "the platform's fs-event channel delivering a lease write to the supervisor's ipc watcher"
+        );
+      } finally {
+        clearInterval(renewals);
+      }
+      // The holder falls silent. The lane must come back: once its last lease expires it is
+      // reaped and the pending stale restart lands — with NO further external events (the
+      // revived cadence carries it).
       await waitFor(
         async () => {
           const pid = await childPid();
           return pid !== undefined && pid !== firstPid;
         },
-        8000,
+        leaseTtlMs + ticks(2) + restart(1),
         'restart after tick-source death'
       );
-    }, 20000);
+    });
 
     it('a hung workspace diagnosis cannot end automatic restarts: the poll coherence gate is deadlined and retried', async () => {
       // First diagnosis after the holds clear HANGS forever (a wedged fs scan). Pre-fix the
@@ -642,31 +760,28 @@ describe('ServePackageSupervisor', () => {
         return realDiagnose.call(this, forPackages);
       };
       try {
+        const coherenceDeadlineMs = 300;
         supervisor = new ServePackageSupervisor({
           packageName: '@test/consumer',
           command: ['node', 'server.js'],
           workspacePath,
-          pollMs: 100,
-          quietMs: 200,
-          graceMs: 1500,
-          coherenceDeadlineMs: 300,
+          ...TIMINGS,
+          coherenceDeadlineMs,
         });
-        await supervisor.start();
-        await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
-        const firstPid = (await childPid())!;
+        const firstPid = await bootSupervisor();
         await touchLibDist();
         await waitFor(
           async () => {
             const pid = await childPid();
             return pid !== undefined && pid !== firstPid;
           },
-          8000,
+          TIMINGS.quietMs + coherenceDeadlineMs + restart(1),
           'restart after the hung diagnosis was abandoned'
         );
       } finally {
         WorkspaceDoctor.prototype.diagnose = realDiagnose;
       }
-    }, 20000);
+    });
   });
 
   /**
@@ -711,24 +826,28 @@ describe('ServePackageSupervisor', () => {
         ].join('\n')
       );
       const exits: number[] = [];
+      const respawnBackoffMs = 300;
       supervisor = new ServePackageSupervisor({
         packageName: '@test/consumer',
         command: ['node', 'server.js'],
         workspacePath,
-        pollMs: 100,
-        quietMs: 200,
-        graceMs: 1500,
-        respawnBackoffMs: 300,
+        ...TIMINGS,
+        respawnBackoffMs,
         onChildExit: (code) => exits.push(code),
       });
       await supervisor.start();
-      await waitFor(async () => (await childPid()) !== undefined, 10000, 'respawned child booted');
+      // The first boot exits restart-requested, the backoff passes, the respawn boots and serves.
+      await waitFor(
+        async () => (await childPid()) !== undefined,
+        boot(1) + respawnBackoffMs + restart(1),
+        'respawned child booted'
+      );
       expect(exits).toEqual([]); // never mirrored — supervision stayed up
       const boots = await readBoots();
       expect(boots).toHaveLength(2);
-      expect(boots[1] - boots[0]).toBeGreaterThanOrEqual(300); // bounded backoff before the respawn
+      expect(boots[1] - boots[0]).toBeGreaterThanOrEqual(respawnBackoffMs); // bounded backoff before the respawn
       expect((await readState()).state).toBe('running');
-    }, 20000);
+    });
 
     it('a hot loop of restart-requested exits is capped, then mirrored honestly (no infinite spin)', async () => {
       await fs.writeFile(
@@ -738,25 +857,30 @@ describe('ServePackageSupervisor', () => {
         )
       );
       const exits: number[] = [];
+      const respawnBackoffMs = 50;
+      const maxConsecutiveRespawns = 2;
       supervisor = new ServePackageSupervisor({
         packageName: '@test/consumer',
         command: ['node', 'server.js'],
         workspacePath,
-        pollMs: 100,
-        quietMs: 200,
-        graceMs: 1500,
-        respawnBackoffMs: 50,
-        maxConsecutiveRespawns: 2,
+        ...TIMINGS,
+        respawnBackoffMs,
+        maxConsecutiveRespawns,
         onChildExit: (code) => exits.push(code),
       });
       await supervisor.start();
-      await waitFor(async () => exits.length > 0, 15000, 'capped hot loop mirrored');
+      // The initial boot + every budgeted respawn, each behind its doubling backoff (1×, then 2×).
+      await waitFor(
+        async () => exits.length > 0,
+        boot(1 + maxConsecutiveRespawns) + 3 * respawnBackoffMs,
+        'capped hot loop mirrored'
+      );
       expect(exits).toEqual([86]);
       expect(await readBoots()).toHaveLength(3); // the initial boot + exactly maxConsecutiveRespawns respawns
       // Supervision ended honestly: nothing left behind that could wedge a relaunch.
       expect(pidFileExists()).toBe(false);
       expect((await readState()).state).toBe('exited');
-    }, 20000);
+    });
 
     it('the mirror path is ATOMIC: pid file gone and state.json finalized by the time the exit is mirrored, even with async cleanup wedged (zombie shape unrepresentable)', async () => {
       await fs.writeFile(
@@ -770,8 +894,7 @@ describe('ServePackageSupervisor', () => {
         packageName: '@test/consumer',
         command: ['node', 'server.js'],
         workspacePath,
-        pollMs: 100,
-        quietMs: 200,
+        ...TIMINGS,
         onChildExit: (code) => {
           // Synchronous observation at mirror time: the zombie shape (pid file + a state.json
           // claiming `running` outliving the decision to exit) must be impossible.
@@ -792,12 +915,12 @@ describe('ServePackageSupervisor', () => {
       internals.stop = () => new Promise<void>(() => undefined);
       try {
         await supervisor.start();
-        await waitFor(async () => observed.length > 0, 10000, 'mirrored exit');
+        await waitFor(async () => observed.length > 0, boot(1), 'mirrored exit');
       } finally {
         internals.stop = realStop; // afterEach cleanup uses the real stop either way
       }
       expect(observed).toEqual([{ code: 3, pidFileGone: true, state: 'exited' }]);
-    }, 15000);
+    });
   });
 
   it("daemon posture: a dead child parks as 'exited' (no mirror) and a SIGUSR2 restart respawns a fresh child (2026-08-06 wedge #5)", async () => {
@@ -819,9 +942,7 @@ describe('ServePackageSupervisor', () => {
       packageName: '@test/consumer',
       command: ['node', 'server.js'],
       workspacePath,
-      pollMs: 100,
-      quietMs: 200,
-      graceMs: 1500,
+      ...TIMINGS,
       daemon: true,
       crashRespawnLimit: 0,
       onChildExit: (code) => exits.push(code),
@@ -829,13 +950,13 @@ describe('ServePackageSupervisor', () => {
     await supervisor.start();
     const statePath = path.join(consumerDir, '.serve-package', 'state.json');
     const readState = async () => JSON.parse(await fs.readFile(statePath, 'utf-8').catch(() => '{}'));
-    await waitFor(async () => (await readState()).state === 'exited', 5000, "parked as 'exited'");
+    await waitFor(async () => (await readState()).state === 'exited', boot(1), "parked as 'exited'");
     expect(await readState()).toMatchObject({ state: 'exited', exitCode: 1 });
     expect(exits).toEqual([]); // the supervisor outlived the child — no plain-run mirror
     // What the CLI's SIGUSR2 handler invokes: a restart with NO live child must still spawn.
     await supervisor.restart('SIGUSR2');
-    await waitFor(async () => (await childPid()) !== undefined, 5000, 'respawn after SIGUSR2');
-    await waitFor(async () => (await readState()).state === 'running', 2000, "state back to 'running'");
+    await waitFor(async () => (await childPid()) !== undefined, restart(1), 'respawn after SIGUSR2');
+    await waitFor(async () => (await readState()).state === 'running', boot(1), "state back to 'running'");
     expect((await readState()).exitCode).toBeUndefined(); // the old exit is history, not ambient truth
   });
 
@@ -855,9 +976,7 @@ describe('ServePackageSupervisor', () => {
       packageName: '@test/consumer',
       command: ['node', 'server.js'],
       workspacePath,
-      pollMs: 100,
-      quietMs: 200,
-      graceMs: 1500,
+      ...TIMINGS,
       bootFailWindowMs: 1,
       daemon: true,
       crashRespawnLimit: 2,
@@ -867,7 +986,11 @@ describe('ServePackageSupervisor', () => {
     await supervisor.start();
     const statePath = path.join(consumerDir, '.serve-package', 'state.json');
     const readState = async () => JSON.parse(await fs.readFile(statePath, 'utf-8').catch(() => '{}'));
-    await waitFor(async () => (await readState()).state === 'exited', 10000, 'parked at the respawn ceiling');
+    await waitFor(
+      async () => (await readState()).state === 'exited',
+      boot(1) + restart(2),
+      'parked at the respawn ceiling'
+    );
     expect(await readState()).toMatchObject({ state: 'exited', exitCode: 5 });
     expect(await boots()).toBe(3); // 1 initial + 2 budgeted respawns
     // The ceiling holds: no further respawns dribble out after parking.
@@ -899,9 +1022,7 @@ describe('ServePackageSupervisor', () => {
       packageName: '@test/consumer',
       command: ['node', 'server.js'],
       workspacePath,
-      pollMs: 100,
-      quietMs: 200,
-      graceMs: 1500,
+      ...TIMINGS,
       bootFailWindowMs: 1, // the nonzero boot-retry branch never applies to code 0; keep it clear
       daemon: true,
       crashRespawnLimit: 3,
@@ -911,14 +1032,14 @@ describe('ServePackageSupervisor', () => {
     const statePath = path.join(consumerDir, '.serve-package', 'state.json');
     const readState = async () => JSON.parse(await fs.readFile(statePath, 'utf-8').catch(() => '{}'));
     // The drained child was respawned: a live child records its pid and state returns to running.
-    await waitFor(async () => (await childPid()) !== undefined, 10000, 'respawn after clean drain');
-    await waitFor(async () => (await readState()).state === 'running', 5000, "state back to 'running'");
+    await waitFor(async () => (await childPid()) !== undefined, boot(1) + restart(1), 'respawn after clean drain');
+    await waitFor(async () => (await readState()).state === 'running', boot(1), "state back to 'running'");
     const boots = (await fs.readFile(path.join(consumerDir, 'boots.log'), 'utf-8')).trim().split('\n').filter(Boolean);
     expect(boots.length).toBeGreaterThanOrEqual(2); // the initial drain + at least one respawn
     expect(exits).toEqual([]); // never mirrored, never parked — supervision stayed up
     const liveChildPid = (await readState()).childPid;
     expect(() => process.kill(liveChildPid, 0)).not.toThrow(); // the advertised pid is REAL
-  }, 20000);
+  });
 
   it("daemon posture: a clean-drain HOT loop is budgeted too — at the ceiling it parks as 'exited', never spins", async () => {
     // The respawn budget must bound a clean-drain loop exactly as it bounds a crash loop — an
@@ -936,9 +1057,7 @@ describe('ServePackageSupervisor', () => {
       packageName: '@test/consumer',
       command: ['node', 'server.js'],
       workspacePath,
-      pollMs: 100,
-      quietMs: 200,
-      graceMs: 1500,
+      ...TIMINGS,
       bootFailWindowMs: 1,
       daemon: true,
       crashRespawnLimit: 2,
@@ -948,13 +1067,17 @@ describe('ServePackageSupervisor', () => {
     await supervisor.start();
     const statePath = path.join(consumerDir, '.serve-package', 'state.json');
     const readState = async () => JSON.parse(await fs.readFile(statePath, 'utf-8').catch(() => '{}'));
-    await waitFor(async () => (await readState()).state === 'exited', 10000, 'parked at the respawn ceiling');
+    await waitFor(
+      async () => (await readState()).state === 'exited',
+      boot(1) + restart(2),
+      'parked at the respawn ceiling'
+    );
     expect(await readState()).toMatchObject({ state: 'exited', exitCode: 0 });
     expect(await boots()).toBe(3); // 1 initial + 2 budgeted respawns
     await sleep(700);
     expect(await boots()).toBe(3); // the ceiling holds
     expect(exits).toEqual([]); // parked, not mirrored — SIGUSR2/SIGTERM still live
-  }, 20000);
+  });
 
   /**
    * The 2026-08-09 early-boot zombie class (observed twice after machine sleep): a child that
@@ -976,12 +1099,11 @@ describe('ServePackageSupervisor', () => {
         packageName: '@test/consumer',
         command: ['node', 'server.js'],
         workspacePath,
-        pollMs: 100,
-        quietMs: 200,
+        ...TIMINGS,
         onChildExit: (code) => exits.push(code),
       });
       await supervisor.start();
-      await waitFor(async () => exits.length > 0, 5000, 'mirrored exit');
+      await waitFor(async () => exits.length > 0, boot(1), 'mirrored exit');
       expect(exits).toEqual([1]);
       expect(pidFileExists()).toBe(false);
       expect((await readState()).state).toBe('exited');
@@ -993,15 +1115,12 @@ describe('ServePackageSupervisor', () => {
         packageName: '@test/consumer',
         command: ['node', 'server.js'],
         workspacePath,
-        pollMs: 100,
-        quietMs: 200,
-        graceMs: 1500,
+        ...TIMINGS,
         bootFailWindowMs: 3000,
         coherenceWaitCeilingMs: 400,
         onChildExit: (code) => exits.push(code),
       });
-      await supervisor.start();
-      await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
+      await bootSupervisor();
       // Persistent incoherence nobody is healing (the post-sleep shape): clobber the workspace
       // symlink. No build is running, so coherence is NOT "moments away" — pre-fix the childless
       // coherence wait parked on it FOREVER, heartbeating progress so the stall watchdog never
@@ -1014,11 +1133,16 @@ describe('ServePackageSupervisor', () => {
       await fs.writeFile(path.join(consumerDir, 'server.js'), 'process.exit(1);');
       // Forced restart (rs/SIGUSR2 path, which bypasses the poll's coherence-gated kill).
       void supervisor.restart('test: forced restart into persistent incoherence');
-      await waitFor(async () => exits.length > 0, 12000, 'supervision ended honestly');
+      // The kill, then the initial attempt + 2 budgeted retries, each parked for a coherence pass.
+      await waitFor(
+        async () => exits.length > 0,
+        restart(1) + 3 * (ServePackageSupervisor.COHERENCE_PASS_MS + boot(1)),
+        'supervision ended honestly'
+      );
       expect(exits).toEqual([1]);
       expect(pidFileExists()).toBe(false);
       expect((await readState()).state).toBe('exited');
-    }, 20000);
+    });
 
     it('the boot-retry budget stays exhausted across coherence waits LONGER than the boot window (the real-scale shape): bounded spawns then full mirror, never an infinite spawn-fail loop', async () => {
       // Real defaults: coherenceWaitCeilingMs (10min) >> bootFailWindowMs (90s). The settle
@@ -1031,15 +1155,12 @@ describe('ServePackageSupervisor', () => {
         packageName: '@test/consumer',
         command: ['node', 'server.js'],
         workspacePath,
-        pollMs: 100,
-        quietMs: 200,
-        graceMs: 1500,
+        ...TIMINGS,
         bootFailWindowMs: 250, // SHORTER than the effective coherence wait, like production
         coherenceWaitCeilingMs: 600, // effective wait ~2s (the loop's sleep granularity)
         onChildExit: (code) => exits.push(code),
       });
-      await supervisor.start();
-      await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
+      await bootSupervisor();
       const linkPath = path.join(consumerDir, 'node_modules', '@test', 'lib');
       await fs.rm(linkPath, { recursive: true, force: true });
       await fs.mkdir(linkPath, { recursive: true });
@@ -1052,13 +1173,17 @@ describe('ServePackageSupervisor', () => {
         )
       );
       void supervisor.restart('test: forced restart into persistent incoherence, long waits');
-      await waitFor(async () => exits.length > 0, 15000, 'supervision ended (bounded retries, no infinite loop)');
+      await waitFor(
+        async () => exits.length > 0,
+        restart(1) + 3 * (ServePackageSupervisor.COHERENCE_PASS_MS + boot(1)),
+        'supervision ended (bounded retries, no infinite loop)'
+      );
       expect(exits).toEqual([1]);
       const failedBoots = (await fs.readFile(path.join(consumerDir, 'boots.log'), 'utf-8')).trim().split('\n');
       expect(failedBoots).toHaveLength(3); // initial attempt + exactly 2 budgeted retries
       expect(pidFileExists()).toBe(false);
       expect((await readState()).state).toBe('exited');
-    }, 25000);
+    });
 
     it('a dead child whose exit event was lost and whose pid still reads alive (pid reuse / lingering kernel entry) is mirrored — never a perpetual `running` claim with no child', async () => {
       const exits: number[] = [];
@@ -1074,7 +1199,7 @@ describe('ServePackageSupervisor', () => {
         internals.child.removeAllListeners('exit');
         supervisorClass.processAlive = () => true;
         process.kill(firstPid, 'SIGKILL');
-        await waitFor(async () => exits.length > 0, 5000, 'mirrored via the process handle reap state');
+        await waitFor(async () => exits.length > 0, boot(1), 'mirrored via the process handle reap state');
         expect(exits).toEqual([1]);
         expect(pidFileExists()).toBe(false);
         expect((await readState()).state).toBe('exited');
@@ -1123,7 +1248,7 @@ describe('ServePackageSupervisor', () => {
           const state = await readState();
           return state.state === 'restarting' && state.coherenceFindings !== undefined;
         },
-        10000,
+        restart(1),
         'parked in the coherence wait'
       );
       expect(() => process.kill(firstPid, 0)).toThrow(); // childless: the kill really happened
@@ -1135,7 +1260,7 @@ describe('ServePackageSupervisor', () => {
           const pid = await childPid();
           return pid !== undefined && pid !== firstPid;
         },
-        10000,
+        ServePackageSupervisor.COHERENCE_PASS_MS + restart(1),
         'child spawned despite outstanding findings'
       );
       const state = await readState();
@@ -1143,14 +1268,18 @@ describe('ServePackageSupervisor', () => {
       expect(() => process.kill(state.childPid, 0)).not.toThrow(); // the advertised pid is REAL
       expect(state.coherenceFindings).toBeUndefined(); // the spawn reset cleared the mirror
       expect(state.coherenceCheckedAt).toBeUndefined();
-    }, 25000);
+    });
 
     it('state.json mirrors the LIVE blocker list during the park: findings + an advancing coherenceCheckedAt, cleared on coherence', async () => {
       const firstPid = await startSupervisor();
       await clobberLibSymlink();
       void supervisor!.restart('test: park in the coherence wait');
       // Pre-fix: state.json froze on the trigger snapshot — these fields never appeared.
-      await waitFor(async () => (await readState()).coherenceFindings !== undefined, 10000, 'live findings mirrored');
+      await waitFor(
+        async () => (await readState()).coherenceFindings !== undefined,
+        restart(1),
+        'live findings mirrored'
+      );
       const first = await readState();
       expect(first.state).toBe('restarting');
       // The doctor's own WorkspaceFinding vocabulary — not a renamed mirror shape.
@@ -1159,7 +1288,7 @@ describe('ServePackageSupervisor', () => {
       // LIVE, not written-once: the next diagnose pass (2s cadence) advances the stamp.
       await waitFor(
         async () => ((await readState()).coherenceCheckedAt ?? 0) > first.coherenceCheckedAt,
-        10000,
+        ServePackageSupervisor.COHERENCE_PASS_MS + boot(1),
         'coherenceCheckedAt advanced on the next pass'
       );
       expect((await readState()).coherenceFindings).toEqual(first.coherenceFindings);
@@ -1170,14 +1299,14 @@ describe('ServePackageSupervisor', () => {
           const pid = await childPid();
           return pid !== undefined && pid !== firstPid;
         },
-        10000,
+        ServePackageSupervisor.COHERENCE_PASS_MS + restart(1),
         'spawn after coherence restored'
       );
       const final = await readState();
       expect(final.state).toBe('running');
       expect(final.coherenceFindings).toBeUndefined();
       expect(final.coherenceCheckedAt).toBeUndefined();
-    }, 25000);
+    });
 
     it("the pre-kill gate ('waiting-coherence', child alive) mirrors live findings every pass too", async () => {
       const firstPid = await startSupervisor();
@@ -1190,7 +1319,7 @@ describe('ServePackageSupervisor', () => {
           const state = await readState();
           return state.state === 'waiting-coherence' && state.coherenceFindings !== undefined;
         },
-        10000,
+        TIMINGS.quietMs + boot(1),
         'waiting-coherence with live findings mirrored'
       );
       const first = await readState();
@@ -1198,16 +1327,16 @@ describe('ServePackageSupervisor', () => {
       expect(await childPid()).toBe(firstPid); // the child stayed alive through the gate
       await waitFor(
         async () => ((await readState()).coherenceCheckedAt ?? 0) > first.coherenceCheckedAt,
-        10000,
+        boot(1),
         'coherenceCheckedAt advanced on a later poll pass'
       );
       // Heal: the deferred restart lands and the mirror is cleared with it.
       await healWorkspace();
-      await waitFor(async () => (await childPid()) !== firstPid, 10000, 'restart after coherence restored');
+      await waitFor(async () => (await childPid()) !== firstPid, restart(1), 'restart after coherence restored');
       const final = await readState();
       expect(final.state).toBe('running');
       expect(final.coherenceFindings).toBeUndefined();
-    }, 25000);
+    });
 
     it('a superseded restart chain goes fully inert: no stale-findings rewrites of state.json after the supersede, and the next parked chain still escapes', async () => {
       // The zombie-chain class: chain 1 parks in the REAL coherence wait; a queued
@@ -1215,18 +1344,15 @@ describe('ServePackageSupervisor', () => {
       // nothing in the wait checked the generation, so chain 1 kept looping — stamping stale
       // findings + setState('running') into state.json every ~2s pass right after the healthy
       // spawn, and (at its eventual exit) clearing the escape flag out from under a newer chain.
+      const restartSupersedeMs = 700;
       supervisor = new ServePackageSupervisor({
         packageName: '@test/consumer',
         command: ['node', 'server.js'],
         workspacePath,
-        pollMs: 100,
-        quietMs: 200,
-        graceMs: 1500,
-        restartSupersedeMs: 700,
+        ...TIMINGS,
+        restartSupersedeMs,
       });
-      await supervisor.start();
-      await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
-      const firstPid = (await childPid())!;
+      const firstPid = await bootSupervisor();
       await clobberLibSymlink();
       // Chain 1 parks childless (the kill succeeds, then the wait loops on the finding).
       void supervisor.restart('test: park chain 1');
@@ -1235,7 +1361,7 @@ describe('ServePackageSupervisor', () => {
           const state = await readState();
           return state.state === 'restarting' && state.coherenceFindings !== undefined;
         },
-        10000,
+        restart(1),
         'chain 1 parked in the coherence wait'
       );
       // Queued request + lane owned past restartSupersedeMs → recoverChild supersedes chain 1
@@ -1246,11 +1372,11 @@ describe('ServePackageSupervisor', () => {
           const pid = await childPid();
           return pid !== undefined && pid !== firstPid;
         },
-        10000,
+        restartSupersedeMs + ticks(1) + restart(1),
         'supersede spawned a fresh child'
       );
       const secondPid = (await childPid())!;
-      await waitFor(async () => (await readState()).state === 'running', 2000, 'state.json settled on running');
+      await waitFor(async () => (await readState()).state === 'running', boot(1), 'state.json settled on running');
       // Watch state.json across multiple would-be zombie passes (~2s cadence): the mirror must
       // stay pinned to the new chain's truth — running, no blockers.
       const cleanUntil = Date.now() + 3000;
@@ -1268,7 +1394,7 @@ describe('ServePackageSupervisor', () => {
           const state = await readState();
           return state.state === 'restarting' && state.coherenceFindings !== undefined;
         },
-        10000,
+        restart(1),
         'chain 2 parked in the coherence wait'
       );
       await supervisor.restart('SIGUSR2');
@@ -1277,11 +1403,11 @@ describe('ServePackageSupervisor', () => {
           const pid = await childPid();
           return pid !== undefined && pid !== secondPid;
         },
-        10000,
+        ServePackageSupervisor.COHERENCE_PASS_MS + restart(1),
         'chain 2 escaped and spawned despite findings'
       );
       expect((await readState()).state).toBe('running');
-    }, 30000);
+    });
 
     it('rs during the KILL window (before the park begins) arms the escape: the chain spawns despite findings, never a consumed no-op', async () => {
       // A SIGTERM-ignoring child stretches the kill phase to graceMs — the multi-second window
@@ -1301,13 +1427,9 @@ describe('ServePackageSupervisor', () => {
         packageName: '@test/consumer',
         command: ['node', 'server.js'],
         workspacePath,
-        pollMs: 100,
-        quietMs: 200,
-        graceMs: 1500,
+        ...TIMINGS,
       });
-      await supervisor.start();
-      await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
-      const firstPid = (await childPid())!;
+      const firstPid = await bootSupervisor();
       await clobberLibSymlink(); // without the escape, the chain parks after the kill
       void supervisor.restart('test: restart with a slow kill');
       // Lands deterministically inside the SIGTERM→SIGKILL window: the chain is parked in
@@ -1318,11 +1440,11 @@ describe('ServePackageSupervisor', () => {
           const pid = await childPid();
           return pid !== undefined && pid !== firstPid;
         },
-        8000,
+        restart(1),
         'spawned despite findings — escape armed during the kill window'
       );
       expect((await readState()).state).toBe('running');
-    }, 20000);
+    });
 
     it('the escape does not wait on a diagnose: with a HANGING doctor the spawn lands within one deadline cycle (loop-top check pinned)', async () => {
       // Pins the escape check's placement at the iteration TOP, before the diagnose await: a
@@ -1334,18 +1456,15 @@ describe('ServePackageSupervisor', () => {
         return new Promise<never>(() => undefined);
       };
       try {
+        const coherenceDeadlineMs = 400;
         supervisor = new ServePackageSupervisor({
           packageName: '@test/consumer',
           command: ['node', 'server.js'],
           workspacePath,
-          pollMs: 100,
-          quietMs: 200,
-          graceMs: 1500,
-          coherenceDeadlineMs: 400,
+          ...TIMINGS,
+          coherenceDeadlineMs,
         });
-        await supervisor.start();
-        await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
-        const firstPid = (await childPid())!;
+        const firstPid = await bootSupervisor();
         void supervisor.restart('test: park on hanging diagnoses');
         await waitFor(
           async () => {
@@ -1356,10 +1475,10 @@ describe('ServePackageSupervisor', () => {
               return true;
             }
           },
-          5000,
+          restart(1),
           'child killed; chain heading into the wait'
         );
-        await sleep(600); // > coherenceDeadlineMs: the chain is mid-loop, cycling hung scans
+        await sleep(coherenceDeadlineMs + ticks(2)); // past the deadline: the chain is mid-loop, cycling hung scans
         const armedAt = Date.now();
         await supervisor.restart('rs');
         await waitFor(
@@ -1367,16 +1486,16 @@ describe('ServePackageSupervisor', () => {
             const pid = await childPid();
             return pid !== undefined && pid !== firstPid;
           },
-          4000,
+          coherenceDeadlineMs + boot(1),
           'spawned while every diagnose still hangs'
         );
         // Bounded by ONE deadline cycle plus spawn overhead — never by a scan resolving
         // (none ever do).
-        expect(Date.now() - armedAt).toBeLessThan(3000);
+        expect(Date.now() - armedAt).toBeLessThan(coherenceDeadlineMs + boot(1));
       } finally {
         WorkspaceDoctor.prototype.diagnose = realDiagnose;
       }
-    }, 20000);
+    });
   });
 
   /**
@@ -1403,14 +1522,10 @@ describe('ServePackageSupervisor', () => {
         packageName: '@test/consumer',
         command: ['node', 'server.js'],
         workspacePath,
-        pollMs: 100,
-        quietMs: 200,
-        graceMs: 1500,
+        ...TIMINGS,
         ...extra,
       });
-      await supervisor.start();
-      await waitFor(async () => (await childPid()) !== undefined, 5000, 'first child boot');
-      return (await childPid())!;
+      return bootSupervisor();
     };
 
     /**
@@ -1448,48 +1563,59 @@ describe('ServePackageSupervisor', () => {
       } finally {
         stopActivity();
       }
-    }, 20000);
+    });
 
     it('gapless hold activity: the queued request still fires once past the hard ceiling', async () => {
+      const ceilingMs = 1200;
       const firstPid = await startWithOptions({
         restartRequestIdleGapMs: 5000,
-        restartRequestStarvationCeilingMs: 1200,
+        restartRequestStarvationCeilingMs: ceilingMs,
       });
       const stopActivity = startActivitySource(60, 1000);
       try {
         const queuedAt = Date.now();
         expect(await ServePackageSupervisor.requestRestart(consumerDir, 'starved-op')).toBe(true);
-        await waitFor(async () => (await childPid()) !== firstPid, 6000, 'request fired at the ceiling');
+        await waitFor(
+          async () => (await childPid()) !== firstPid,
+          ceilingMs + restart(1),
+          'request fired at the ceiling'
+        );
         // It waited (deferral is correct) but the ceiling put a hard stop on the starvation.
         expect(Date.now() - queuedAt).toBeGreaterThanOrEqual(1000);
       } finally {
         stopActivity();
       }
-    }, 20000);
+    });
 
     it('PLAIN dist staleness behind gapless hold refreshes fires at the starvation ceiling (2026-08-11 field class)', async () => {
       // No restart-request anywhere: a sibling rebuild lands while a lease is being refreshed
       // faster than it can expire. Pre-fix this deferred FOREVER (full hold-expiry semantics
       // with a lease that never expires); post-fix the staleness clock drives the same ceiling.
+      const ceilingMs = 1500;
       const firstPid = await startWithOptions({
         restartRequestIdleGapMs: 5000, // a 60ms cadence never leaves this gap — only the ceiling can fire
-        restartRequestStarvationCeilingMs: 1500,
+        restartRequestStarvationCeilingMs: ceilingMs,
       });
       const stopActivity = startActivitySource(60, 1000);
       try {
         const staleAt = Date.now();
         await touchLibDist();
-        await waitFor(async () => (await childPid()) !== firstPid, 8000, 'stale restart fired at the ceiling');
+        await waitFor(
+          async () => (await childPid()) !== firstPid,
+          ceilingMs + TIMINGS.quietMs + restart(1),
+          'stale restart fired at the ceiling'
+        );
         // It waited out the ceiling (deferral is correct) instead of firing instantly.
         expect(Date.now() - staleAt).toBeGreaterThanOrEqual(1200);
       } finally {
         stopActivity();
       }
-    }, 20000);
+    });
 
     it('PLAIN dist staleness fires in a natural idle gap of hold refreshes, long before lease expiry', async () => {
+      const idleGapMs = 500;
       const firstPid = await startWithOptions({
-        restartRequestIdleGapMs: 500,
+        restartRequestIdleGapMs: idleGapMs,
         restartRequestStarvationCeilingMs: 60_000,
       });
       const leaseTtlMs = 10_000;
@@ -1503,14 +1629,19 @@ describe('ServePackageSupervisor', () => {
         stopActivity();
       }
       const activityStoppedAt = Date.now();
-      await waitFor(async () => (await childPid()) !== firstPid, 3000, 'stale restart in the first natural idle gap');
+      await waitFor(
+        async () => (await childPid()) !== firstPid,
+        idleGapMs + restart(1),
+        'stale restart in the first natural idle gap'
+      );
       // Fired via the idle gap, NOT lease expiry — the lease still had many seconds of TTL left.
       expect(Date.now() - activityStoppedAt).toBeLessThan(leaseTtlMs - 5000);
-    }, 20000);
+    });
 
     it('a genuine interactive burst still defers; the request fires in the FIRST natural idle gap, long before lease expiry', async () => {
+      const idleGapMs = 500;
       const firstPid = await startWithOptions({
-        restartRequestIdleGapMs: 500,
+        restartRequestIdleGapMs: idleGapMs,
         restartRequestStarvationCeilingMs: 60_000,
       });
       const leaseTtlMs = 10_000;
@@ -1524,10 +1655,14 @@ describe('ServePackageSupervisor', () => {
         stopActivity();
       }
       const activityStoppedAt = Date.now();
-      await waitFor(async () => (await childPid()) !== firstPid, 3000, 'restart in the first natural idle gap');
+      await waitFor(
+        async () => (await childPid()) !== firstPid,
+        idleGapMs + restart(1),
+        'restart in the first natural idle gap'
+      );
       // Fired via the idle gap, NOT lease expiry — the lease still had many seconds of TTL left.
       expect(Date.now() - activityStoppedAt).toBeLessThan(leaseTtlMs - 5000);
-    }, 20000);
+    });
 
     it("a satisfied request's starvation clock dies with it: the next plain staleness defers on a FRESH escalation window", async () => {
       // The gate's escalation clock keys on restartRequestedAt/staleSince, and the spawn that
@@ -1535,9 +1670,10 @@ describe('ServePackageSupervisor', () => {
       // already sit past the ceiling and the next plain dist-staleness restart would fire
       // straight through actively-refreshed holds — one npm op ago would bulldoze the next
       // chat turn. Fresh staleness must earn its own idle gap or ceiling.
+      const ceilingMs = 2000;
       const firstPid = await startWithOptions({
         restartRequestIdleGapMs: 300,
-        restartRequestStarvationCeilingMs: 2000,
+        restartRequestStarvationCeilingMs: ceilingMs,
       });
       // Phase 1: an unheld restart-request is satisfied by a spawn.
       expect(await ServePackageSupervisor.requestRestart(consumerDir, 'workspace-package npm i')).toBe(true);
@@ -1546,7 +1682,7 @@ describe('ServePackageSupervisor', () => {
           const pid = await childPid();
           return pid !== undefined && pid !== firstPid;
         },
-        5000,
+        TIMINGS.quietMs + restart(1),
         'requested restart satisfied'
       );
       const secondPid = (await childPid())!;
@@ -1565,16 +1701,17 @@ describe('ServePackageSupervisor', () => {
         expect(await childPid()).toBe(secondPid); // deferred: the dead request's clock is gone
         await waitFor(
           async () => (await childPid()) !== secondPid,
-          6000,
+          ceilingMs + restart(1),
           'stale restart within its own escalation window'
         );
       } finally {
         stopActivity();
       }
-    }, 20000);
+    });
 
     it('a wedged in-flight restart plus a new request resolves: the request supersedes the stuck attempt (never rots unread)', async () => {
-      const firstPid = await startWithOptions({ restartSupersedeMs: 700 });
+      const restartSupersedeMs = 700;
+      const firstPid = await startWithOptions({ restartSupersedeMs });
       const internals = supervisor as unknown as {
         waitForCoherence: () => Promise<void>;
         touchRestartProgress: () => void;
@@ -1595,7 +1732,7 @@ describe('ServePackageSupervisor', () => {
               return true;
             }
           },
-          5000,
+          restart(1),
           'child killed by the wedged restart'
         );
         expect(await ServePackageSupervisor.requestRestart(consumerDir, 'post-npm-op')).toBe(true);
@@ -1606,7 +1743,7 @@ describe('ServePackageSupervisor', () => {
             const pid = await childPid();
             return pid !== undefined && pid !== firstPid;
           },
-          8000,
+          restartSupersedeMs + ticks(1) + restart(1),
           'queued request superseded the wedged attempt'
         );
         expect((await readState()).state).toBe('running');
@@ -1617,7 +1754,7 @@ describe('ServePackageSupervisor', () => {
       } finally {
         clearInterval(heartbeat);
       }
-    }, 20000);
+    });
   });
 
   it('refuses to start while another live supervisor owns the package dir', async () => {
@@ -1626,8 +1763,7 @@ describe('ServePackageSupervisor', () => {
       packageName: '@test/consumer',
       command: ['node', 'server.js'],
       workspacePath,
-      pollMs: 100,
-      quietMs: 200,
+      ...TIMINGS,
     });
     await expect(second.start()).rejects.toThrow(/already supervises/);
   });
@@ -1659,7 +1795,7 @@ describe('ServePackageSupervisor', () => {
           return true;
         }
       },
-      3000,
+      boot(1),
       'stubborn child terminated'
     );
   });
@@ -1677,7 +1813,7 @@ describe('ServePackageSupervisor', () => {
           return true;
         }
       },
-      3000,
+      boot(1),
       'child terminated'
     );
   });

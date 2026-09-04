@@ -1,0 +1,6 @@
+{
+  "branch": "fix/serve-supervisor-load-proof-waits",
+  "packages": ["build"],
+  "suites": ["packages/build/test/servePackageSupervisor.test.ts"],
+  "removes": []
+}

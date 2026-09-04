@@ -252,6 +252,8 @@ export class ServePackageSupervisor {
   private static readonly MAX_RECOVERY_ATTEMPTS = 3;
   /** Ceiling for the doubling restart-requested respawn backoff. */
   private static readonly MAX_RESPAWN_BACKOFF_MS = 30_000;
+  /** Cadence of the childless coherence wait's re-diagnosis passes (see waitForCoherence). */
+  static readonly COHERENCE_PASS_MS = 2000;
 
   private logger: Logger;
   private packageDir!: string;
@@ -1612,7 +1614,7 @@ export class ServePackageSupervisor {
             .join(', ')}) — waiting for the build to finish`,
         });
       }
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, ServePackageSupervisor.COHERENCE_PASS_MS));
     }
   }
 
