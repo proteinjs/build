@@ -25,6 +25,12 @@ export type EstateRecord = {
   containers: string[];
   /** Pids owned by the estate. A live pid (cwd-verified) pins the estate against reaping. */
   pids: number[];
+  /**
+   * Databases OWNED by the estate as `<project>/<instance>/<database>` references — dropped with
+   * the estate by the reaper's database class, which fences every drop by instance + name prefix
+   * in code (DEV_ESTATES.md §3.3). Absent on rows written before the field existed (= none).
+   */
+  databases?: string[];
   startedAt: number;
   /** Freshness signal: estates heartbeat while alive; stale > TTL is dead-by-contract. */
   heartbeatAt: number;
@@ -41,6 +47,7 @@ export type EstateRegistration = {
   dirs?: string[];
   containers?: string[];
   pids?: number[];
+  databases?: string[];
   pinned?: boolean;
   note?: string;
 };
@@ -132,7 +139,7 @@ export class EstateRegistry {
   /** Refresh the freshness signal (and optionally merge changed ownership facts, e.g. a new child pid). */
   async heartbeat(
     id: string,
-    patch?: Partial<Pick<EstateRecord, 'ports' | 'dirs' | 'containers' | 'pids' | 'note'>>
+    patch?: Partial<Pick<EstateRecord, 'ports' | 'dirs' | 'containers' | 'pids' | 'databases' | 'note'>>
   ): Promise<EstateRecord | undefined> {
     const record = await this.get(id);
     if (!record) {
@@ -270,6 +277,7 @@ export class EstateRegistry {
       dirs,
       containers: registration.containers ?? [],
       pids: registration.pids ?? [],
+      databases: registration.databases ?? [],
       startedAt: now,
       heartbeatAt: now,
       pinned: registration.pinned || undefined,

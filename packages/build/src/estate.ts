@@ -17,9 +17,12 @@ this CLI is the door for launch scripts and manual glue.
 Commands:
 
   estate register --owner=<label> [--id=<id>] [--ports=3041,9010] [--dirs=/a,/b]
-                  [--containers=spanner-x] [--pids=123] [--pin] [--note=...]
+                  [--containers=spanner-x] [--pids=123] [--databases=<project>/<instance>/<db>,...]
+                  [--pin] [--note=...]
       Register (same id re-registers). Under HARD pressure (estate-watchdog's refusal flag)
       registration is REFUSED with the real numbers — reap or park before launching.
+      --databases names the real databases the estate owns (dropped with it by reap-estates
+      inside its --db-fence; see reap-estates --help).
   estate heartbeat --id=<id>          refresh the liveness heartbeat (stale > 36h = dead-by-contract)
   estate list [--json]                the machine's estates: owner, ports, dirs, containers, heartbeat age
   estate unregister --id=<id>         exit reaps the estate (cleanup-as-contract)
@@ -78,6 +81,7 @@ export const estate = async () => {
           dirs: listArg('dirs'),
           containers: listArg('containers'),
           pids: numberListArg('pids'),
+          databases: listArg('databases'),
           pinned: argsMap['pin'] === true,
           note: stringArg('note'),
         });
@@ -144,6 +148,7 @@ function formatEstateLine(record: EstateRecord, cw: LogColorWrapper): string {
     record.dirs.length ? `dirs ${record.dirs.join(', ')}` : undefined,
     record.containers.length ? `containers ${record.containers.join(',')}` : undefined,
     record.pids.length ? `pids ${record.pids.join(',')}` : undefined,
+    record.databases?.length ? `databases ${record.databases.join(',')}` : undefined,
     `heartbeat ${heartbeatAge} ago`,
   ];
   return '  ' + parts.filter((part) => part !== undefined).join(' — ');

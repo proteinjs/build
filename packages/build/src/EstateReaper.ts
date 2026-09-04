@@ -5,6 +5,7 @@ import * as fsSync from 'fs';
 import { cmd } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
 import { EstateRecord, EstateRegistry } from './EstateRegistry';
+import { DatabaseSweepOptions, DatabaseSweepReport, EstateDatabaseSweep } from './EstateDatabaseSweep';
 
 export type EstateVerdict = 'reaped' | 'partial' | 'spared' | 'failed';
 
@@ -28,6 +29,8 @@ export type ReapEstatesResult = {
   apply: boolean;
   ownerScope?: string;
   reclaimedBytes: number;
+  /** The orphan-database sweep (scheduled sweeps with a fence only): what it dropped, kept, or why it skipped. */
+  databases?: DatabaseSweepReport;
 };
 
 /** How a pid's liveness resolved. `cwd` present only for `alive-ours`. */
@@ -46,6 +49,12 @@ export type EstateReaperOptions = {
   owner?: string;
   /** Actually act. Default: dry-run (classify + report only), like clean-worktrees. */
   apply?: boolean;
+  /**
+   * The DATABASE resource class (EstateDatabaseSweep): with a fence, a reaped estate's `databases`
+   * drop with the row and fenced orphans (no row, past the horizon) drop on the scheduled sweep.
+   * Without one the class is inert — rows naming databases are refused, never silently dropped.
+   */
+  databases?: DatabaseSweepOptions;
   // ── Test seams (defaults are the real probes) ─────────────────────────────
   /** Is anything LISTENING on this local port? */
   portProbe?: (port: number) => Promise<boolean>;
@@ -88,9 +97,11 @@ export type EstateReaperOptions = {
 export class EstateReaper {
   private logger = new Logger({ name: 'EstateReaper' });
   private registry: EstateRegistry;
+  private databaseSweep: EstateDatabaseSweep;
 
   constructor(private options: EstateReaperOptions = {}) {
     this.registry = options.registry ?? new EstateRegistry();
+    this.databaseSweep = new EstateDatabaseSweep(options.databases);
   }
 
   /** Classify every registered estate; apply mode reaps what is dead-by-contract. */
@@ -104,6 +115,11 @@ export class EstateReaper {
       ownerScope: this.options.owner,
       reclaimedBytes: 0,
     };
+    // The database class borrows its Spanner client from the estates' own app installs.
+    this.databaseSweep = new EstateDatabaseSweep({
+      ...(this.options.databases ?? {}),
+      resolvePaths: [...(this.options.databases?.resolvePaths ?? []), ...estates.flatMap((estate) => estate.dirs)],
+    });
     for (const estate of estates) {
       if (this.options.owner !== undefined && estate.owner !== this.options.owner) {
         continue;
@@ -112,6 +128,19 @@ export class EstateReaper {
       result.reports.push(report);
       result.reclaimedBytes += report.reclaimedBytes ?? 0;
       this.appendReceipt(report, apply);
+    }
+    // Orphan databases: the scheduled sweep only (an owner's exit sweep is its own estates'
+    // business). "Registered" is every reference still on a row AFTER the estate pass — reaped
+    // rows dropped theirs above; retained rows (pinned, live, partial) keep protecting theirs.
+    if (this.options.owner === undefined && this.options.databases?.fence) {
+      const registered = new Set<string>();
+      for (const estate of (await this.registry.list()).estates) {
+        for (const ref of estate.databases ?? []) {
+          registered.add(ref);
+        }
+      }
+      result.databases = await this.databaseSweep.sweepOrphans(registered, apply);
+      this.appendOrphanReceipt(result.databases, apply);
     }
     return result;
   }
@@ -238,6 +267,15 @@ export class EstateReaper {
     }
     report.reclaimedBytes = reclaimed;
 
+    // Databases go with the row, after its dirs and containers, before the registration — and
+    // only when the whole estate reaps: a partial estate (refused dirs) keeps its data too.
+    const databases = estate.databases ?? [];
+    if (refusedDirs.length === 0 && databases.length > 0) {
+      const databaseReport = await this.databaseSweep.dropForEstate(databases, apply);
+      report.acts.push(...databaseReport.acts);
+      report.refusals.push(...databaseReport.refusals);
+    }
+
     if (refusedDirs.length === 0) {
       report.verdict = report.refusals.length > 0 ? 'failed' : 'reaped';
       report.reason =
@@ -257,7 +295,9 @@ export class EstateReaper {
       report.verdict = 'partial';
       report.reason = `partial: ${refusedDirs.length} dir${refusedDirs.length !== 1 ? 's' : ''} refused (${report.refusals[0]})`;
       if (apply) {
-        const trimmedNote = `reap ${new Date(now).toISOString()}: kept ${refusedDirs.length} refused dir(s); ${report.refusals.join(' | ')}`;
+        const trimmedNote = `reap ${new Date(now).toISOString()}: kept ${refusedDirs.length} refused dir(s)${
+          databases.length ? ` + ${databases.length} database(s) with them` : ''
+        }; ${report.refusals.join(' | ')}`;
         await this.registry.heartbeat(estate.id, { dirs: refusedDirs, containers: [], note: trimmedNote });
         report.acts.push(`retain registration trimmed to refused dirs (${refusedDirs.join(', ')})`);
       }
@@ -549,6 +589,26 @@ export class EstateReaper {
         acts: report.acts,
         refusals: report.refusals,
         reclaimedBytes: report.reclaimedBytes,
+      });
+      fsSync.appendFileSync(path.join(this.registry.logsDir(), 'reap.log'), line + '\n');
+    } catch (error) {
+      this.logger.warn({ message: `reap receipt write failed: ${error instanceof Error ? error.message : error}` });
+    }
+  }
+
+  /** The orphan-database sweep's receipt — one line per scheduled sweep, counterfactuals included. */
+  private appendOrphanReceipt(report: DatabaseSweepReport, apply: boolean): void {
+    try {
+      fsSync.mkdirSync(this.registry.logsDir(), { recursive: true });
+      const line = JSON.stringify({
+        at: new Date().toISOString(),
+        apply,
+        estate: '(orphan-databases)',
+        verdict: report.skipped ? 'skipped' : report.acts.length > 0 ? 'reaped' : 'spared',
+        reason: report.skipped ?? `${report.acts.length} dropped, ${report.kept.length} kept`,
+        acts: report.acts,
+        refusals: report.refusals,
+        kept: report.kept,
       });
       fsSync.appendFileSync(path.join(this.registry.logsDir(), 'reap.log'), line + '\n');
     } catch (error) {
