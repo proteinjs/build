@@ -1,3 +1,4 @@
+import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { createHash } from 'crypto';
@@ -64,8 +65,9 @@ export type WorkspaceBuilderOptions = {
  * Nothing is redone that is already satisfied — derived from the tree, never declared:
  *  - install runs when node_modules carries no `.proteinjs-install-stamp` matching the lock's
  *    normalized hash under the current node/npm majors (`PackageTreeHasher.lockHash`);
- *    workspace symlinks are re-linked every run regardless (cheap, and what a bare npm install
- *    in a package would have clobbered);
+ *    workspace symlinks are re-linked whenever the install ran or any link in the package's
+ *    transitive closure is missing or not a symlink to its workspace dir (what a bare npm
+ *    install in a package clobbers); a satisfied install with intact links spawns nothing;
  *  - build runs when node_modules carries no `.proteinjs-build-stamp` whose input hash (own
  *    sources + install identity + every transitive workspace dependency's sources and outputs)
  *    AND output hash (the package's own products, still intact) both match. A change in any
@@ -208,11 +210,16 @@ export class WorkspaceBuilder {
     const lockHash = await this.hasher.lockHash(packageDir);
     const current: InstallStamp | undefined = lockHash ? { lockHash, ...this.toolchain } : undefined;
     const stamp = await stamps.readInstall();
+    const closure = await PackageUtil.getTransitiveWorkspaceDependencies(localPackage, this.metadata.packageMap);
     if (!this.args.force && current && stamp && PackageStamps.installSatisfied(stamp, current)) {
+      const linksIntact = await this.workspaceLinksIntact(packageDir, closure);
       this.logger.info({
-        message: `[${this.cw.color(packageName)}] install satisfied (package-lock.json unchanged, node ${current.node} / npm ${current.npm})`,
+        message: `[${this.cw.color(packageName)}] install satisfied (package-lock.json unchanged, node ${current.node} / npm ${current.npm}${linksIntact ? ', workspace symlinks intact' : ''})`,
       });
       this.summary.installsSatisfied.push(packageName);
+      if (linksIntact) {
+        return;
+      }
     } else {
       const reason = this.args.force
         ? '--force'
@@ -237,6 +244,37 @@ export class WorkspaceBuilder {
       });
     }
     await PackageUtil.symlinkDependencies(localPackage, this.metadata.packageMap);
+  }
+
+  /**
+   * Every transitive workspace dependency already resolves, in this package's OWN node_modules,
+   * through a symlink to its workspace dir — exactly the state `PackageUtil.symlinkDependencies`
+   * leaves (the doctor's clobbered-symlink rule, inverted). Re-linking spawns `ln` per link and
+   * per bin shim, which dominated the no-op run (measured: ~35 of 43 s across 64 packages); a
+   * satisfied install whose links are intact skips it. A clobbered or missing link (a bare
+   * `npm install` in the package) re-links as before.
+   */
+  private async workspaceLinksIntact(packageDir: string, closure: string[]): Promise<boolean> {
+    for (const dependency of closure) {
+      const entry = path.join(packageDir, 'node_modules', ...dependency.split('/'));
+      let stat;
+      try {
+        stat = await fs.lstat(entry);
+      } catch {
+        return false;
+      }
+      if (!stat.isSymbolicLink()) {
+        return false;
+      }
+      const target = await fs.realpath(entry).catch(() => undefined);
+      const expected = await fs
+        .realpath(path.dirname(this.metadata.packageMap[dependency].filePath))
+        .catch(() => undefined);
+      if (!target || !expected || target !== expected) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private async npmInstall(packageName: string, packageDir: string): Promise<void> {

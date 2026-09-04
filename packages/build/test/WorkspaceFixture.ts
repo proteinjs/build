@@ -72,13 +72,23 @@ if (process.env.FIXTURE_BUILD_HANG === pkg.name) {
     return fixture;
   }
 
-  /** `packages/<name>` named `@test/<name>`, depending on the named fixture packages. */
-  async addPackage(name: string, options: { deps?: string[]; src?: string; build?: boolean } = {}): Promise<void> {
+  /**
+   * `packages/<name>` named `@test/<name>`, depending on the named fixture packages — by version
+   * (never installable: the names are unpublished, so such packages run with --no-install) or,
+   * with `fileDeps`, by `file:` path (npm links them offline, so a real install can run).
+   */
+  async addPackage(
+    name: string,
+    options: { deps?: string[]; fileDeps?: string[]; src?: string; build?: boolean } = {}
+  ): Promise<void> {
     const dir = this.packageDir(name);
     await fs.mkdir(path.join(dir, 'src'), { recursive: true });
     const dependencies: Record<string, string> = {};
     for (const dep of options.deps ?? []) {
       dependencies[`@test/${dep}`] = '1.0.0';
+    }
+    for (const dep of options.fileDeps ?? []) {
+      dependencies[`@test/${dep}`] = `file:../${dep}`;
     }
     await fs.writeFile(
       path.join(dir, 'package.json'),
@@ -87,7 +97,7 @@ if (process.env.FIXTURE_BUILD_HANG === pkg.name) {
           name: `@test/${name}`,
           version: '1.0.0',
           dependencies,
-          fixtureDeps: options.deps ?? [],
+          fixtureDeps: [...(options.deps ?? []), ...(options.fileDeps ?? [])],
           // A compound command, like every real build script (`reflection-build && tsc`): npm's
           // `sh -c` must fork and wait, so a signal to the shell alone orphans the running step —
           // only a process-group kill reaches it.

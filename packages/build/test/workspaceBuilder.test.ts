@@ -264,6 +264,36 @@ describe('WorkspaceBuilder', () => {
       expect((await fixture.run({ args: soloOnly })).installed).toEqual(['@test/solo']);
     });
 
+    it('a satisfied install with intact workspace symlinks re-links nothing; a clobbered link is restored', async () => {
+      // `linked` depends on `solo` by file: path — npm links it offline, so its install can run.
+      await fixture.addPackage('linked', { fileDeps: ['solo'] });
+      await fixture.npmInstall('linked');
+      fixture.commit('linked');
+      const link = path.join(fixture.packageDir('linked'), 'node_modules', '@test', 'solo');
+      const args = { skip: names };
+
+      await fixture.run({ args });
+      const linked = await fs.lstat(link);
+      expect(linked.isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(link)).toBe(await fs.realpath(fixture.packageDir('solo')));
+
+      // Nothing changed: the link is left exactly as it was (same inode — never re-created).
+      const second = await fixture.run({ args });
+      expect(second.installsSatisfied).toContain('@test/linked');
+      expect((await fs.lstat(link)).ino).toBe(linked.ino);
+
+      // A bare npm install's clobber (a real directory where the link was) is repaired.
+      await fs.rm(link, { recursive: true, force: true });
+      await fs.mkdir(link, { recursive: true });
+      await fs.writeFile(path.join(link, 'package.json'), JSON.stringify({ name: '@test/solo', version: '1.0.0' }));
+      const third = await fixture.run({ args });
+      expect(third.installsSatisfied).toContain('@test/linked');
+      const repaired = await fs.lstat(link);
+      expect(repaired.isSymbolicLink()).toBe(true);
+      expect(repaired.ino).not.toBe(linked.ino);
+      expect(await fs.realpath(link)).toBe(await fs.realpath(fixture.packageDir('solo')));
+    });
+
     it('a toolchain major change reinstalls; --force reinstalls', async () => {
       await fixture.run({ args: soloOnly });
       const stamps = new PackageStamps(fixture.packageDir('solo'));
