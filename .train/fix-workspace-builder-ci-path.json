@@ -1,6 +1,0 @@
-{
-  "branch": "fix/workspace-builder-ci-path",
-  "packages": ["build"],
-  "suites": ["packages/build/test/workspaceBuilder.test.ts"],
-  "removes": []
-}
