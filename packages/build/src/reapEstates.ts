@@ -1,6 +1,7 @@
 import { LogColorWrapper, parseArgsMap } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
-import { EstateReaper, EstateSweepReport } from './EstateReaper';
+import { EstateReaper, EstateSweepReport, ReapEstatesResult } from './EstateReaper';
+import { EstateDatabaseSweep } from './EstateDatabaseSweep';
 import { EstateRegistry } from './EstateRegistry';
 import { WorktreeCleaner } from './WorktreeCleaner';
 import { WorkspaceDoctor } from './WorkspaceDoctor';
@@ -31,6 +32,16 @@ Optional args:
                        killed — the owner reaping its own estate at lane exit (the one-liner lane
                        briefs mandate). Safety rules on dirs still apply.
 --ttl=<hours>          dead-by-contract heartbeat TTL (default 36)
+--db-fence=<project>/<instance>/<prefix>
+                       enable the DATABASE class (DEV_ESTATES.md §3.3): a reaped estate's \`databases\`
+                       (rows record <project>/<instance>/<database>) drop with it, and fenced databases
+                       that NO registered estate names drop once older than --db-orphan-days. Never a
+                       name outside the prefix, never a database a row names (pins protect it), never
+                       an unaged one. Without a fence the class is inert and says so. The client is
+                       borrowed from the estates' own app installs; the credential is GCP_SA_KEY from
+                       the environment (source ~/.zshrc) — nothing about it is ever printed.
+                       ie: --db-fence=n3xa-app/n3xa-dev/est-
+--db-orphan-days=<n>   the orphan horizon in days (default 7)
 --no-worktrees         skip the delegated clean-worktrees pass
 --root=/path           workspace root for the worktree pass (default: discovered from cwd)
 --json                 machine-readable result on stdout
@@ -55,7 +66,24 @@ export const reapEstates = async () => {
     throw new Error(`--ttl must be a positive number of hours, got: ${argsMap['ttl']}`);
   }
 
-  const reaper = new EstateReaper({ apply, owner, ttlMs: ttlHours !== undefined ? ttlHours * 3600_000 : undefined });
+  const fence =
+    typeof argsMap['db-fence'] === 'string' ? EstateDatabaseSweep.parseFence(argsMap['db-fence'] as string) : undefined;
+  const orphanDays = typeof argsMap['db-orphan-days'] === 'string' ? Number(argsMap['db-orphan-days']) : undefined;
+  if (orphanDays !== undefined && (!Number.isFinite(orphanDays) || orphanDays <= 0)) {
+    throw new Error(`--db-orphan-days must be a positive number of days, got: ${argsMap['db-orphan-days']}`);
+  }
+  if (orphanDays !== undefined && !fence) {
+    throw new Error('--db-orphan-days needs --db-fence=<project>/<instance>/<prefix>');
+  }
+
+  const reaper = new EstateReaper({
+    apply,
+    owner,
+    ttlMs: ttlHours !== undefined ? ttlHours * 3600_000 : undefined,
+    databases: fence
+      ? { fence, orphanAfterMs: orphanDays !== undefined ? orphanDays * 24 * 3600_000 : undefined }
+      : undefined,
+  });
   const result = await reaper.sweep();
 
   let worktreeResult;
@@ -88,6 +116,7 @@ export const reapEstates = async () => {
     console.log(JSON.stringify({ estates: result, worktrees: worktreeResult }, null, 2));
   } else {
     printReport(result.reports, result.unreadable, apply, owner, logger, cw);
+    printDatabases(result, logger);
     if (worktreeResult) {
       const removable = worktreeResult.worktrees.filter((worktree) => worktree.verdict === 'safe' && !worktree.primary);
       logger.info({
@@ -97,10 +126,33 @@ export const reapEstates = async () => {
   }
 
   const failures = result.reports.filter((report) => report.verdict === 'failed').length;
-  if (failures > 0) {
+  if (failures > 0 || (result.databases?.refusals.length ?? 0) > 0) {
     process.exit(1);
   }
 };
+
+function printDatabases(result: ReapEstatesResult, logger: Logger) {
+  const databases = result.databases;
+  if (!databases) {
+    return;
+  }
+  if (databases.skipped) {
+    logger.warn({ message: `> Databases: ${databases.skipped}` });
+    return;
+  }
+  logger.info({
+    message: `> Databases (orphan sweep): ${databases.acts.length} ${result.apply ? 'dropped' : 'to drop'}, ${databases.kept.length} kept`,
+  });
+  for (const act of databases.acts) {
+    logger.info({ message: `           act: ${act}${result.apply ? '' : ' (dry-run)'}` });
+  }
+  for (const kept of databases.kept) {
+    logger.info({ message: `           kept: ${kept}` });
+  }
+  for (const refusal of databases.refusals) {
+    logger.warn({ message: `           refusal: ${refusal}` });
+  }
+}
 
 function printReport(
   reports: EstateSweepReport[],

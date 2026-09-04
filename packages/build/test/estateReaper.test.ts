@@ -5,6 +5,7 @@ import * as os from 'os';
 import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { EstateRegistry } from '../src/EstateRegistry';
 import { EstateReaper } from '../src/EstateReaper';
+import { SpannerAdminClient } from '../src/EstateDatabaseSweep';
 
 /**
  * The reaper's safety rules MUST bite (RESOURCE_GOVERNANCE §B.2): an estate with unpushed git
@@ -334,6 +335,125 @@ describe('EstateReaper', () => {
     expect(result.reports[0].refusals.join('\n')).toMatch(/spanner-busy-lane has 2 live client connections/);
     expect(await exists(estateDir)).toBe(true);
     expect(await registry.get(record.id)).toBeDefined();
+  });
+
+  // ── The DATABASE resource class (DEV_ESTATES.md §3.3) ─────────────────────
+  const FENCE = { project: 'n3xa-app', instance: 'n3xa-dev', prefix: 'est-' };
+  const KEY = Buffer.from('{"type":"service_account"}').toString('base64');
+  /** A fake Spanner admin client over `names`; records drops as OUTCOMES. */
+  const fakeSpanner = (names: string[], ageDays = 30) => {
+    const dropped: string[] = [];
+    const client: SpannerAdminClient = {
+      instance: (instanceName: string) => ({
+        // A dropped database is gone from the next listing, as on the real instance.
+        getDatabases: async () => [
+          names
+            .filter((name) => !dropped.includes(name))
+            .map((name) => ({
+              formattedName_: `projects/n3xa-app/instances/${instanceName}/databases/${name}`,
+              metadata: {
+                createTime: { seconds: Math.floor((Date.now() - ageDays * 24 * 3600_000) / 1000), nanos: 0 },
+              },
+            })),
+        ],
+        database: (name: string) => ({
+          delete: async () => {
+            dropped.push(name);
+          },
+        }),
+      }),
+      close: () => undefined,
+    };
+    return { dropped, client };
+  };
+
+  test('a dead estate DROPS the database it names with the row (after dirs, before unregister); orphans past the horizon go too', async () => {
+    const spanner = fakeSpanner(['est-lane-db', 'est-stray', 'brent-dev-2']);
+    const { record, estateDir } = await registerStale({ databases: ['n3xa-app/n3xa-dev/est-lane-db'] });
+    const pinnedRow = await registry.register(
+      { owner: 'lane-pinned', pinned: true, databases: ['n3xa-app/n3xa-dev/est-pinned'] },
+      { enforceValve: false }
+    );
+
+    const result = await new EstateReaper({
+      registry,
+      apply: true,
+      databases: { fence: FENCE, env: { GCP_SA_KEY: KEY }, spannerFactory: () => spanner.client },
+    }).sweep();
+
+    const report = result.reports.find((r) => r.estate.id === record.id)!;
+    expect(report.verdict).toBe('reaped');
+    expect(report.acts).toContain('drop database n3xa-app/n3xa-dev/est-lane-db');
+    expect(await exists(estateDir)).toBe(false);
+    expect(await registry.get(record.id)).toBeUndefined();
+    // The orphan sweep ran after the estate pass: the stray (no row, 30d) dropped; the founder's
+    // database outside the prefix untouched; the pinned row's database protected by its row.
+    expect(spanner.dropped).toEqual(['est-lane-db', 'est-stray']);
+    expect(result.databases!.acts).toEqual([
+      'drop orphan database n3xa-app/n3xa-dev/est-stray (30.0d old, no registered estate)',
+    ]);
+    expect(JSON.stringify(result.databases)).not.toContain('brent-dev-2');
+    expect(await registry.get(pinnedRow.id)).toBeDefined();
+    const receipts = await fs.readFile(path.join(registry.logsDir(), 'reap.log'), 'utf-8');
+    expect(receipts).toContain('"estate":"(orphan-databases)"');
+    expect(receipts).toContain('est-stray');
+  });
+
+  test('a database on a dead row with NO fence configured is a refusal: the row stays, nothing drops', async () => {
+    const spanner = fakeSpanner(['est-lane-db']);
+    const { record } = await registerStale({ databases: ['n3xa-app/n3xa-dev/est-lane-db'] });
+
+    const result = await new EstateReaper({
+      registry,
+      apply: true,
+      databases: { env: { GCP_SA_KEY: KEY }, spannerFactory: () => spanner.client }, // no fence
+    }).sweep();
+
+    expect(result.reports[0].verdict).toBe('failed');
+    expect(result.reports[0].refusals.join('\n')).toMatch(/no database fence configured/);
+    expect(spanner.dropped).toEqual([]);
+    expect(await registry.get(record.id)).toBeDefined();
+    expect(result.databases).toBeUndefined(); // no orphan sweep without a fence
+  });
+
+  test('a PARTIAL estate (unpushed work) keeps its database with its refused dirs — data goes only when the whole estate does', async () => {
+    const spanner = fakeSpanner(['est-lane-db']);
+    const { record, estateDir } = await registerStale({ databases: ['n3xa-app/n3xa-dev/est-lane-db'] });
+    const repoDir = await initPushedRepo(path.join(estateDir, 'repo'));
+    await fs.writeFile(path.join(repoDir, 'unpushed.ts'), 'export const wip = 1;\n');
+    git(repoDir, ['add', '.']);
+    git(repoDir, ['commit', '-m', 'unpushed work']);
+
+    const result = await new EstateReaper({
+      registry,
+      apply: true,
+      databases: { fence: FENCE, env: { GCP_SA_KEY: KEY }, spannerFactory: () => spanner.client },
+    }).sweep();
+
+    expect(result.reports[0].verdict).toBe('partial');
+    expect(spanner.dropped).toEqual([]);
+    const retained = await registry.get(record.id);
+    expect(retained!.databases).toEqual(['n3xa-app/n3xa-dev/est-lane-db']);
+    expect(retained!.note).toMatch(/1 database\(s\) with them/);
+    // Still named by a row → the orphan sweep keeps it, whatever its age.
+    expect(result.databases!.kept).toEqual(['n3xa-app/n3xa-dev/est-lane-db: named by a registered estate']);
+  });
+
+  test("an OWNER exit sweep drops the owner's database but never runs the orphan sweep", async () => {
+    const spanner = fakeSpanner(['est-mine', 'est-stray']);
+    const { record } = await registerStale({ owner: 'lane-mine', databases: ['n3xa-app/n3xa-dev/est-mine'] });
+
+    const result = await new EstateReaper({
+      registry,
+      apply: true,
+      owner: 'lane-mine',
+      databases: { fence: FENCE, env: { GCP_SA_KEY: KEY }, spannerFactory: () => spanner.client },
+    }).sweep();
+
+    expect(result.reports[0].verdict).toBe('reaped');
+    expect(spanner.dropped).toEqual(['est-mine']);
+    expect(result.databases).toBeUndefined();
+    expect(await registry.get(record.id)).toBeUndefined();
   });
 
   test('a corrupt estate file is reported unreadable and never touched', async () => {

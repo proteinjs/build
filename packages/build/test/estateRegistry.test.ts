@@ -37,7 +37,7 @@ describe('EstateRegistry', () => {
 
     const { estates } = await registry.list();
     expect(estates).toHaveLength(1);
-    expect(estates[0]).toMatchObject({ owner: 'lane-a', ports: [3041], containers: ['spanner-lane-a'] });
+    expect(estates[0]).toMatchObject({ owner: 'lane-a', ports: [3041], containers: ['spanner-lane-a'], databases: [] });
 
     const before = estates[0].heartbeatAt;
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -47,6 +47,35 @@ describe('EstateRegistry', () => {
 
     expect(await registry.unregister(record.id)).toBe(true);
     expect((await registry.list()).estates).toHaveLength(0);
+  });
+
+  test('databases ride the record (register, list, heartbeat patch) and a pre-field row reads as none', async () => {
+    const record = await registry.register(
+      { owner: 'lane-db', databases: ['n3xa-app/n3xa-dev/est-lane-db'] },
+      { enforceValve: false }
+    );
+    expect(record.databases).toEqual(['n3xa-app/n3xa-dev/est-lane-db']);
+    expect((await registry.list()).estates[0].databases).toEqual(['n3xa-app/n3xa-dev/est-lane-db']);
+    const patched = await registry.heartbeat(record.id, {
+      databases: ['n3xa-app/n3xa-dev/est-lane-db', 'n3xa-app/n3xa-dev/est-lane-db-vm'],
+    });
+    expect(patched!.databases).toHaveLength(2);
+    // A row written before the field existed: the reaper treats a missing field as none.
+    await fs.writeFile(
+      path.join(registry.estatesDir(), 'legacy.json'),
+      JSON.stringify({
+        id: 'legacy',
+        owner: 'old',
+        ports: [],
+        dirs: [],
+        containers: [],
+        pids: [],
+        startedAt: 1,
+        heartbeatAt: 1,
+      })
+    );
+    const legacy = (await registry.list()).estates.find((e) => e.id === 'legacy')!;
+    expect(legacy.databases).toBeUndefined();
   });
 
   test('under HARD pressure the valve-enforced register path REFUSES, with the real numbers', async () => {

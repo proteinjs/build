@@ -1,0 +1,10 @@
+{
+  "branch": "feat/estate-databases",
+  "packages": ["build"],
+  "suites": [
+    "packages/build/test/estateDatabaseSweep.test.ts",
+    "packages/build/test/estateReaper.test.ts",
+    "packages/build/test/estateRegistry.test.ts"
+  ],
+  "removes": []
+}
