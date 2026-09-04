@@ -8,7 +8,9 @@
     "packages/build/test/packageProcessRunner.test.ts",
     "packages/build/test/materializeDependencies.test.ts",
     "packages/build/test/symlinkWorkspace.test.ts",
-    "packages/build/test/workspaceDoctor.test.ts"
+    "packages/build/test/workspaceDoctor.test.ts",
+    "packages/build/test/pullForward.test.ts",
+    "packages/build/test/installArgsOwner.test.ts"
   ],
   "removes": []
 }

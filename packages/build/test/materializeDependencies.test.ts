@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import { cmd } from '@proteinjs/util-node';
-import { materializeDependencies } from '../src/materializeDependencies';
+import { materializeDependencies, MATERIALIZE_INSTALL_ARGS } from '../src/materializeDependencies';
 
 /**
  * Hermetic npm fixtures (dependency-free package, no network): npm rewrites a committed
@@ -54,10 +54,12 @@ describe('materializeDependencies', () => {
   });
 
   it('REPRO: a raw npm install rewrites the committed lockfile', async () => {
+    // The same install the helper runs, minus the lockfile snapshot — the snapshot is the only
+    // difference between this test and the next.
     await fs.writeFile(lockfilePath, STALE_LOCKFILE);
     await cmd(
       'npm',
-      ['install'],
+      MATERIALIZE_INSTALL_ARGS,
       { cwd: packageDir },
       { omitLogs: { stdout: { omit: true }, stderr: { omit: true } } }
     );

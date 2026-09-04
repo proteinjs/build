@@ -34,10 +34,14 @@ export const materializeDependencies = async (packageDir: string, logOptions?: L
 };
 
 /**
- * The materialization install: node_modules state is the whole intent, so the audit report and
- * the funding notice — output nobody reads at this point, each a registry round trip of its own
- * — are off. Measured 2026-09-04 on the founder's Mac: with the audit call `npm install left-pad`
- * took 5 min 00 s (the advisories endpoint hung to npm's timeout), without it 0.3 s; the same
- * stall sat inside every package install of a cold `build-workspace`.
+ * The one owner of npm-install args: EVERY `npm install` this package spawns — build-workspace's
+ * and the doctor's materialization, pull-forward's manifest installs, version-workspace's CI
+ * installs (`--package-lock-only` composes on top), and the test fixtures' — reads these, so the
+ * audit report and the funding notice — output nobody reads at this point, each a registry round
+ * trip of its own — are off everywhere at once (installArgsOwner.test.ts reds a second owner).
+ * Measured 2026-09-04 on the founder's Mac: with the audit call `npm install left-pad` took
+ * 5 min 00 s (the advisories endpoint hung to npm's timeout), without it 0.3 s; the same stall
+ * sat inside every package install of a cold `build-workspace`, and inside the pullForward
+ * fixture's bare installs, which timed the suite out at the R7 departure.
  */
 export const MATERIALIZE_INSTALL_ARGS: readonly string[] = ['install', '--no-audit', '--no-fund'];

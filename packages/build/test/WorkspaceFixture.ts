@@ -5,6 +5,7 @@ import { Writable } from 'stream';
 import { spawnSync } from 'child_process';
 import { Logger } from '@proteinjs/logger';
 import { PackageProcessRunner } from '../src/PackageProcessRunner';
+import { MATERIALIZE_INSTALL_ARGS } from '../src/materializeDependencies';
 import { WorkspaceBuilder, WorkspaceBuilderOptions, WorkspaceBuildSummary } from '../src/WorkspaceBuilder';
 
 /**
@@ -112,7 +113,7 @@ if (process.env.FIXTURE_BUILD_HANG === pkg.name) {
 
   /** A real `npm install` (dependency-free, offline) so the package carries a lockfile and node_modules. */
   async npmInstall(name: string): Promise<void> {
-    const result = spawnSync('npm', ['install', '--no-audit', '--no-fund', '--loglevel=error'], {
+    const result = spawnSync('npm', [...MATERIALIZE_INSTALL_ARGS, '--loglevel=error'], {
       cwd: this.packageDir(name),
       encoding: 'utf-8',
     });

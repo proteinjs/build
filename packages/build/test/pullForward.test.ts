@@ -3,13 +3,17 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import { cmd } from '@proteinjs/util-node';
 import { pullForwardWorkspace } from '../src/pullForward';
+import { MATERIALIZE_INSTALL_ARGS } from '../src/materializeDependencies';
 
 /**
  * Hermetic git fixtures (no registry, no network): an origin repo and a workspace checkout wired
  * the way the metarepo is — submodule under packages/ on branch main. Each upstream relationship
  * pull-forward classifies is staged for real (behind, diverged, detached, broken remote), and the
  * manifest-install pass is exercised with a file: tarball dependency so npm materializes
- * node_modules without touching the registry.
+ * node_modules without touching the registry. The fixture's own installs spawn with the tool's
+ * install args (MATERIALIZE_INSTALL_ARGS: audit and funding round trips off) — a bare
+ * `npm install` still calls the registry's advisories endpoint for the tarball's package, and on
+ * 2026-09-04 that call stalled for minutes and timed both install tests out.
  */
 
 // Hermetic-git suites in this package spawn dozens of git processes and run under shared jest
@@ -191,7 +195,7 @@ describe('pullForwardWorkspace', () => {
     const pkgCheckout = path.join(workspace, 'packages', 'pkg');
 
     // The checkout starts coherent at v1: dep installed, no lockfile.
-    await cmd('npm', ['install'], { cwd: pkgCheckout }, { omitLogs: { stdout: { omit: true } } });
+    await cmd('npm', MATERIALIZE_INSTALL_ARGS, { cwd: pkgCheckout }, { omitLogs: { stdout: { omit: true } } });
     await fs.rm(path.join(pkgCheckout, 'package-lock.json'));
 
     // Upstream bumps the dep to v2. The doctor alone would NOT refresh this — the entry exists —
@@ -304,7 +308,7 @@ describe('pullForwardWorkspace', () => {
     const pkgCheckout = path.join(workspace, 'packages', 'pkg');
 
     // The checkout starts coherent at v1: dep installed, no lockfile.
-    await cmd('npm', ['install'], { cwd: pkgCheckout }, { omitLogs: { stdout: { omit: true } } });
+    await cmd('npm', MATERIALIZE_INSTALL_ARGS, { cwd: pkgCheckout }, { omitLogs: { stdout: { omit: true } } });
     await fs.rm(path.join(pkgCheckout, 'package-lock.json'));
 
     await commitFile(

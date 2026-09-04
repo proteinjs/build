@@ -7,6 +7,7 @@ import { primaryLogColor, secondaryLogColor } from './logColors';
 import { hasLintConfig } from './lintWorkspace';
 import { mergeToMain, parseMergeToMainSpec, revertLeftoverVersionState } from './mergeToMain';
 import { PackageRegistry, NpmPackageRegistry, isNetworkError, maxPublishedVersion } from './PackageRegistry';
+import { MATERIALIZE_INSTALL_ARGS } from './materializeDependencies';
 
 const cw = new LogColorWrapper();
 const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.color('version', secondaryLogColor) });
@@ -949,7 +950,11 @@ async function syncFixedVersions(workspacePath: string, localPackages: LocalPack
   return syncedFixedVersions ? highestVersion : false;
 }
 
-async function installWithRetry(localPackage: LocalPackage, packageDir: string, npmArgs: string[] = ['install']) {
+async function installWithRetry(
+  localPackage: LocalPackage,
+  packageDir: string,
+  npmArgs: readonly string[] = MATERIALIZE_INSTALL_ARGS
+) {
   const maxRetries = 10;
   const retryDelayMs = 90_000;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -986,7 +991,7 @@ async function installWithRetry(localPackage: LocalPackage, packageDir: string, 
 async function ciPrepareForPublish(localPackage: LocalPackage) {
   const packageDir = path.dirname(localPackage.filePath);
   logger.info({ message: `(${cw.color(localPackage.name)}) regenerating lockfile resolution (CI publish mode)` });
-  await installWithRetry(localPackage, packageDir, ['install', '--package-lock-only']);
+  await installWithRetry(localPackage, packageDir, [...MATERIALIZE_INSTALL_ARGS, '--package-lock-only']);
 }
 
 async function buildAndTest(localPackage: LocalPackage) {
