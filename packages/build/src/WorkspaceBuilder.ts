@@ -31,6 +31,12 @@ export type WorkspaceBuildSummary = {
   installsSatisfied: string[];
   /** install skipped by --no-install */
   installsSkipped: string[];
+  /**
+   * workspace symlinks (re)written: the install ran, or a link in the package's transitive
+   * closure was missing or not a symlink to its workspace dir. A satisfied install whose links
+   * are intact is absent here (it spawned nothing); so is a package with no workspace deps.
+   */
+  relinked: string[];
   built: string[];
   /** build skipped: input hash + output hash matched the stamp */
   upToDate: string[];
@@ -127,6 +133,7 @@ export class WorkspaceBuilder {
       installed: [],
       installsSatisfied: [],
       installsSkipped: [],
+      relinked: [],
       built: [],
       upToDate: [],
       buildsSkipped: [],
@@ -244,6 +251,9 @@ export class WorkspaceBuilder {
       });
     }
     await PackageUtil.symlinkDependencies(localPackage, this.metadata.packageMap);
+    if (closure.length > 0) {
+      this.summary.relinked.push(packageName);
+    }
   }
 
   /**
@@ -388,7 +398,7 @@ export class WorkspaceBuilder {
   private progressLine(): string {
     const s = this.summary;
     return (
-      `installed ${s.installed.length} (${s.installsSatisfied.length} satisfied, ${s.installsSkipped.length} skipped), ` +
+      `installed ${s.installed.length} (${s.installsSatisfied.length} satisfied, ${s.installsSkipped.length} skipped, ${s.relinked.length} re-linked), ` +
       `built ${s.built.length} (${s.upToDate.length} up to date, ${s.buildsSkipped.length} skipped)` +
       (this.lintEnabled ? `, linted ${s.linted.length}` : '')
     );

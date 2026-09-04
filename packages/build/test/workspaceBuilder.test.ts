@@ -272,15 +272,22 @@ describe('WorkspaceBuilder', () => {
       const link = path.join(fixture.packageDir('linked'), 'node_modules', '@test', 'solo');
       const args = { skip: names };
 
-      await fixture.run({ args });
-      const linked = await fs.lstat(link);
-      expect(linked.isSymbolicLink()).toBe(true);
+      const first = await fixture.run({ args });
+      expect(first.relinked).toContain('@test/linked');
+      expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(link)).toBe(await fs.realpath(fixture.packageDir('solo')));
+      // Stamp the link itself with a time no fresh link carries: re-linking removes and re-creates
+      // it (PackageUtil.symlinkPackage), which stamps `now`. Inode identity is NOT the signal —
+      // ext4 hands a re-created link the inode it just freed (the CI runner), APFS never does
+      // (a Mac); the mtime stamp reads the same on both.
+      const stamp = new Date('2000-01-01T00:00:00Z');
+      await fs.lutimes(link, stamp, stamp);
 
-      // Nothing changed: the link is left exactly as it was (same inode — never re-created).
+      // Nothing changed: the link is left exactly as it was — never re-created.
       const second = await fixture.run({ args });
       expect(second.installsSatisfied).toContain('@test/linked');
-      expect((await fs.lstat(link)).ino).toBe(linked.ino);
+      expect(second.relinked).not.toContain('@test/linked');
+      expect(Math.round((await fs.lstat(link)).mtimeMs)).toBe(stamp.getTime());
 
       // A bare npm install's clobber (a real directory where the link was) is repaired.
       await fs.rm(link, { recursive: true, force: true });
@@ -288,9 +295,8 @@ describe('WorkspaceBuilder', () => {
       await fs.writeFile(path.join(link, 'package.json'), JSON.stringify({ name: '@test/solo', version: '1.0.0' }));
       const third = await fixture.run({ args });
       expect(third.installsSatisfied).toContain('@test/linked');
-      const repaired = await fs.lstat(link);
-      expect(repaired.isSymbolicLink()).toBe(true);
-      expect(repaired.ino).not.toBe(linked.ino);
+      expect(third.relinked).toContain('@test/linked');
+      expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(link)).toBe(await fs.realpath(fixture.packageDir('solo')));
     });
 
