@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.16.2](https://github.com/proteinjs/build/compare/@proteinjs/build@2.16.1...@proteinjs/build@2.16.2) (2026-09-15)
+
+
+### Bug Fixes
+
+* **build:** build-workspace outside a git work tree lists sources from the file tree under the .gitignore rules ([6bc6f3d](https://github.com/proteinjs/build/commit/6bc6f3d4c1fecd89f7f84fd92fdaaeef10c9ab21))
+
+
+
+
+
 ## [2.16.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.16.0...@proteinjs/build@2.16.1) (2026-09-13)
 
 **Note:** Version bump only for package @proteinjs/build
