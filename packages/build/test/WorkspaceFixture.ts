@@ -9,7 +9,8 @@ import { MATERIALIZE_INSTALL_ARGS } from '../src/materializeDependencies';
 import { WorkspaceBuilder, WorkspaceBuilderOptions, WorkspaceBuildSummary } from '../src/WorkspaceBuilder';
 
 /**
- * A hermetic workspace for build-workspace tests: a git repo (sources are git-derived) whose
+ * A hermetic workspace for build-workspace tests: a git repo (sources are git-derived; see
+ * `copyWithoutGit` for the tree as a container image build context carries it) whose
  * packages build with the fixture's own `build.js` — no tsc, no registry. A build writes
  * `dist/index.js` from `src/index.txt` plus its fixture dependencies' dists (read by relative
  * path, so `--no-install` runs never need symlinks) plus a random nonce: a rebuild always
@@ -131,6 +132,19 @@ if (process.env.FIXTURE_BUILD_HANG === pkg.name) {
     return path.join(this.root, 'packages', name);
   }
 
+  /**
+   * The tree as a container image build context carries it: every file copied, `.git` left
+   * behind (the `.gitignore` files ride along) — a second fixture rooted at the copy, with its
+   * own build log. Destroy it separately.
+   */
+  async copyWithoutGit(): Promise<WorkspaceFixture> {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'build-workspace-copy-')));
+    await WorkspaceFixture.copyTree(this.root, root, new Set(['.git', '.fixture']));
+    const copy = new WorkspaceFixture(root);
+    await fs.mkdir(copy.pidDir, { recursive: true });
+    return copy;
+  }
+
   async writeSource(name: string, content: string): Promise<void> {
     await fs.writeFile(path.join(this.packageDir(name), 'src', 'index.txt'), content);
   }
@@ -220,6 +234,22 @@ if (process.env.FIXTURE_BUILD_HANG === pkg.name) {
       runner.dispose();
     }
     await fs.rm(this.root, { recursive: true, force: true });
+  }
+
+  private static async copyTree(from: string, to: string, skip: ReadonlySet<string>): Promise<void> {
+    await fs.mkdir(to, { recursive: true });
+    for (const dirent of await fs.readdir(from, { withFileTypes: true })) {
+      if (skip.has(dirent.name)) {
+        continue;
+      }
+      const source = path.join(from, dirent.name);
+      const target = path.join(to, dirent.name);
+      if (dirent.isDirectory()) {
+        await WorkspaceFixture.copyTree(source, target, skip);
+      } else {
+        await fs.copyFile(source, target);
+      }
+    }
   }
 
   private git(...args: string[]): void {

@@ -1,0 +1,11 @@
+{
+  "branch": "fix/build-workspace-without-git",
+  "packages": [
+    "build"
+  ],
+  "suites": [
+    "packages/build/test/packageTreeHasher.test.ts",
+    "packages/build/test/workspaceBuilder.test.ts"
+  ],
+  "removes": []
+}

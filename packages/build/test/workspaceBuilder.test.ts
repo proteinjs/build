@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { DefaultLogWriter, Log, Logger } from '@proteinjs/logger';
 import { PackageProcessError } from '../src/PackageProcessRunner';
 import { PackageStamps } from '../src/PackageStamps';
 import { WorkspaceFixture } from './WorkspaceFixture';
@@ -129,6 +130,37 @@ describe('WorkspaceBuilder', () => {
       expect(summary.built.sort()).toEqual([...names].sort());
       for (let i = 0; i < chain.length; i++) {
         expect(await fixture.readDist(chain[i])).not.toBe(dists[i]);
+      }
+    });
+  });
+
+  describe('outside a git work tree', () => {
+    it('the tree copied without .git (a container image build context) builds from the file tree under the .gitignore rules, says so once, and a second run is a no-op', async () => {
+      const copy = await fixture.copyWithoutGit();
+      try {
+        const lines: string[] = [];
+        const logger = new Logger({
+          name: 'test',
+          logLevel: 'info',
+          logWriter: { write: (log: Log) => lines.push(log.message ?? '') } as unknown as DefaultLogWriter,
+        });
+        const summary = await copy.run({ args: noInstall, logger });
+        expect(summary.built.sort()).toEqual([...names].sort());
+        expect(lines.filter((line) => line.includes('sources from the file tree — not a git work tree'))).toHaveLength(
+          1
+        );
+        const dists = await Promise.all(chain.map((n) => copy.readDist(n)));
+        await copy.clearBuildLog();
+
+        // dist/ is ignored by the workspace root's .gitignore: an output, so the build that wrote
+        // it did not change its own inputs — the no-op tripwire holds without git.
+        const second = await copy.run({ args: noInstall });
+        expect(second.built).toEqual([]);
+        expect(second.upToDate.sort()).toEqual([...names].sort());
+        expect(await copy.builtNames()).toEqual([]);
+        expect(await Promise.all(chain.map((n) => copy.readDist(n)))).toEqual(dists);
+      } finally {
+        await copy.destroy();
       }
     });
   });

@@ -1,12 +1,15 @@
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { createHash } from 'crypto';
+import ignore, { Ignore } from 'ignore';
+import { Logger } from '@proteinjs/logger';
 import { cmd } from '@proteinjs/util-node';
 
 export type PackageTreeHash = {
   /**
    * Everything git considers part of the package — tracked files plus untracked files its
-   * ignore rules do not exclude — minus release bookkeeping (see `PackageTreeHasher`).
+   * ignore rules do not exclude — minus release bookkeeping (see `PackageTreeHasher`). Outside
+   * a git work tree, the same set read off the file tree under the `.gitignore` rules.
    */
   sourceHash: string;
   /**
@@ -16,6 +19,20 @@ export type PackageTreeHash = {
    */
   outputHash: string;
 };
+
+export type PackageTreeHasherOptions = {
+  /**
+   * The workspace root. Outside a git work tree it stands in for the repository root: the
+   * `.gitignore` files from here down to the package apply, as git would apply them were the
+   * workspace the repository.
+   */
+  workspacePath: string;
+  /** where the hasher says, once, that sources come from the file tree; default: its own `Logger` */
+  logger?: Logger;
+};
+
+/** one `.gitignore` and the directory whose subtree it governs */
+type IgnoreScope = { dir: string; rules: Ignore };
 
 /**
  * Content hashes for one package directory, split along the line the repo's own git ignore
@@ -32,6 +49,14 @@ export type PackageTreeHash = {
  * lockfile entries (plus anything nested under them) dropped; CHANGELOG.md is skipped.
  * External dependency changes — a bumped resolved version, an added package — survive
  * normalization and invalidate as they must.
+ *
+ * Git is the source of truth wherever there is one. A package with no `.git` in its directory
+ * or any ancestor is NOT in a git work tree — a container image build context is the usual
+ * case, the workspace copied without its repository — and there the sources are the on-disk
+ * tree filtered by the `.gitignore` files from the workspace root down to the package, applied
+ * as git applies them (the deeper file wins, an excluded directory is never re-entered,
+ * `node_modules` and nested work trees are never sources). The hasher says so once. On the
+ * same tree both listings yield the same source set, so the hashes agree byte for byte.
  */
 export class PackageTreeHasher {
   /** Bump when the hashing rules change: every stamp written under an older format re-verifies as stale. */
@@ -48,7 +73,17 @@ export class PackageTreeHasher {
   /** Finder metadata: never a build product, appears whenever a directory is browsed on macOS. */
   private static readonly FINDER_LITTER = '.DS_Store';
 
-  constructor(private workspaceMemberNames: ReadonlySet<string>) {}
+  private readonly workspacePath: string;
+  private readonly logger: Logger;
+  private fileTreeAnnounced = false;
+
+  constructor(
+    private workspaceMemberNames: ReadonlySet<string>,
+    options: PackageTreeHasherOptions
+  ) {
+    this.workspacePath = options.workspacePath;
+    this.logger = options.logger ?? new Logger({ name: 'PackageTreeHasher' });
+  }
 
   async hash(packageDir: string): Promise<PackageTreeHash> {
     const sources = await this.listSources(packageDir);
@@ -112,8 +147,14 @@ export class PackageTreeHasher {
     return normalized;
   }
 
-  /** tracked + untracked-unignored files, relative to the package dir — git's own view of the sources */
+  /**
+   * The sources, relative to the package dir: git's own view (tracked + untracked-unignored
+   * files) inside a git work tree; the file tree under the `.gitignore` rules outside one.
+   */
   private async listSources(packageDir: string): Promise<string[]> {
+    if (!(await PackageTreeHasher.insideGitWorkTree(packageDir))) {
+      return this.listSourcesFromFileTree(packageDir);
+    }
     let stdout: string;
     try {
       ({ stdout } = await cmd(
@@ -161,6 +202,124 @@ export class PackageTreeHasher {
       }
     }
     return found;
+  }
+
+  /**
+   * Not a git work tree: the on-disk tree filtered by the `.gitignore` files from the workspace
+   * root down, as git would filter it. Said once per hasher — one per build-workspace run.
+   */
+  private async listSourcesFromFileTree(packageDir: string): Promise<string[]> {
+    if (!this.fileTreeAnnounced) {
+      this.fileTreeAnnounced = true;
+      this.logger.info({
+        message: `sources from the file tree — not a git work tree (${this.workspacePath}); the .gitignore rules from the workspace root down apply`,
+      });
+    }
+    const relPath = path.relative(this.workspacePath, packageDir);
+    if (relPath.startsWith('..') || path.isAbsolute(relPath)) {
+      throw new Error(
+        `${packageDir} is outside the workspace (${this.workspacePath}) whose .gitignore rules would apply to it`
+      );
+    }
+    const scopes: IgnoreScope[] = [];
+    const segments = relPath === '' ? [] : relPath.split(path.sep);
+    for (let depth = 0; depth < segments.length; depth++) {
+      const dir = path.join(this.workspacePath, ...segments.slice(0, depth));
+      const rules = await PackageTreeHasher.ignoreRules(dir);
+      if (rules) {
+        scopes.push({ dir, rules });
+      }
+    }
+    const found: string[] = [];
+    await PackageTreeHasher.collectUnignored(packageDir, packageDir, scopes, found);
+    return found;
+  }
+
+  /**
+   * Depth-first under `dir` with the `.gitignore` files above it (shallowest first) plus its
+   * own: a directory git would exclude is never entered, so nothing beneath it can be
+   * re-included; `node_modules`, `.git`, a nested git work tree, and Finder litter are never
+   * sources.
+   */
+  private static async collectUnignored(
+    packageDir: string,
+    dir: string,
+    above: IgnoreScope[],
+    found: string[]
+  ): Promise<void> {
+    const own = await PackageTreeHasher.ignoreRules(dir);
+    const scopes = own ? [...above, { dir, rules: own }] : above;
+    const dirents = await fs.readdir(dir, { withFileTypes: true });
+    if (dir !== packageDir && dirents.some((dirent) => dirent.name === '.git')) {
+      return;
+    }
+    for (const dirent of dirents) {
+      const entryPath = path.join(dir, dirent.name);
+      if (dirent.isDirectory()) {
+        if (
+          !PackageTreeHasher.PRUNED_DIR_NAMES.has(dirent.name) &&
+          !PackageTreeHasher.ignored(scopes, entryPath, true)
+        ) {
+          await PackageTreeHasher.collectUnignored(packageDir, entryPath, scopes, found);
+        }
+      } else if (
+        (dirent.isFile() || dirent.isSymbolicLink()) &&
+        dirent.name !== PackageTreeHasher.FINDER_LITTER &&
+        !PackageTreeHasher.ignored(scopes, entryPath, false)
+      ) {
+        found.push(path.relative(packageDir, entryPath));
+      }
+    }
+  }
+
+  /**
+   * Git's precedence: every `.gitignore` above the entry is consulted and the deepest one with
+   * a matching pattern decides (within one file the last matching pattern wins — `ignore`'s
+   * part). A directory is tested with its trailing slash so `dir/` patterns match it.
+   */
+  private static ignored(scopes: IgnoreScope[], entryPath: string, isDirectory: boolean): boolean {
+    let ignored = false;
+    for (const scope of scopes) {
+      const relPath = path.relative(scope.dir, entryPath).split(path.sep).join('/') + (isDirectory ? '/' : '');
+      const verdict = scope.rules.test(relPath);
+      if (verdict.ignored) {
+        ignored = true;
+      } else if (verdict.unignored) {
+        ignored = false;
+      }
+    }
+    return ignored;
+  }
+
+  /** the directory's `.gitignore` as a matcher; undefined when it has none */
+  private static async ignoreRules(dir: string): Promise<Ignore | undefined> {
+    let content: string;
+    try {
+      content = await fs.readFile(path.join(dir, '.gitignore'), 'utf-8');
+    } catch (e: any) {
+      if (e.code === 'ENOENT') {
+        return undefined;
+      }
+      throw e;
+    }
+    return ignore().add(content);
+  }
+
+  /** a `.git` — the directory, or a worktree's / submodule's pointer file — in `dir` or any ancestor */
+  private static async insideGitWorkTree(dir: string): Promise<boolean> {
+    for (let current = dir; ; current = path.dirname(current)) {
+      try {
+        await fs.lstat(path.join(current, '.git'));
+        return true;
+      } catch (e: any) {
+        if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') {
+          throw e;
+        }
+      }
+      if (path.dirname(current) === current) {
+        return false;
+      }
+    }
   }
 
   private async hashFiles(packageDir: string, relPaths: string[], sourceRules: boolean): Promise<string> {

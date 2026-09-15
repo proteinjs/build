@@ -2,18 +2,24 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import { spawnSync } from 'child_process';
+import { DefaultLogWriter, Log, Logger } from '@proteinjs/logger';
 import { PackageTreeHasher } from '../src/PackageTreeHasher';
 
 /**
  * The source/output split is git's: tracked + unignored-untracked = sources, ignored = outputs,
  * node_modules in neither. Release bookkeeping (version fields, workspace-member lock entries,
- * CHANGELOG.md) never moves a hash; anything that can change a compiled byte does.
+ * CHANGELOG.md) never moves a hash; anything that can change a compiled byte does. Outside a
+ * git work tree the same split is read off the file tree under the .gitignore rules — and it
+ * must agree with git's, hash for hash.
  */
 describe('PackageTreeHasher', () => {
   let repo: string;
   let packageDir: string;
+  let hasher: PackageTreeHasher;
+  let logLines: string[];
   const members = new Set(['@ws/lib', '@ws/other', 'root']);
-  const hasher = new PackageTreeHasher(members);
+  const fileTreeNotices = () =>
+    logLines.filter((line) => line.includes('sources from the file tree — not a git work tree'));
 
   const write = async (relPath: string, content: string) => {
     const filePath = path.join(packageDir, relPath);
@@ -31,6 +37,15 @@ describe('PackageTreeHasher', () => {
   beforeEach(async () => {
     repo = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'tree-hasher-')));
     packageDir = path.join(repo, 'packages', 'consumer');
+    logLines = [];
+    hasher = new PackageTreeHasher(members, {
+      workspacePath: repo,
+      logger: new Logger({
+        name: 'test',
+        logLevel: 'info',
+        logWriter: { write: (log: Log) => logLines.push(log.message ?? '') } as unknown as DefaultLogWriter,
+      }),
+    });
     git('init', '-q');
     await fs.writeFile(path.join(repo, '.gitignore'), 'node_modules/\ndist/\n');
     await write(
@@ -216,13 +231,64 @@ describe('PackageTreeHasher', () => {
     });
   });
 
-  it('a package outside any git work tree is an error that names the rule', async () => {
-    const loose = await fs.mkdtemp(path.join(os.tmpdir(), 'tree-hasher-loose-'));
-    try {
-      await fs.writeFile(path.join(loose, 'package.json'), '{}');
-      await expect(hasher.hash(loose)).rejects.toThrow(/derives each package's sources from git/);
-    } finally {
-      await fs.rm(loose, { recursive: true, force: true });
-    }
+  it('inside a git work tree git is the source of truth: a file ignored only by .git/info/exclude is not a source', async () => {
+    const before = await hasher.hash(packageDir);
+    await fs.mkdir(path.join(repo, '.git', 'info'), { recursive: true });
+    await fs.appendFile(path.join(repo, '.git', 'info', 'exclude'), 'local-only.txt\n');
+    await write('local-only.txt', 'present on disk; no .gitignore says a word about it');
+
+    const after = await hasher.hash(packageDir);
+
+    expect(after.sourceHash).toBe(before.sourceHash);
+    expect(after.outputHash).not.toBe(before.outputHash);
+    expect(fileTreeNotices()).toHaveLength(0);
+  });
+
+  describe('outside a git work tree (the tree without its .git, as a container image build context carries it)', () => {
+    it('the sources are the file tree under the .gitignore rules — the set git listed, hash for hash — and the hasher says so once', async () => {
+      const fromGit = await hasher.hash(packageDir);
+      expect(fileTreeNotices()).toHaveLength(0);
+      await fs.rm(path.join(repo, '.git'), { recursive: true, force: true });
+
+      expect(await hasher.hash(packageDir)).toEqual(fromGit);
+
+      // dist/ and node_modules/ are ignored by the workspace root's .gitignore: dist is an
+      // output, node_modules is neither; src is a source.
+      await write('dist/extra.js', 'x');
+      const withOutput = await hasher.hash(packageDir);
+      expect(withOutput.sourceHash).toBe(fromGit.sourceHash);
+      expect(withOutput.outputHash).not.toBe(fromGit.outputHash);
+      await write('node_modules/left/index.js', 'module.exports = 2;');
+      expect(await hasher.hash(packageDir)).toEqual(withOutput);
+      await write('src/new.ts', 'export const n = 1;');
+      const withSource = await hasher.hash(packageDir);
+      expect(withSource.sourceHash).not.toBe(withOutput.sourceHash);
+      expect(withSource.outputHash).toBe(withOutput.outputHash);
+      expect(fileTreeNotices()).toHaveLength(1);
+    });
+
+    it('agrees with git on nested .gitignore files and negations: the deeper file wins', async () => {
+      await fs.appendFile(path.join(repo, '.gitignore'), '*.tmp\n');
+      await write('.gitignore', '!important.tmp\n');
+      await write('src/.gitignore', 'scratch/\n');
+      await write('important.tmp', 'a source: re-included below the root rule');
+      await write('other.tmp', 'an output: the root rule stands');
+      await write('src/scratch/note.ts', 'an output: excluded by the nested file');
+      await write('src/kept/note.ts', 'a source');
+      const fromGit = await hasher.hash(packageDir);
+      await fs.rm(path.join(repo, '.git'), { recursive: true, force: true });
+
+      expect(await hasher.hash(packageDir)).toEqual(fromGit);
+
+      await write('important.tmp', 'a source, edited');
+      const afterSource = await hasher.hash(packageDir);
+      expect(afterSource.sourceHash).not.toBe(fromGit.sourceHash);
+      expect(afterSource.outputHash).toBe(fromGit.outputHash);
+      await write('other.tmp', 'an output, edited');
+      await write('src/scratch/note.ts', 'an output, edited');
+      const afterOutputs = await hasher.hash(packageDir);
+      expect(afterOutputs.sourceHash).toBe(afterSource.sourceHash);
+      expect(afterOutputs.outputHash).not.toBe(afterSource.outputHash);
+    });
   });
 });

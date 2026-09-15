@@ -141,7 +141,10 @@ export class WorkspaceBuilder {
       elapsedMs: 0,
     };
     this.metadata = await PackageUtil.getWorkspaceMetadata(this.workspacePath);
-    this.hasher = new PackageTreeHasher(new Set(Object.keys(this.metadata.packageMap)));
+    this.hasher = new PackageTreeHasher(new Set(Object.keys(this.metadata.packageMap)), {
+      workspacePath: this.workspacePath,
+      logger: this.logger,
+    });
     this.toolchain = { node: process.versions.node.split('.')[0], npm: await WorkspaceBuilder.npmMajor() };
     const packageNames = this.buildSet();
     this.summary.packages = packageNames;
