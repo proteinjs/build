@@ -44,7 +44,7 @@ export type DockerGuardianOptions = {
 };
 
 /**
- * Docker guardianship (RESOURCE_GOVERNANCE §B.4): the wedge-kill-relaunch repair as ONE scripted,
+ * Docker guardianship: the wedge-kill-relaunch repair as ONE scripted,
  * logged, deterministic act — still OWNER-GATED per the machine-services single-owner rule (the
  * script exists so the act is one reviewed command, not an improvisation; D-3's split: the PROBE
  * runs automatically, the REPAIR stays the owner's). Every step prints and lands in a receipt log.

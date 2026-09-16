@@ -11,7 +11,7 @@ import { EstateReaper } from './EstateReaper';
 import { LogGovernor } from './LogGovernor';
 
 export type ServePackageOptions = {
-  /** Workspace package whose process this supervises (e.g. @n3xa/app-server). */
+  /** Workspace package whose process this supervises (e.g. @acme/app-server). */
   packageName: string;
   /** Command to run in the package dir (e.g. ['node', 'dist/generated/index.js']). */
   command: string[];
@@ -339,7 +339,7 @@ export class ServePackageSupervisor {
   private consecutiveRespawns = 0;
   private respawnDueAt = 0;
   private respawnTimer?: NodeJS.Timeout;
-  // Ambient estate registration (RESOURCE_GOVERNANCE §B.1): the supervisor registers its estate
+  // Ambient estate registration: the supervisor registers its estate
   // on launch and heartbeats on the existing poll cadence (throttled), so the local reaper/valve
   // machinery can SEE this dev server without any launch-script cooperation. Strictly best-effort:
   // estate bookkeeping must never own the lane (every call is wrapped; failures log once).

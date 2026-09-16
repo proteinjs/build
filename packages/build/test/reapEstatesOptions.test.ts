@@ -13,13 +13,13 @@ describe('reapEstatesOptions', () => {
   test('--db-fence, --db-orphan-days and --db-client-from land on the database class', () => {
     const options = parse([
       '--apply',
-      '--db-fence=n3xa-app/n3xa-dev/est-',
+      '--db-fence=acme-app/acme-dev/est-',
       '--db-orphan-days=7',
       '--db-client-from=/repo/packages/app/packages/server,/other/estate',
     ]);
     expect(options.apply).toBe(true);
     expect(options.databases).toEqual({
-      fence: { project: 'n3xa-app', instance: 'n3xa-dev', prefix: 'est-' },
+      fence: { project: 'acme-app', instance: 'acme-dev', prefix: 'est-' },
       orphanAfterMs: 7 * 24 * 3600_000,
       resolvePaths: ['/repo/packages/app/packages/server', '/other/estate'],
     });
@@ -29,8 +29,8 @@ describe('reapEstatesOptions', () => {
     expect(parse(['--apply']).databases).toBeUndefined();
     expect(() => parse(['--db-orphan-days=7'])).toThrow(/--db-orphan-days needs --db-fence/);
     expect(() => parse(['--db-client-from=/x'])).toThrow(/--db-client-from needs --db-fence/);
-    expect(() => parse(['--db-fence=n3xa-dev/est-'])).toThrow(/--db-fence must be <project>\/<instance>\/<prefix>/);
-    expect(() => parse(['--db-fence=n3xa-app/n3xa-dev/est-', '--db-orphan-days=0'])).toThrow(/positive number of days/);
+    expect(() => parse(['--db-fence=acme-dev/est-'])).toThrow(/--db-fence must be <project>\/<instance>\/<prefix>/);
+    expect(() => parse(['--db-fence=acme-app/acme-dev/est-', '--db-orphan-days=0'])).toThrow(/positive number of days/);
   });
 
   test('--owner and --ttl land as before', () => {

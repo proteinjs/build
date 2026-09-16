@@ -6,7 +6,7 @@ import { EstateReaper } from '../src/EstateReaper';
 import { PressureValve } from '../src/PressureValve';
 
 /**
- * The local pressure valve (RESOURCE_GOVERNANCE §B.3): soft sweeps + notes, hard flips the
+ * The local pressure valve: soft sweeps + notes, hard flips the
  * refusal flag, memory pressure turns the -w=1 advisory the jest preset reads — and the valve
  * NEVER kills anything (D-3's local half). Facts are seam-injected; acts are asserted as
  * outcomes (files on disk, registry refusals, sweep receipts).

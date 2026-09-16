@@ -8,7 +8,7 @@ import { EstateReaper } from '../src/EstateReaper';
 import { SpannerAdminClient } from '../src/EstateDatabaseSweep';
 
 /**
- * The reaper's safety rules MUST bite (RESOURCE_GOVERNANCE §B.2): an estate with unpushed git
+ * The reaper's safety rules MUST bite: an estate with unpushed git
  * work survives, a live-port estate survives, a live cwd-verified pid survives (surfaced, never
  * killed), and a dead-by-contract estate reaps — asserted as OUTCOMES (dirs on disk, registry
  * files, receipts), with real git fixtures and real sockets/processes where liveness is claimed.
@@ -343,8 +343,8 @@ describe('EstateReaper', () => {
     expect(await registry.get(record.id)).toBeDefined();
   });
 
-  // ── The DATABASE resource class (DEV_ESTATES.md §3.3) ─────────────────────
-  const FENCE = { project: 'n3xa-app', instance: 'n3xa-dev', prefix: 'est-' };
+  // ── The DATABASE resource class ─────────────────────
+  const FENCE = { project: 'acme-app', instance: 'acme-dev', prefix: 'est-' };
   const KEY = Buffer.from('{"type":"service_account"}').toString('base64');
   /** A fake Spanner admin client over `names`; records drops as OUTCOMES. */
   const fakeSpanner = (names: string[], ageDays = 30) => {
@@ -356,7 +356,7 @@ describe('EstateReaper', () => {
           names
             .filter((name) => !dropped.includes(name))
             .map((name) => ({
-              formattedName_: `projects/n3xa-app/instances/${instanceName}/databases/${name}`,
+              formattedName_: `projects/acme-app/instances/${instanceName}/databases/${name}`,
               metadata: {
                 createTime: { seconds: Math.floor((Date.now() - ageDays * 24 * 3600_000) / 1000), nanos: 0 },
               },
@@ -374,10 +374,10 @@ describe('EstateReaper', () => {
   };
 
   test('a dead estate DROPS the database it names with the row (after dirs, before unregister); orphans past the horizon go too', async () => {
-    const spanner = fakeSpanner(['est-lane-db', 'est-stray', 'brent-dev-2']);
-    const { record, estateDir } = await registerStale({ databases: ['n3xa-app/n3xa-dev/est-lane-db'] });
+    const spanner = fakeSpanner(['est-lane-db', 'est-stray', 'main-dev-2']);
+    const { record, estateDir } = await registerStale({ databases: ['acme-app/acme-dev/est-lane-db'] });
     const pinnedRow = await registry.register(
-      { owner: 'lane-pinned', pinned: true, databases: ['n3xa-app/n3xa-dev/est-pinned'] },
+      { owner: 'lane-pinned', pinned: true, databases: ['acme-app/acme-dev/est-pinned'] },
       { enforceValve: false }
     );
 
@@ -389,16 +389,16 @@ describe('EstateReaper', () => {
 
     const report = result.reports.find((r) => r.estate.id === record.id)!;
     expect(report.verdict).toBe('reaped');
-    expect(report.acts).toContain('drop database n3xa-app/n3xa-dev/est-lane-db');
+    expect(report.acts).toContain('drop database acme-app/acme-dev/est-lane-db');
     expect(await exists(estateDir)).toBe(false);
     expect(await registry.get(record.id)).toBeUndefined();
-    // The orphan sweep ran after the estate pass: the stray (no row, 30d) dropped; the founder's
+    // The orphan sweep ran after the estate pass: the stray (no row, 30d) dropped; the operator's own
     // database outside the prefix untouched; the pinned row's database protected by its row.
     expect(spanner.dropped).toEqual(['est-lane-db', 'est-stray']);
     expect(result.databases!.acts).toEqual([
-      'drop orphan database n3xa-app/n3xa-dev/est-stray (30.0d old, no registered estate)',
+      'drop orphan database acme-app/acme-dev/est-stray (30.0d old, no registered estate)',
     ]);
-    expect(JSON.stringify(result.databases)).not.toContain('brent-dev-2');
+    expect(JSON.stringify(result.databases)).not.toContain('main-dev-2');
     expect(await registry.get(pinnedRow.id)).toBeDefined();
     const receipts = await fs.readFile(path.join(registry.logsDir(), 'reap.log'), 'utf-8');
     expect(receipts).toContain('"estate":"(orphan-databases)"');
@@ -407,7 +407,7 @@ describe('EstateReaper', () => {
 
   test('a database on a dead row with NO fence configured is a refusal: the row stays, nothing drops', async () => {
     const spanner = fakeSpanner(['est-lane-db']);
-    const { record } = await registerStale({ databases: ['n3xa-app/n3xa-dev/est-lane-db'] });
+    const { record } = await registerStale({ databases: ['acme-app/acme-dev/est-lane-db'] });
 
     const result = await new EstateReaper({
       registry,
@@ -424,7 +424,7 @@ describe('EstateReaper', () => {
 
   test('a PARTIAL estate (unpushed work) keeps its database with its refused dirs — data goes only when the whole estate does', async () => {
     const spanner = fakeSpanner(['est-lane-db']);
-    const { record, estateDir } = await registerStale({ databases: ['n3xa-app/n3xa-dev/est-lane-db'] });
+    const { record, estateDir } = await registerStale({ databases: ['acme-app/acme-dev/est-lane-db'] });
     const repoDir = await initPushedRepo(path.join(estateDir, 'repo'));
     await fs.writeFile(path.join(repoDir, 'unpushed.ts'), 'export const wip = 1;\n');
     git(repoDir, ['add', '.']);
@@ -439,15 +439,15 @@ describe('EstateReaper', () => {
     expect(result.reports[0].verdict).toBe('partial');
     expect(spanner.dropped).toEqual([]);
     const retained = await registry.get(record.id);
-    expect(retained!.databases).toEqual(['n3xa-app/n3xa-dev/est-lane-db']);
+    expect(retained!.databases).toEqual(['acme-app/acme-dev/est-lane-db']);
     expect(retained!.note).toMatch(/1 database\(s\) with them/);
     // Still named by a row → the orphan sweep keeps it, whatever its age.
-    expect(result.databases!.kept).toEqual(['n3xa-app/n3xa-dev/est-lane-db: named by a registered estate']);
+    expect(result.databases!.kept).toEqual(['acme-app/acme-dev/est-lane-db: named by a registered estate']);
   });
 
   test("an OWNER exit sweep drops the owner's database but never runs the orphan sweep", async () => {
     const spanner = fakeSpanner(['est-mine', 'est-stray']);
-    const { record } = await registerStale({ owner: 'lane-mine', databases: ['n3xa-app/n3xa-dev/est-mine'] });
+    const { record } = await registerStale({ owner: 'lane-mine', databases: ['acme-app/acme-dev/est-mine'] });
 
     const result = await new EstateReaper({
       registry,
@@ -467,10 +467,10 @@ describe('EstateReaper', () => {
     const liveDir = path.join(fixtureRoot, 'live-estate');
     await fs.mkdir(liveDir, { recursive: true });
     const live = await registry.register(
-      { owner: 'lane-live', dirs: [liveDir], databases: ['n3xa-app/n3xa-dev/est-shared'] },
+      { owner: 'lane-live', dirs: [liveDir], databases: ['acme-app/acme-dev/est-shared'] },
       { enforceValve: false }
     );
-    const { record: dead } = await registerStale({ owner: 'lane-dead', databases: ['n3xa-app/n3xa-dev/est-shared'] });
+    const { record: dead } = await registerStale({ owner: 'lane-dead', databases: ['acme-app/acme-dev/est-shared'] });
 
     const result = await new EstateReaper({
       registry,
@@ -481,12 +481,12 @@ describe('EstateReaper', () => {
     const deadReport = result.reports.find((r) => r.estate.id === dead.id)!;
     expect(deadReport.verdict).toBe('failed');
     expect(deadReport.refusals.join('\n')).toMatch(
-      /database n3xa-app\/n3xa-dev\/est-shared: also named by registered estate '.*' \(owner lane-live\) — not dropped/
+      /database acme-app\/acme-dev\/est-shared: also named by registered estate '.*' \(owner lane-live\) — not dropped/
     );
     expect(spanner.dropped).toEqual([]); // the live estate's database survived
     expect(await registry.get(dead.id)).toBeDefined(); // the refusal stays visible on the row
     expect(await registry.get(live.id)).toBeDefined();
-    expect(result.databases!.kept).toEqual(['n3xa-app/n3xa-dev/est-shared: named by a registered estate']);
+    expect(result.databases!.kept).toEqual(['acme-app/acme-dev/est-shared: named by a registered estate']);
   });
 
   test('a credential DENIED the list never wedges the sweep: that row is retained with the refusal, later estates still reap, receipts land, the orphan sweep says why it skipped', async () => {
@@ -503,7 +503,7 @@ describe('EstateReaper', () => {
       }),
       close: () => undefined,
     };
-    const withDb = await registerStale({ owner: 'lane-db', databases: ['n3xa-app/n3xa-dev/est-lane-db'] });
+    const withDb = await registerStale({ owner: 'lane-db', databases: ['acme-app/acme-dev/est-lane-db'] });
     const plain = await registerStale({ owner: 'lane-plain' });
 
     const result = await new EstateReaper({
@@ -515,7 +515,7 @@ describe('EstateReaper', () => {
     const dbReport = result.reports.find((r) => r.estate.id === withDb.record.id)!;
     expect(dbReport.verdict).toBe('failed');
     expect(dbReport.refusals.join('\n')).toMatch(
-      /could not list n3xa-app\/n3xa-dev \(.*spanner\.databases\.list.*\) — not dropped/
+      /could not list acme-app\/acme-dev \(.*spanner\.databases\.list.*\) — not dropped/
     );
     expect(await registry.get(withDb.record.id)).toBeDefined();
     const plainReport = result.reports.find((r) => r.estate.id === plain.record.id)!;

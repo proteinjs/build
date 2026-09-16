@@ -488,7 +488,7 @@ describe('ServePackageSupervisor', () => {
   });
 
   it('node_modules identity churn restarts through the gated path, even when the churn settles back to the boot-time state', async () => {
-    // The blind-spot class (POST_RELEASE_QUEUE item 22): a bare npm i files no restart-request
+    // The blind-spot class: a bare npm i files no restart-request
     // and touches no dist — the child's watcher compiles through the node_modules hole with
     // boot-time loader config and the broken bundle STICKS, because the post-op re-symlink
     // restores identical mtimes AND the identical symlink set. Detection must therefore latch
@@ -1818,7 +1818,7 @@ describe('ServePackageSupervisor', () => {
     );
   });
 
-  describe('ambient estate registration (RESOURCE_GOVERNANCE §B.1)', () => {
+  describe('ambient estate registration', () => {
     const estatesDir = () => path.join(workspacePath, '.proteinjs', 'estates');
 
     const estateRecords = async () => {

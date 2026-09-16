@@ -49,7 +49,7 @@ See [Conventional Commits](https://conventionalcommits.org) for commit guideline
 
 ### Bug Fixes
 
-* **build): floor @proteinjs/util-node at ^1.11.0 — the workspace commands build the DECLARED workspace, never a crawl. build-workspace, test-workspace, watch-workspace, workspace clean, lint/symlink/verify all take their package set from PackageUtil.getWorkspaceMetadata, whose membership is now WorkspaceDeclaration's (util-node 1.11.0:** a root's lerna.json `packages` plus the root package.json `workspacePackages` extra roots name exactly its members; a declared root owns its subtree; a declared literal with no package.json and two leaf packages sharing a name are hard errors naming their paths. The public surface (bins, --skip/--no-build/--no-lint/--lint) is unchanged; a caret floor at 1.10.x would have let a committed lock keep the crawl. Why: n3xah/app Deploy to Test run 33747781291 (2026-09-03) built "1 package in workspace" because fixture package.jsons had shadowed the app's own packages in the crawl — the image shipped with no packages/server/dist. Suite: packages/build 17 suites / 202 tests green against util-node 1.11.0 (all pre-existing; the membership pins live in util-node's WorkspaceDeclaration.test.ts). ([b5113ee](https://github.com/proteinjs/build/commit/b5113eec4df9c550c708b629c1faaf67645e1327))
+* **build): floor @proteinjs/util-node at ^1.11.0 — the workspace commands build the DECLARED workspace, never a crawl. build-workspace, test-workspace, watch-workspace, workspace clean, lint/symlink/verify all take their package set from PackageUtil.getWorkspaceMetadata, whose membership is now WorkspaceDeclaration's (util-node 1.11.0:** a root's lerna.json `packages` plus the root package.json `workspacePackages` extra roots name exactly its members; a declared root owns its subtree; a declared literal with no package.json and two leaf packages sharing a name are hard errors naming their paths. The public surface (bins, --skip/--no-build/--no-lint/--lint) is unchanged; a caret floor at 1.10.x would have let a committed lock keep the crawl. Why: a consumer application's release build built "1 package in workspace" because fixture package.jsons had shadowed the app's own packages in the crawl — the image shipped with no packages/server/dist. Suite: packages/build 17 suites / 202 tests green against util-node 1.11.0 (all pre-existing; the membership pins live in util-node's WorkspaceDeclaration.test.ts). ([b5113ee](https://github.com/proteinjs/build/commit/b5113eec4df9c550c708b629c1faaf67645e1327))
 
 
 
@@ -82,7 +82,7 @@ See [Conventional Commits](https://conventionalcommits.org) for commit guideline
 
 ### Features
 
-* dev-log governor + idle emulator-container reaping (RESOURCE_GOVERNANCE §B scope additions) ([4b6c524](https://github.com/proteinjs/build/commit/4b6c524acb689df3271dece7d8de40a17836c26b))
+* dev-log governor + idle emulator-container reaping ([4b6c524](https://github.com/proteinjs/build/commit/4b6c524acb689df3271dece7d8de40a17836c26b))
 
 
 
@@ -94,7 +94,7 @@ See [Conventional Commits](https://conventionalcommits.org) for commit guideline
 ### Features
 
 * clean-worktrees — worktree lifecycle sweeper (shared classifier core + CLI door) ([969842c](https://github.com/proteinjs/build/commit/969842cd73d05ff4358e03fdd2922eaac63121a2))
-* local estate machinery (RESOURCE_GOVERNANCE §B) — registry, reaper, pressure valve, docker guardianship ([c1fa259](https://github.com/proteinjs/build/commit/c1fa2591e7a0aa62c974a960cf0ca351ddfcd08f))
+* local estate machinery — registry, reaper, pressure valve, docker guardianship ([c1fa259](https://github.com/proteinjs/build/commit/c1fa2591e7a0aa62c974a960cf0ca351ddfcd08f))
 
 
 

@@ -6,8 +6,8 @@ const { JestPresetBuilder } = require('../JestPresetBuilder');
 const { workers, workerIdleMemoryLimit } = require('../knobs');
 
 /**
- * Pins the shared preset's load-bearing behavior (DEV_INFRA_PLAN §13.6-§13.8):
- * - transpile-only ts-jest via the COMPILER option (tsconfig.isolatedModules), the §13.8 fix
+ * Pins the shared preset's load-bearing behavior:
+ * - transpile-only ts-jest via the COMPILER option (tsconfig.isolatedModules), the fix
  *   that removes the type-check heap that churned workers;
  * - the worker/memory convergence knobs (env-overridable per-package defaults);
  * - the ts-jest version floor (>=29.3.0 — older ts-jest ignores tsconfig.isolatedModules and

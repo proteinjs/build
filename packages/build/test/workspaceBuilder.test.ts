@@ -6,7 +6,7 @@ import { PackageStamps } from '../src/PackageStamps';
 import { WorkspaceFixture } from './WorkspaceFixture';
 
 /**
- * build-workspace: incremental + concurrent (DEV_INFRA_PLAN "Sandbox scalability levers" (c)).
+ * build-workspace: incremental + concurrent.
  * Every assertion is an OUTCOME — which dists changed, which build processes ran, in what order,
  * which are still alive — never "function X was called".
  *

@@ -9,7 +9,7 @@ import { EstateReaper, ReapEstatesResult } from './EstateReaper';
 import { LogGovernor, LogGovernorReport } from './LogGovernor';
 
 /**
- * Declared local watermarks (RESOURCE_GOVERNANCE D-2 defaults). Overridable via
+ * Declared local watermarks (the defaults). Overridable via
  * `<estate home>/valves.json` — configuration, visible and tunable, never code edits.
  */
 export type ValveConfig = {
@@ -58,9 +58,9 @@ export type PressureValveOptions = {
 };
 
 /**
- * The local pressure valve (`estate-watchdog`, RESOURCE_GOVERNANCE §B.3): a single-shot
+ * The local pressure valve (`estate-watchdog`): a single-shot
  * evaluation (launchd runs it every 15 minutes) of the declared disk/memory watermarks, acting
- * only inside the §B.5 judgment line:
+ * only inside the judgment line:
  *
  *  - SOFT: run the reaper's dead-by-contract sweep and write a pressure note the coordinator's
  *    next turn surfaces (`PRESSURE.md`).

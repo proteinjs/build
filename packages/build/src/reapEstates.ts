@@ -7,7 +7,7 @@ import { WorktreeCleaner } from './WorktreeCleaner';
 import { WorkspaceDoctor } from './WorkspaceDoctor';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 
-const HELP = `reap-estates — sweep DEAD estates (RESOURCE_GOVERNANCE §B.2; PROCESS.md hygiene ruling, mechanized)
+const HELP = `reap-estates — sweep DEAD estates (the workspace hygiene rule, mechanized)
 
 Sweeps the estate registry (~/.proteinjs/estates/) on schedule and on demand. The safety rules are the
 ruling's, mechanized — refusals are LISTED, never overridden, and there is no --force:
@@ -33,21 +33,21 @@ Optional args:
                        briefs mandate). Safety rules on dirs still apply.
 --ttl=<hours>          dead-by-contract heartbeat TTL (default 36)
 --db-fence=<project>/<instance>/<prefix>
-                       enable the DATABASE class (DEV_ESTATES.md §3.3): a reaped estate's \`databases\`
+                       enable the DATABASE class: a reaped estate's \`databases\`
                        (rows record <project>/<instance>/<database>) drop with it, and fenced databases
                        that NO registered estate names drop once older than --db-orphan-days. Never a
                        name outside the prefix, never a database a row names (pins protect it), never
                        an unaged one. Without a fence the class is inert and says so. The client is
                        borrowed from the estates' own app installs; the credential is GCP_SA_KEY from
                        the environment (source ~/.zshrc) — nothing about it is ever printed.
-                       ie: --db-fence=n3xa-app/n3xa-dev/est-
+                       ie: --db-fence=acme-app/acme-dev/est-
 --db-orphan-days=<n>   the orphan horizon in days (default 7)
 --db-client-from=<dir>[,<dir>]
                        durable dirs to borrow @google-cloud/spanner from, tried after the cwd and the
                        registered estates' own dirs — the scheduled job's cwd has no app install, and
                        once the estates that would lend the client are reaped the orphan sweep would
                        otherwise be inert in the very case it exists for.
-                       ie: --db-client-from=/Users/<you>/repos/farm/n3xa2/packages/app/packages/server
+                       ie: --db-client-from=/Users/<you>/repos/app/packages/server
 --no-worktrees         skip the delegated clean-worktrees pass
 --root=/path           workspace root for the worktree pass (default: discovered from cwd)
 --json                 machine-readable result on stdout

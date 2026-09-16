@@ -3,7 +3,7 @@ import { Logger } from '@proteinjs/logger';
 /**
  * The fence every database act must sit inside: one Spanner instance (`project/instance`) and one
  * name prefix. A reference outside it is refused by name, never trusted to the credential's scope
- * (the credential that boots a dev server may be project-wide databaseAdmin — DEV_ESTATES.md §2).
+ * (the credential that boots a dev server may be project-wide databaseAdmin).
  */
 export type DatabaseFence = { project: string; instance: string; prefix: string };
 
@@ -51,7 +51,7 @@ export type DatabaseSweepReport = {
 };
 
 /**
- * The reaper's DATABASE resource class (plans/DEV_ESTATES.md §3.3): a database is one more thing
+ * The reaper's DATABASE resource class: a database is one more thing
  * an estate owns and the reaper drops with the row — fenced by instance + name prefix in code,
  * whatever the credential could do.
  *
@@ -102,8 +102,8 @@ export class EstateDatabaseSweep {
       return report;
     }
     try {
-      // A credential that is PRESENT but denied the list (dev-83@ today — measured, DEV_ESTATES.md
-      // §10 correction 1) is a refusal on this row, never a throw out of the whole sweep.
+      // A credential that is PRESENT but denied the list (measured on one dev-server
+      // identity) is a refusal on this row, never a throw out of the whole sweep.
       let existing: Set<string>;
       try {
         existing = new Set((await this.listDatabases(client.instance)).map((database) => database.name));

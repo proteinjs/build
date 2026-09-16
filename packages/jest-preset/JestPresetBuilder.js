@@ -3,13 +3,13 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * Builds the shared jest preset (DEV_INFRA_PLAN §13.6 centralization ruling: test config is
+ * Builds the shared jest preset (the centralization rule: test config is
  * inherited, never repeated). Every repo's package jest config becomes
  * `preset: '@proteinjs/jest-preset'` plus its own overrides, each with a named reason.
  *
  * What the preset carries:
  * - Transpile-only ts-jest via the COMPILER option (`tsconfig: { isolatedModules: true }`
- *   inline-merged over the package tsconfig). This is the §13.8 categorical fix: full
+ *   inline-merged over the package tsconfig). This is the categorical fix: full
  *   type-check held every dependency's d.ts graph in worker heap (1.4-2.6 GB/suite), tripping
  *   the worker-memory cap after nearly every heavy suite so each next suite re-paid the whole
  *   worker boot — the measured "31s per-suite floor". Type safety is NOT lost: each package's

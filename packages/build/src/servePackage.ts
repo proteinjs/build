@@ -8,7 +8,7 @@ import { primaryLogColor, secondaryLogColor } from './logColors';
  * Supervise a package's dev process: restart it when its transitive workspace closure's dists
  * change, deferring while holds are active (see ServePackageSupervisor for the holds protocol).
  *
- * ie: `SERVER_PORT=3002 npx serve-package @n3xa/app-server -- node dist/generated/index.js`
+ * ie: `SERVER_PORT=3002 npx serve-package @acme/app-server -- node dist/generated/index.js`
  *
  * The command after `--` runs in the package's directory with the caller's env passed through
  * verbatim (ports/db names stay the caller's concern), plus SERVE_PACKAGE_IPC pointing at the

@@ -5,7 +5,7 @@ import { DockerGuardian } from '../src/DockerGuardian';
 import { EstateRegistry } from '../src/EstateRegistry';
 
 /**
- * Docker guardianship (RESOURCE_GOVERNANCE §B.4): the repair is ONE scripted, logged act that
+ * Docker guardianship: the repair is ONE scripted, logged act that
  * stays OWNER-GATED — a wedged daemon without --yes gets a plan, never an act. Runner injected;
  * assertions are the commands actually issued plus the receipt on disk.
  */
@@ -127,7 +127,7 @@ describe('DockerGuardian', () => {
     const calls: Call[] = [];
     const guardian = new DockerGuardian({
       registry,
-      standingSet: ['n3xa-redis-node-0-1', 'mariadb'],
+      standingSet: ['redis-node-0-1', 'mariadb'],
       run: async (command, args) => {
         calls.push({ command, args });
         if (command === 'docker' && args[0] === 'version') {
@@ -142,7 +142,7 @@ describe('DockerGuardian', () => {
     expect(result.acted).toBe(true);
     expect(calls).toContainEqual({
       command: 'docker',
-      args: ['update', '--restart', 'unless-stopped', 'n3xa-redis-node-0-1'],
+      args: ['update', '--restart', 'unless-stopped', 'redis-node-0-1'],
     });
     expect(calls).toContainEqual({ command: 'docker', args: ['update', '--restart', 'unless-stopped', 'mariadb'] });
     expect(result.steps.every((step) => step.ok)).toBe(true);

@@ -5,15 +5,15 @@ import { WorktreeCleaner, CleanWorktreesResult, WorktreeReport, KEEP_MARKER_FILE
 import { WorkspaceDoctor } from './WorkspaceDoctor';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 
-const HELP = `clean-worktrees — worktree lifecycle sweep (PROCESS.md "Temp and workspace hygiene", ruled 2026-08-20)
+const HELP = `clean-worktrees — worktree lifecycle sweep (the "Temp and workspace hygiene" rule)
 
 Worktree cleanup is part of the RELEASE PROCESS: a lane/leg worktree is reclaimable the moment its
 commits are train-visible (commits live in the repo's shared object store — deleting a worktree never
 deletes commits). Train close-out runs this sweep + prune across touched repos.
 
-This CLI is the operator door over the shared WorktreeCleaner core. The n3xa dev skill's workspace
-model inherits the same lifecycle: its workspace-management tooling (the product door) runs the SAME
-classifier against the workspaces/worktrees the skill manages.
+This CLI is the operator door over the shared WorktreeCleaner core. A consumer's workspace
+model can inherit the same lifecycle: its workspace-management tooling runs the SAME
+classifier against the workspaces/worktrees it manages.
 
 Enumerate -> classify -> remove -> prune -> report:
   safe     tip commit verified in the object store, no uncommitted non-lockfile dirt, not pinned.

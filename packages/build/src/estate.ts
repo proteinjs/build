@@ -4,7 +4,7 @@ import { EstateRecord, EstateRefusedError, EstateRegistry } from './EstateRegist
 import { EstateReaper } from './EstateReaper';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 
-const HELP = `estate — the local estate registry (RESOURCE_GOVERNANCE §B.1)
+const HELP = `estate — the local estate registry
 
 An ESTATE is the unit lanes launch and forget: ports, dirs (scratch/worktrees/logs), containers,
 pids, an owner label, and a liveness heartbeat. One JSON file per estate under ~/.proteinjs/estates/.

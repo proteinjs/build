@@ -504,7 +504,7 @@ describe('registry transient classification', () => {
   const { isNetworkError, retryOnNetworkError } = require('../src/PackageRegistry');
   it('treats GitHub Packages 403 flaps as retryable transients', () => {
     expect(
-      isNetworkError({ stderr: 'npm error 403 403 Forbidden - GET https://npm.pkg.github.com/@n3xah%2fthought-common' })
+      isNetworkError({ stderr: 'npm error 403 403 Forbidden - GET https://npm.pkg.github.com/@acme%2fexample-common' })
     ).toBe(true);
     expect(isNetworkError({ stderr: 'npm error code E403' })).toBe(true);
   });

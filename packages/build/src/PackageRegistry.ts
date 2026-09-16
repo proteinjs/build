@@ -18,7 +18,7 @@ const logger = new Logger({ name: cw.color('workspace:', primaryLogColor) + cw.c
 export interface PackageRegistry {
   /**
    * The full published version list for the package on ITS OWN registry (per-package
-   * publishConfig/.npmrc — e.g. @n3xah on npm.pkg.github.com, @proteinjs on npmjs).
+   * publishConfig/.npmrc — e.g. a private scope on npm.pkg.github.com, @proteinjs on npmjs).
    * Returns `[]` for a package that has never been published. Not cached here — the
    * resume/acceptance checks re-query and need registry truth, not a snapshot; callers
    * that can tolerate a run-scoped snapshot (the prior-run rewrite reads) cache on their
@@ -166,8 +166,8 @@ export class NpmPackageRegistry implements PackageRegistry {
 
 /**
  * Max published version across the FULL version list — never the `latest` dist-tag, which can
- * diverge from version order (2026-08-12 train: sibling workspaces' releases left `latest`
- * pointing below the numeric max on several @n3xah packages).
+ * diverge from version order (sibling workspaces' releases have left `latest`
+ * pointing below the numeric max on several packages).
  */
 export function maxPublishedVersion(versions: string[]): string | undefined {
   const valid = versions.filter((v) => semver.valid(v));

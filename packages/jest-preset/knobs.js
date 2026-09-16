@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Worker/memory convergence knobs (DEV_INFRA_PLAN §13.6/§13.8): package jest configs express
+ * Worker/memory convergence knobs: package jest configs express
  * their DEFAULT worker count / worker-memory cap through these helpers, and CI overrides both
  * through env — one env contract for every repo, no per-repo flag soup.
  *
@@ -11,9 +11,9 @@
  *   config literals beat the preset, so the env knob can never un-serialize them.
  * - `JEST_WORKER_IDLE_MEMORY_LIMIT`: overrides `workerIdleMemoryLimit(packageDefault)`; the
  *   preset's converged default is 1500MB (load-bearing against OOM on 7 GB runners — raise it
- *   only WITH a bigger runner, §13.8).
+ *   only WITH a bigger runner).
  *
- * Local pressure-valve advisory (RESOURCE_GOVERNANCE §B.3): under memory pressure the
+ * Local pressure-valve advisory: under memory pressure the
  * estate-watchdog drops `~/.proteinjs/advisories/jest-workers` (content: a worker count, i.e. `1`).
  * `workers()` honors it as a CEILING on the resolved count — the machine-output form of the
  * `-w=1` throttle practice. Env still wins outright (an explicit operator/CI choice), a stale

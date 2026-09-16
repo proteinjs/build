@@ -5,7 +5,7 @@ const path = require('path');
 const { workers } = require('../knobs');
 
 /**
- * The pressure-valve advisory (RESOURCE_GOVERNANCE §B.3): under memory pressure the local
+ * The pressure-valve advisory: under memory pressure the local
  * estate-watchdog drops `<estate home>/advisories/jest-workers`, and `workers()` honors it as a
  * CEILING — the machine-output form of the -w=1 throttle practice. Env stays the outright winner
  * (an explicit operator/CI choice), and a stale advisory (a watchdog that stopped running) is

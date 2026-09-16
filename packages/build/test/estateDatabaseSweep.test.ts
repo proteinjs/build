@@ -1,7 +1,7 @@
 import { EstateDatabaseSweep, SpannerAdminClient } from '../src/EstateDatabaseSweep';
 
 /**
- * The database class's fence MUST bite (DEV_ESTATES.md §3.3): a reaped row drops exactly the
+ * The database class's fence MUST bite: a reaped row drops exactly the
  * fenced databases it names; a name outside the prefix or off the fenced instance is refused,
  * never dropped; the orphan sweep drops only fenced databases no row names and only past the
  * horizon; unaged databases are kept; no credential = nothing happens and the skip is said.
@@ -10,7 +10,7 @@ import { EstateDatabaseSweep, SpannerAdminClient } from '../src/EstateDatabaseSw
 
 const DAY = 24 * 3600_000;
 const NOW = Date.UTC(2026, 8, 5, 12, 0, 0);
-const FENCE = { project: 'n3xa-app', instance: 'n3xa-dev', prefix: 'est-' };
+const FENCE = { project: 'acme-app', instance: 'acme-dev', prefix: 'est-' };
 const KEY = Buffer.from(JSON.stringify({ type: 'service_account', client_email: 'fake@example.iam' })).toString(
   'base64'
 );
@@ -65,40 +65,40 @@ describe('EstateDatabaseSweep — row-scoped drops', () => {
   test('drops exactly the fenced databases a row names; an absent one is a no-op act', async () => {
     const { instance, fake } = sweep([
       { name: 'est-lane-a', ageDays: 1 },
-      { name: 'brent-dev-2', ageDays: 100 },
+      { name: 'main-dev-2', ageDays: 100 },
     ]);
     const report = await instance.dropForEstate(
-      ['n3xa-app/n3xa-dev/est-lane-a', 'n3xa-app/n3xa-dev/est-lane-a-vm'],
+      ['acme-app/acme-dev/est-lane-a', 'acme-app/acme-dev/est-lane-a-vm'],
       true
     );
     expect(fake.dropped).toEqual(['est-lane-a']);
     expect(report.refusals).toEqual([]);
     expect(report.acts).toEqual([
-      'drop database n3xa-app/n3xa-dev/est-lane-a',
-      'database n3xa-app/n3xa-dev/est-lane-a-vm already absent',
+      'drop database acme-app/acme-dev/est-lane-a',
+      'database acme-app/acme-dev/est-lane-a-vm already absent',
     ]);
-    expect(fake.instancesAsked).toEqual(['n3xa-dev']);
+    expect(fake.instancesAsked).toEqual(['acme-dev']);
     expect(fake.closedCount()).toBe(1);
   });
 
-  test("a row naming a database outside the prefix (the founder's brent-dev-2) is REFUSED, never dropped", async () => {
+  test("a row naming a database outside the prefix (the operator's own main-dev-2) is REFUSED, never dropped", async () => {
     const { instance, fake } = sweep([
-      { name: 'brent-dev-2', ageDays: 100 },
+      { name: 'main-dev-2', ageDays: 100 },
       { name: 'est-ok', ageDays: 1 },
     ]);
-    const report = await instance.dropForEstate(['n3xa-app/n3xa-dev/brent-dev-2', 'n3xa-app/n3xa-dev/est-ok'], true);
+    const report = await instance.dropForEstate(['acme-app/acme-dev/main-dev-2', 'acme-app/acme-dev/est-ok'], true);
     expect(fake.dropped).toEqual(['est-ok']);
     expect(report.refusals).toHaveLength(1);
-    expect(report.refusals[0]).toMatch(/brent-dev-2: name outside the fenced prefix est-\*/);
+    expect(report.refusals[0]).toMatch(/main-dev-2: name outside the fenced prefix est-\*/);
   });
 
   test('a row naming a database on another instance (prod) is REFUSED — the fence is by instance, not by credential', async () => {
     const { instance, fake } = sweep([{ name: 'est-x', ageDays: 1 }]);
-    const report = await instance.dropForEstate(['n3xa-app/n3xa-prod/est-x', 'other-project/n3xa-dev/est-x'], true);
+    const report = await instance.dropForEstate(['acme-app/acme-prod/est-x', 'other-project/acme-dev/est-x'], true);
     expect(fake.dropped).toEqual([]);
     expect(report.acts).toEqual([]);
     expect(report.refusals).toHaveLength(2);
-    expect(report.refusals[0]).toMatch(/outside the fenced instance n3xa-app\/n3xa-dev/);
+    expect(report.refusals[0]).toMatch(/outside the fenced instance acme-app\/acme-dev/);
     expect(fake.instancesAsked).toEqual([]); // no client work at all for an all-refused row
   });
 
@@ -111,7 +111,7 @@ describe('EstateDatabaseSweep — row-scoped drops', () => {
 
   test('without a fence the class is inert: the row is refused, nothing is dropped', async () => {
     const { instance, fake } = sweep([{ name: 'est-x', ageDays: 1 }], { fence: undefined });
-    const report = await instance.dropForEstate(['n3xa-app/n3xa-dev/est-x'], true);
+    const report = await instance.dropForEstate(['acme-app/acme-dev/est-x'], true);
     expect(fake.dropped).toEqual([]);
     expect(report.refusals[0]).toMatch(/no database fence configured/);
   });
@@ -121,7 +121,7 @@ describe('EstateDatabaseSweep — row-scoped drops', () => {
       env: {},
       spannerFactory: undefined, // the default factory: GCP_SA_KEY absent → no client
     });
-    const report = await instance.dropForEstate(['n3xa-app/n3xa-dev/est-x'], true);
+    const report = await instance.dropForEstate(['acme-app/acme-dev/est-x'], true);
     expect(fake.dropped).toEqual([]);
     expect(report.refusals[0]).toMatch(/no GCP_SA_KEY in the environment/);
     expect(report.refusals[0]).not.toContain(KEY);
@@ -129,8 +129,8 @@ describe('EstateDatabaseSweep — row-scoped drops', () => {
 
   test('dry-run lists the drops and drops nothing', async () => {
     const { instance, fake } = sweep([{ name: 'est-x', ageDays: 1 }]);
-    const report = await instance.dropForEstate(['n3xa-app/n3xa-dev/est-x'], false);
-    expect(report.acts).toEqual(['drop database n3xa-app/n3xa-dev/est-x']);
+    const report = await instance.dropForEstate(['acme-app/acme-dev/est-x'], false);
+    expect(report.acts).toEqual(['drop database acme-app/acme-dev/est-x']);
     expect(fake.dropped).toEqual([]);
   });
 
@@ -151,7 +151,7 @@ describe('EstateDatabaseSweep — row-scoped drops', () => {
       fence: FENCE,
       env: { GCP_SA_KEY: KEY },
       spannerFactory: () => failing,
-    }).dropForEstate(['n3xa-app/n3xa-dev/est-x'], true);
+    }).dropForEstate(['acme-app/acme-dev/est-x'], true);
     expect(report.refusals[0]).toMatch(/drop failed \(PERMISSION_DENIED: nope\)/);
   });
 });
@@ -162,33 +162,33 @@ describe('EstateDatabaseSweep — the orphan sweep', () => {
     { name: 'est-young-orphan', ageDays: 2 }, // no row, young → kept with the counterfactual
     { name: 'est-registered', ageDays: 30 }, // a row names it → kept, whatever its age
     { name: 'est-unaged' }, // no createTime → never dropped
-    { name: 'brent-dev', ageDays: 700 }, // outside the prefix → never even judged
-    { name: 'brent-dev-2', ageDays: 200 },
+    { name: 'main-dev', ageDays: 700 }, // outside the prefix → never even judged
+    { name: 'main-dev-2', ageDays: 200 },
   ];
 
   test('drops only fenced, unregistered databases past the horizon; keeps the rest with reasons', async () => {
     const { instance, fake } = sweep(ROWS);
-    const report = await instance.sweepOrphans(new Set(['n3xa-app/n3xa-dev/est-registered']), true);
+    const report = await instance.sweepOrphans(new Set(['acme-app/acme-dev/est-registered']), true);
     expect(fake.dropped).toEqual(['est-old-orphan']);
     expect(report.acts).toEqual([
-      'drop orphan database n3xa-app/n3xa-dev/est-old-orphan (9.0d old, no registered estate)',
+      'drop orphan database acme-app/acme-dev/est-old-orphan (9.0d old, no registered estate)',
     ]);
     expect(report.kept).toEqual([
-      'n3xa-app/n3xa-dev/est-young-orphan: no registered estate, 2.0d old < 7.0d — would drop at the horizon (estate adopt --id … to keep it)',
-      'n3xa-app/n3xa-dev/est-registered: named by a registered estate',
-      'n3xa-app/n3xa-dev/est-unaged: no registered estate, age unknown — kept (never dropped unaged)',
+      'acme-app/acme-dev/est-young-orphan: no registered estate, 2.0d old < 7.0d — would drop at the horizon (estate adopt --id … to keep it)',
+      'acme-app/acme-dev/est-registered: named by a registered estate',
+      'acme-app/acme-dev/est-unaged: no registered estate, age unknown — kept (never dropped unaged)',
     ]);
     expect(report.refusals).toEqual([]);
     expect(report.skipped).toBeUndefined();
-    // The founder's databases are outside the family: not dropped, not judged, not named.
-    expect(JSON.stringify(report)).not.toContain('brent-dev');
+    // The operator's own databases are outside the family: not dropped, not judged, not named.
+    expect(JSON.stringify(report)).not.toContain('main-dev');
   });
 
   test('a database a PINNED (or any) row names is never an orphan, even at ten times the horizon', async () => {
     const { instance, fake } = sweep([{ name: 'est-pinned', ageDays: 70 }]);
-    const report = await instance.sweepOrphans(new Set(['n3xa-app/n3xa-dev/est-pinned']), true);
+    const report = await instance.sweepOrphans(new Set(['acme-app/acme-dev/est-pinned']), true);
     expect(fake.dropped).toEqual([]);
-    expect(report.kept).toEqual(['n3xa-app/n3xa-dev/est-pinned: named by a registered estate']);
+    expect(report.kept).toEqual(['acme-app/acme-dev/est-pinned: named by a registered estate']);
   });
 
   test('the horizon is configurable (D1) and dry-run drops nothing', async () => {
@@ -242,11 +242,11 @@ describe('EstateDatabaseSweep — a credential that cannot list (present but den
         },
       }),
     });
-    const report = await instance.dropForEstate(['n3xa-app/n3xa-dev/est-x'], true);
+    const report = await instance.dropForEstate(['acme-app/acme-dev/est-x'], true);
     expect(report.acts).toEqual([]);
     expect(report.refusals).toHaveLength(1);
     expect(report.refusals[0]).toMatch(
-      /databases n3xa-app\/n3xa-dev\/est-x: could not list n3xa-app\/n3xa-dev \(.*spanner\.databases\.list.*\) — not dropped/
+      /databases acme-app\/acme-dev\/est-x: could not list acme-app\/acme-dev \(.*spanner\.databases\.list.*\) — not dropped/
     );
     expect(closed).toBe(1);
   });
@@ -255,7 +255,7 @@ describe('EstateDatabaseSweep — a credential that cannot list (present but den
     const instance = new EstateDatabaseSweep({ fence: FENCE, env: { GCP_SA_KEY: KEY }, spannerFactory: () => denied });
     const report = await instance.sweepOrphans(new Set(), true);
     expect(report.skipped).toMatch(
-      /could not list n3xa-app\/n3xa-dev \(.*spanner\.databases\.list.*\) — orphan sweep skipped/
+      /could not list acme-app\/acme-dev \(.*spanner\.databases\.list.*\) — orphan sweep skipped/
     );
     expect(report.acts).toEqual([]);
   });
@@ -277,7 +277,7 @@ describe('EstateDatabaseSweep — the default client is borrowed from resolvePat
        class Spanner {
          constructor(options) { created.push(options); }
          instance(name) { return {
-           getDatabases: async () => [[{ formattedName_: 'projects/n3xa-app/instances/' + name + '/databases/est-old', metadata: { createTime: { seconds: ${Math.floor((NOW - 30 * DAY) / 1000)}, nanos: 0 } } }]],
+           getDatabases: async () => [[{ formattedName_: 'projects/acme-app/instances/' + name + '/databases/est-old', metadata: { createTime: { seconds: ${Math.floor((NOW - 30 * DAY) / 1000)}, nanos: 0 } } }]],
            database: (dbName) => ({ delete: async () => { dropped.push(dbName); } }),
          }; }
          close() {}
@@ -293,11 +293,11 @@ describe('EstateDatabaseSweep — the default client is borrowed from resolvePat
       });
       const report = await instance.sweepOrphans(new Set(), true);
       expect(report.skipped).toBeUndefined();
-      expect(report.acts).toEqual(['drop orphan database n3xa-app/n3xa-dev/est-old (30.0d old, no registered estate)']);
+      expect(report.acts).toEqual(['drop orphan database acme-app/acme-dev/est-old (30.0d old, no registered estate)']);
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const fake = require(path.join(moduleDir, 'index.js'));
       expect(fake.dropped).toEqual(['est-old']);
-      expect(fake.created[0].projectId).toBe('n3xa-app');
+      expect(fake.created[0].projectId).toBe('acme-app');
       expect(fake.created[0].credentials).toEqual({ type: 'service_account', client_email: 'fake@example.iam' });
     } finally {
       await fs.rm(root, { recursive: true, force: true });
@@ -317,16 +317,16 @@ describe('EstateDatabaseSweep — the default client is borrowed from resolvePat
 
 describe('EstateDatabaseSweep — references and fences', () => {
   test('parseRef / formatRef round-trip; parseFence names the shape on a bad flag', () => {
-    expect(EstateDatabaseSweep.parseRef('n3xa-app/n3xa-dev/est-x')).toEqual({
-      project: 'n3xa-app',
-      instance: 'n3xa-dev',
+    expect(EstateDatabaseSweep.parseRef('acme-app/acme-dev/est-x')).toEqual({
+      project: 'acme-app',
+      instance: 'acme-dev',
       name: 'est-x',
     });
-    expect(EstateDatabaseSweep.parseRef('n3xa-dev/est-x')).toBeUndefined();
+    expect(EstateDatabaseSweep.parseRef('acme-dev/est-x')).toBeUndefined();
     expect(EstateDatabaseSweep.parseRef('a//c')).toBeUndefined();
     expect(EstateDatabaseSweep.formatRef({ project: 'p', instance: 'i', name: 'n' })).toBe('p/i/n');
-    expect(EstateDatabaseSweep.parseFence('n3xa-app/n3xa-dev/est-')).toEqual(FENCE);
-    expect(() => EstateDatabaseSweep.parseFence('n3xa-dev/est-')).toThrow(
+    expect(EstateDatabaseSweep.parseFence('acme-app/acme-dev/est-')).toEqual(FENCE);
+    expect(() => EstateDatabaseSweep.parseFence('acme-dev/est-')).toThrow(
       /--db-fence must be <project>\/<instance>\/<prefix>/
     );
   });

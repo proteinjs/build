@@ -39,7 +39,7 @@ export const materializeDependencies = async (packageDir: string, logOptions?: L
  * installs (`--package-lock-only` composes on top), and the test fixtures' — reads these, so the
  * audit report and the funding notice — output nobody reads at this point, each a registry round
  * trip of its own — are off everywhere at once (installArgsOwner.test.ts reds a second owner).
- * Measured 2026-09-04 on the founder's Mac: with the audit call `npm install left-pad` took
+ * Measured on a developer Mac: with the audit call `npm install left-pad` took
  * 5 min 00 s (the advisories endpoint hung to npm's timeout), without it 0.3 s; the same stall
  * sat inside every package install of a cold `build-workspace`, and inside the pullForward
  * fixture's bare installs, which timed the suite out at the R7 departure.

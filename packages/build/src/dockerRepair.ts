@@ -3,7 +3,7 @@ import { Logger } from '@proteinjs/logger';
 import { DockerGuardian } from './DockerGuardian';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 
-const HELP = `docker-repair — Docker guardianship (RESOURCE_GOVERNANCE §B.4)
+const HELP = `docker-repair — Docker guardianship
 
 The wedge-kill-relaunch repair as ONE scripted, logged act — still OWNER-GATED per the
 machine-services single-owner rule: the PROBE runs freely; without --yes a wedged daemon gets a

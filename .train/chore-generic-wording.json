@@ -1,0 +1,16 @@
+{
+  "branch": "chore/generic-wording",
+  "packages": ["build", "jest-preset"],
+  "suites": [
+    "packages/build/test/dockerGuardian.test.ts",
+    "packages/build/test/estateDatabaseSweep.test.ts",
+    "packages/build/test/estateReaper.test.ts",
+    "packages/build/test/estateRegistry.test.ts",
+    "packages/build/test/pressureValve.test.ts",
+    "packages/build/test/reapEstatesOptions.test.ts",
+    "packages/build/test/servePackageSupervisor.test.ts",
+    "packages/build/test/versionWorkspaceReconciliation.test.ts",
+    "packages/jest-preset/test/knobsAdvisory.test.js"
+  ],
+  "removes": []
+}

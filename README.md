@@ -24,7 +24,7 @@ A set of tools for managing workspace build operations, working directly on top 
     - Note: if publishing packages, keep in mind that the package must be published first before any package can depend on the explicit version and leverage the symlinking of this library. This is because `npm i` is first executed, and then symlinks are created afterwards, blowing away the version installed from the registry. The `npm i` command will fail (per usual) if your package depends on an explicit version of a package that doesn't exist in the registry.
 ## Worktree lifecycle: `clean-worktrees`
 
-Worktree cleanup is part of the release process (metarepo PROCESS.md, "Temp and workspace
+Worktree cleanup is part of the release process ("Temp and workspace
 hygiene", ruled 2026-08-20): a lane worktree is reclaimable the moment its commits are
 train-visible — commits live in the repo's shared object store, so deleting a worktree never
 deletes commits. Train close-out runs the sweep + `git worktree prune` across touched repos.
@@ -45,6 +45,6 @@ Default is a dry-run report with measured (`du`) sizes — reclaim totals are ne
 `--apply` removes the safe worktrees and prunes registrations. See `npx clean-worktrees --help`.
 
 The classifier/sweeper core is exported as `WorktreeCleaner` from this package's library
-surface. The n3xa dev skill's workspace model inherits this same lifecycle: its
+surface. A consumer's workspace model can inherit this same lifecycle: its
 workspace-management tooling is a second door over the same `WorktreeCleaner` core for the
-workspaces/worktrees the skill manages — this CLI is the operator door.
+workspaces/worktrees it manages — this CLI is the operator door.

@@ -38,7 +38,7 @@ type PidLiveness = { state: 'dead' | 'alive-ours' | 'alive-foreign' | 'alive-unv
 
 export type EstateReaperOptions = {
   registry?: EstateRegistry;
-  /** Dead-by-contract TTL (default 36h — the ruled session-scratch contract, PROCESS.md). */
+  /** Dead-by-contract TTL (default 36h — the session-scratch contract). */
   ttlMs?: number;
   /**
    * Owner-scoped exit sweep (`reap-estates --owner=<lane>`): the owner explicitly reaps its own
@@ -72,8 +72,8 @@ export type EstateReaperOptions = {
 };
 
 /**
- * The estate reaper (RESOURCE_GOVERNANCE §B.2): sweeps DEAD estates on schedule and on demand,
- * mechanizing the PROCESS.md hygiene ruling's safety rules. The judgment line (§B.5):
+ * The estate reaper: sweeps DEAD estates on schedule and on demand,
+ * mechanizing the workspace hygiene rule's safety rules. The judgment line:
  *
  *  - Only REGISTERED estates are ever touched — unregistered things are outside the boundary.
  *  - Never a live estate: fresh heartbeat (< TTL), an answering port, or a live cwd-verified pid
@@ -378,7 +378,7 @@ export class EstateReaper {
 
   /**
    * `worktree` relaxes the proof to dirt-only: a LINKED WORKTREE's commits and stashes live in
-   * the owning repo's object store and survive deletion (the PROCESS.md ruling clean-worktrees is
+   * the owning repo's object store and survive deletion (the rule clean-worktrees is
    * built on — deleting a worktree never deletes commits). Full clones and submodule checkouts
    * carry their object store with them and need the full unpushed/stash proof.
    */

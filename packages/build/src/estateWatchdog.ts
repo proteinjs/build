@@ -3,7 +3,7 @@ import { Logger } from '@proteinjs/logger';
 import { PressureValve } from './PressureValve';
 import { primaryLogColor, secondaryLogColor } from './logColors';
 
-const HELP = `estate-watchdog — the local pressure valve (RESOURCE_GOVERNANCE §B.3)
+const HELP = `estate-watchdog — the local pressure valve
 
 Single-shot watermark evaluation (launchd runs it every 15 minutes; run it by hand anytime):
 

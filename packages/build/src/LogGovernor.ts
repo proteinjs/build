@@ -32,7 +32,7 @@ export type LogGovernorOptions = {
 };
 
 /**
- * The dev-log governor (RESOURCE_GOVERNANCE §B.3 rider): dev-server logs are append-only
+ * The dev-log governor: dev-server logs are append-only
  * firehoses (a error loop once grew `dev-server.log` to 21GB and took the disk — 2026-08-31),
  * so the watchdog governs every log it can SEE against a declared cap:
  *

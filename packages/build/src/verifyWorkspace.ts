@@ -8,7 +8,7 @@ import { primaryLogColor, secondaryLogColor } from './logColors';
  * Exits 1 with a loud, named report when incoherent — the boot-assertion contract (chain it in
  * front of a dev server start so stale code can never be served silently).
  *
- * ie: `npx verify-workspace --for=@n3xa/app-server,@n3xa/app-ui`
+ * ie: `npx verify-workspace --for=@acme/app-server,@acme/app-ui`
  *
  * Optional args:
  *

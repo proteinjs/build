@@ -1523,8 +1523,8 @@ function declaresBreakingChange(message: string): boolean {
 
 export async function evictGitLocks(workspacePath: string) {
   // `.git` is a DIRECTORY only for a standalone checkout; a submodule's `.git` is a pointer
-  // FILE ("gitdir: <path>") — globbing into it throws ENOTDIR (2026-08-08 train: the nested
-  // proteinjs workspace inside the n3xa metarepo). Resolve the pointer; skip when absent.
+  // FILE ("gitdir: <path>") — globbing into it throws ENOTDIR (a nested workspace checked
+  // out as a submodule of a larger repository). Resolve the pointer; skip when absent.
   const gitPath = path.join(workspacePath, '.git');
   let gitDir = gitPath;
   try {

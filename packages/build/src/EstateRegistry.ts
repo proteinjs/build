@@ -4,14 +4,14 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 
 /**
- * An ESTATE is the unit lanes launch and forget (RESOURCE_GOVERNANCE §B.1): a dev server, an
+ * An ESTATE is the unit lanes launch and forget: a dev server, an
  * emulator set, a scratch checkout — everything a launcher owns and must eventually reap.
  * One JSON file per estate under `~/.proteinjs/estates/` (crash-safe, greppable, no daemon).
  */
 export type EstateRecord = {
   /** Unique, filesystem-safe id (the registry sanitizes it into the filename). */
   id: string;
-  /** Who launched/owns this estate — a lane or session label (e.g. `serve-package:@n3xa/app-server`). */
+  /** Who launched/owns this estate — a lane or session label (e.g. `serve-package:@acme/app-server`). */
   owner: string;
   /** TCP ports the estate serves on. A port still answering pins the estate against reaping. */
   ports: number[];
@@ -28,7 +28,7 @@ export type EstateRecord = {
   /**
    * Databases OWNED by the estate as `<project>/<instance>/<database>` references — dropped with
    * the estate by the reaper's database class, which fences every drop by instance + name prefix
-   * in code (DEV_ESTATES.md §3.3). Absent on rows written before the field existed (= none).
+   * in code. Absent on rows written before the field existed (= none).
    */
   databases?: string[];
   startedAt: number;
@@ -56,7 +56,7 @@ export type RegisterOptions = {
   /**
    * Consult the pressure valve's refusal flag (default true): under HARD pressure the registry
    * refuses NEW estates with the real numbers, routing new lane launches into cleanup instead of
-   * onto the wall (§B.3). Ambient registrants that are already running (ServePackageSupervisor)
+   * onto the wall. Ambient registrants that are already running (ServePackageSupervisor)
    * pass false — refusing REGISTRATION would not stop the process, only blind the machinery to it,
    * and an unregistered estate is strictly worse (outside the automatic-act boundary).
    */
@@ -91,11 +91,11 @@ export type PressureState = {
 };
 
 /**
- * Local estate registry (RESOURCE_GOVERNANCE §B.1): the canonical record of what is running on
+ * Local estate registry: the canonical record of what is running on
  * this machine and who owns it — the local analog of the sandbox fleet lens. Registration is
  * ambient where possible (ServePackageSupervisor registers its estate on launch and heartbeats on
  * its liveness cadence); launch scripts call the `estate` CLI; manual registration exists for
- * glue. Unregistered things are, by definition, outside the automatic-act boundary (§B.5): the
+ * glue. Unregistered things are, by definition, outside the automatic-act boundary: the
  * reaper only ever touches estates this registry knows.
  *
  * Layout under the estate home (default `~/.proteinjs`, override PROTEINJS_ESTATE_HOME for tests):

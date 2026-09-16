@@ -51,13 +51,13 @@ describe('EstateRegistry', () => {
 
   test('databases ride the record (register, list, heartbeat patch) and a pre-field row reads as none', async () => {
     const record = await registry.register(
-      { owner: 'lane-db', databases: ['n3xa-app/n3xa-dev/est-lane-db'] },
+      { owner: 'lane-db', databases: ['acme-app/acme-dev/est-lane-db'] },
       { enforceValve: false }
     );
-    expect(record.databases).toEqual(['n3xa-app/n3xa-dev/est-lane-db']);
-    expect((await registry.list()).estates[0].databases).toEqual(['n3xa-app/n3xa-dev/est-lane-db']);
+    expect(record.databases).toEqual(['acme-app/acme-dev/est-lane-db']);
+    expect((await registry.list()).estates[0].databases).toEqual(['acme-app/acme-dev/est-lane-db']);
     const patched = await registry.heartbeat(record.id, {
-      databases: ['n3xa-app/n3xa-dev/est-lane-db', 'n3xa-app/n3xa-dev/est-lane-db-vm'],
+      databases: ['acme-app/acme-dev/est-lane-db', 'acme-app/acme-dev/est-lane-db-vm'],
     });
     expect(patched!.databases).toHaveLength(2);
     // A row written before the field existed: the reaper treats a missing field as none.
@@ -89,7 +89,7 @@ describe('EstateRegistry', () => {
   test('ambient registrants (enforceValve: false) still register under HARD pressure — visibility first', async () => {
     registry.writePressureSync(hardPressure());
 
-    const record = await registry.register({ owner: 'serve-package:@n3xa/app-server' }, { enforceValve: false });
+    const record = await registry.register({ owner: 'serve-package:@acme/app-server' }, { enforceValve: false });
     expect((await registry.list()).estates).toEqual([expect.objectContaining({ id: record.id })]);
   });
 

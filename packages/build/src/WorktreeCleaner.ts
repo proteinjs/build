@@ -84,7 +84,7 @@ export type WorktreeCleanerOptions = {
   /** Override / test seam for the process-hold snapshot. Default: one lsof pass over all processes. */
   processScan?: ProcessScan;
   /**
-   * The dead-by-contract window (PROCESS.md session-scratch ruling, default 36h): a worktree with
+   * The dead-by-contract window (the session-scratch rule, default 36h): a worktree with
    * ANY mtime younger than this is IN USE and pinned, however git-clean it is — agent-lane
    * activity is bursty (short-lived npm/tsc processes), so instantaneous process holds miss live
    * estates (the 2026-08-31 voicesmoke incident). 0 disables the activity spare.
@@ -111,7 +111,7 @@ const SKIP_DIR_NAMES = new Set(['node_modules', 'dist', '.git', '.nx', '.cache',
 const ACTIVITY_SKIP_DIR_NAMES = new Set(['node_modules', '.nx', '.cache', 'coverage', '.Trash']);
 
 /**
- * Worktree lifecycle sweeper (PROCESS.md "Temp and workspace hygiene", ruled 2026-08-20):
+ * Worktree lifecycle sweeper (the "Temp and workspace hygiene" rule):
  * enumerate -> classify -> remove -> prune -> report. A lane/leg worktree is reclaimable the
  * moment its commits are train-visible — commits live in the repo's shared object store, so
  * deleting a worktree never deletes commits.
@@ -126,8 +126,8 @@ const ACTIVITY_SKIP_DIR_NAMES = new Set(['node_modules', '.nx', '.cache', 'cover
  *  - `unknown` — reported, never touched: broken/orphaned registrations, git failures, or an
  *                unavailable process-hold snapshot (we refuse to call anything safe we cannot prove).
  *
- * This class is the single owner of the lifecycle; the metarepo CLI (`clean-worktrees`) and the
- * n3xa dev skill's workspace-management tooling are thin doors over it.
+ * This class is the single owner of the lifecycle; the `clean-worktrees` CLI and any
+ * consumer's workspace-management tooling are thin doors over it.
  */
 export class WorktreeCleaner {
   private logger = new Logger({ name: 'WorktreeCleaner' });
@@ -636,7 +636,7 @@ export class WorktreeCleaner {
     }
   }
 
-  /** The PROCESS.md session-scratch ruling: younger than 36h = in use, whatever git says. */
+  /** The session-scratch rule: younger than 36h = in use, whatever git says. */
   static readonly DEFAULT_ACTIVITY_TTL_MS = 36 * 3600_000;
   private static readonly MAX_ACTIVITY_DEPTH = 4;
   private static readonly MAX_ACTIVITY_STATS = 4000;
