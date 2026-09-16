@@ -46,7 +46,7 @@ describe('EstateReaper', () => {
 
   beforeEach(async () => {
     fixtureRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'estate-reaper-test-')));
-    home = path.join(fixtureRoot, '.n3xa');
+    home = path.join(fixtureRoot, '.proteinjs');
     registry = new EstateRegistry(home);
   });
 

@@ -117,3 +117,35 @@ describe('EstateRegistry', () => {
     await expect(fs.access(corruptPath)).resolves.toBeUndefined();
   });
 });
+
+describe('EstateRegistry.home()', () => {
+  const saved = process.env.PROTEINJS_ESTATE_HOME;
+  let home: string;
+
+  beforeEach(async () => {
+    home = await fs.mkdtemp(path.join(os.tmpdir(), 'estate-home-test-'));
+  });
+
+  afterEach(async () => {
+    if (saved === undefined) delete process.env.PROTEINJS_ESTATE_HOME;
+    else process.env.PROTEINJS_ESTATE_HOME = saved;
+    await fs.rm(home, { recursive: true, force: true });
+  });
+
+  test('PROTEINJS_ESTATE_HOME names the estate home (the test seam)', () => {
+    process.env.PROTEINJS_ESTATE_HOME = '/tmp/estate-home-under-test';
+    expect(EstateRegistry.home()).toBe('/tmp/estate-home-under-test');
+  });
+
+  test('the default estate home is ~/.proteinjs', () => {
+    delete process.env.PROTEINJS_ESTATE_HOME;
+    expect(EstateRegistry.home()).toBe(path.join(os.homedir(), '.proteinjs'));
+  });
+
+  test('the registry constructed without a home writes under the estate home', async () => {
+    process.env.PROTEINJS_ESTATE_HOME = home;
+    const record = await new EstateRegistry().register({ owner: 'lane-home' }, { enforceValve: false });
+    const files = await fs.readdir(path.join(home, 'estates'));
+    expect(files).toEqual([`${record.id}.json`]);
+  });
+});

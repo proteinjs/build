@@ -1,0 +1,13 @@
+{
+  "branch": "feat/estate-home-rename",
+  "packages": ["build", "jest-preset"],
+  "suites": [
+    "packages/build/test/estateRegistry.test.ts",
+    "packages/build/test/estateReaper.test.ts",
+    "packages/build/test/logGovernor.test.ts",
+    "packages/build/test/pressureValve.test.ts",
+    "packages/build/test/servePackageSupervisor.test.ts",
+    "packages/jest-preset/test/knobsAdvisory.test.js"
+  ],
+  "removes": ["N3XA_ESTATE_HOME"]
+}

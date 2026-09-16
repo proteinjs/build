@@ -7,7 +7,7 @@ import { primaryLogColor, secondaryLogColor } from './logColors';
 const HELP = `estate — the local estate registry (RESOURCE_GOVERNANCE §B.1)
 
 An ESTATE is the unit lanes launch and forget: ports, dirs (scratch/worktrees/logs), containers,
-pids, an owner label, and a liveness heartbeat. One JSON file per estate under ~/.n3xa/estates/.
+pids, an owner label, and a liveness heartbeat. One JSON file per estate under ~/.proteinjs/estates/.
 Registered estates are inside the machinery's automatic-act boundary (reap-estates sweeps
 dead-by-contract ones); unregistered things are, by definition, outside it.
 

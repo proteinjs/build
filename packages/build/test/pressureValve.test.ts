@@ -136,7 +136,7 @@ describe('PressureValve', () => {
     await expect(registry.register({ owner: 'lane-new' })).rejects.toThrow(/memory HARD/);
   });
 
-  test('valves are config: ~/.n3xa/valves.json overrides the defaults', async () => {
+  test('valves are config: ~/.proteinjs/valves.json overrides the defaults', async () => {
     await fs.writeFile(path.join(home, 'valves.json'), JSON.stringify({ diskSoftFreeGb: 300 }));
 
     const evaluation = await valve(200, 40).evaluate();

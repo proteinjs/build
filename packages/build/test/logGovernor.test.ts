@@ -28,7 +28,7 @@ describe('LogGovernor', () => {
 
   beforeEach(async () => {
     fixtureRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'log-governor-test-')));
-    registry = new EstateRegistry(path.join(fixtureRoot, '.n3xa'));
+    registry = new EstateRegistry(path.join(fixtureRoot, '.proteinjs'));
   });
 
   afterEach(async () => {

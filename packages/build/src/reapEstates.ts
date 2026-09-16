@@ -9,7 +9,7 @@ import { primaryLogColor, secondaryLogColor } from './logColors';
 
 const HELP = `reap-estates — sweep DEAD estates (RESOURCE_GOVERNANCE §B.2; PROCESS.md hygiene ruling, mechanized)
 
-Sweeps the estate registry (~/.n3xa/estates/) on schedule and on demand. The safety rules are the
+Sweeps the estate registry (~/.proteinjs/estates/) on schedule and on demand. The safety rules are the
 ruling's, mechanized — refusals are LISTED, never overridden, and there is no --force:
 
   - only REGISTERED estates are touched; a fresh heartbeat (< 36h TTL) spares the estate
@@ -18,7 +18,7 @@ ruling's, mechanized — refusals are LISTED, never overridden, and there is no 
   - never unpushed git work: uncommitted non-lock dirt, stashes, or commits missing upstream
     (ancestry + patch-id equivalence) refuse the dir; mixed estates reap their clean parts and
     keep the record trimmed to the refusals
-  - every reap is logged with what/why (stdout + ~/.n3xa/logs/reap.log)
+  - every reap is logged with what/why (stdout + ~/.proteinjs/logs/reap.log)
 
 Worktree lifecycle stays with clean-worktrees (no second owner): this command runs the same
 WorktreeCleaner pass afterwards unless --no-worktrees.
@@ -212,6 +212,6 @@ function printReport(
   }
   const reclaimed = reports.reduce((sum, report) => sum + (report.reclaimedBytes ?? 0), 0);
   logger.info({
-    message: `> ${apply ? 'Reclaimed' : 'Would reclaim'} ${EstateReaper.formatBytes(reclaimed)} across ${reports.filter((r) => r.verdict === 'reaped' || r.verdict === 'partial').length} estate(s); receipts in ~/.n3xa/logs/reap.log`,
+    message: `> ${apply ? 'Reclaimed' : 'Would reclaim'} ${EstateReaper.formatBytes(reclaimed)} across ${reports.filter((r) => r.verdict === 'reaped' || r.verdict === 'partial').length} estate(s); receipts in ~/.proteinjs/logs/reap.log`,
   });
 }

@@ -160,8 +160,8 @@ describe('ServePackageSupervisor', () => {
 
   beforeEach(async () => {
     workspacePath = await fs.mkdtemp(path.join(os.tmpdir(), 'serve-package-test-'));
-    // Ambient estate registration must land in the fixture, never the real ~/.n3xa.
-    process.env.N3XA_ESTATE_HOME = path.join(workspacePath, '.n3xa');
+    // Ambient estate registration must land in the fixture, never the real ~/.proteinjs.
+    process.env.PROTEINJS_ESTATE_HOME = path.join(workspacePath, '.proteinjs');
     await writeJson(path.join(workspacePath, 'package.json'), { name: 'root', private: true });
 
     libDir = path.join(workspacePath, 'packages', 'lib');
@@ -195,7 +195,7 @@ describe('ServePackageSupervisor', () => {
   afterEach(async () => {
     await supervisor?.stop();
     supervisor = undefined;
-    delete process.env.N3XA_ESTATE_HOME;
+    delete process.env.PROTEINJS_ESTATE_HOME;
     await fs.rm(workspacePath, { recursive: true, force: true });
   });
 
@@ -1819,7 +1819,7 @@ describe('ServePackageSupervisor', () => {
   });
 
   describe('ambient estate registration (RESOURCE_GOVERNANCE §B.1)', () => {
-    const estatesDir = () => path.join(workspacePath, '.n3xa', 'estates');
+    const estatesDir = () => path.join(workspacePath, '.proteinjs', 'estates');
 
     const estateRecords = async () => {
       const entries = await fs.readdir(estatesDir()).catch(() => [] as string[]);

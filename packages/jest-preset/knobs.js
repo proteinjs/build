@@ -14,7 +14,7 @@
  *   only WITH a bigger runner, §13.8).
  *
  * Local pressure-valve advisory (RESOURCE_GOVERNANCE §B.3): under memory pressure the
- * estate-watchdog drops `~/.n3xa/advisories/jest-workers` (content: a worker count, i.e. `1`).
+ * estate-watchdog drops `~/.proteinjs/advisories/jest-workers` (content: a worker count, i.e. `1`).
  * `workers()` honors it as a CEILING on the resolved count — the machine-output form of the
  * `-w=1` throttle practice. Env still wins outright (an explicit operator/CI choice), a stale
  * advisory (> 24h — a watchdog that stopped running) is ignored, and serial `maxWorkers: 1`
@@ -30,7 +30,7 @@ const ADVISORY_MAX_AGE_MS = 24 * 3600 * 1000;
 /** The pressure valve's advisory worker count, or undefined (missing/stale/unparseable). */
 const advisoryWorkers = () => {
   try {
-    const home = process.env.N3XA_ESTATE_HOME || path.join(os.homedir(), '.n3xa');
+    const home = process.env.PROTEINJS_ESTATE_HOME || path.join(os.homedir(), '.proteinjs');
     const advisoryPath = path.join(home, 'advisories', 'jest-workers');
     const stat = fs.statSync(advisoryPath);
     if (Date.now() - stat.mtimeMs > ADVISORY_MAX_AGE_MS) {

@@ -9,10 +9,10 @@ The wedge-kill-relaunch repair as ONE scripted, logged act — still OWNER-GATED
 machine-services single-owner rule: the PROBE runs freely; without --yes a wedged daemon gets a
 printed plan and exit 2, never an act. With --yes (the owner's go): quit Docker Desktop cleanly
 (exact-name kill only if the quit times out), relaunch, wait for the engine, verify the shared
-standing set (starting exited members). Every step prints and lands in ~/.n3xa/logs/.
+standing set (starting exited members). Every step prints and lands in ~/.proteinjs/logs/.
 
 The standing set (redis cluster nodes, mariadb, spanner-emulator) is config, not code:
-~/.n3xa/docker-standing-set.json (JSON string array of container names).
+~/.proteinjs/docker-standing-set.json (JSON string array of container names).
 
 Optional args:
 

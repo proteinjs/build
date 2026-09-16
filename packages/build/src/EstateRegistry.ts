@@ -6,7 +6,7 @@ import * as fsSync from 'fs';
 /**
  * An ESTATE is the unit lanes launch and forget (RESOURCE_GOVERNANCE §B.1): a dev server, an
  * emulator set, a scratch checkout — everything a launcher owns and must eventually reap.
- * One JSON file per estate under `~/.n3xa/estates/` (crash-safe, greppable, no daemon).
+ * One JSON file per estate under `~/.proteinjs/estates/` (crash-safe, greppable, no daemon).
  */
 export type EstateRecord = {
   /** Unique, filesystem-safe id (the registry sanitizes it into the filename). */
@@ -98,7 +98,7 @@ export type PressureState = {
  * glue. Unregistered things are, by definition, outside the automatic-act boundary (§B.5): the
  * reaper only ever touches estates this registry knows.
  *
- * Layout under the estate home (default `~/.n3xa`, override N3XA_ESTATE_HOME for tests):
+ * Layout under the estate home (default `~/.proteinjs`, override PROTEINJS_ESTATE_HOME for tests):
  *   estates/<id>.json      one record per estate (atomic write-then-rename)
  *   pressure.json          the valve's refusal flag + facts (written by PressureValve)
  *   advisories/            machine-output throttle signals (e.g. jest-workers)
@@ -107,9 +107,9 @@ export type PressureState = {
 export class EstateRegistry {
   constructor(private homeDir: string = EstateRegistry.home()) {}
 
-  /** The estate home (default `~/.n3xa`; N3XA_ESTATE_HOME overrides — the test seam). */
+  /** The estate home (default `~/.proteinjs`; PROTEINJS_ESTATE_HOME overrides — the test seam). */
   static home(): string {
-    return process.env.N3XA_ESTATE_HOME || path.join(os.homedir(), '.n3xa');
+    return process.env.PROTEINJS_ESTATE_HOME || path.join(os.homedir(), '.proteinjs');
   }
 
   /**

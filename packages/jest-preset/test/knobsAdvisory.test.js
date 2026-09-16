@@ -14,7 +14,7 @@ const { workers } = require('../knobs');
 
 describe('workers() pressure-valve advisory', () => {
   let home;
-  const savedHome = process.env.N3XA_ESTATE_HOME;
+  const savedHome = process.env.PROTEINJS_ESTATE_HOME;
   const savedWorkers = process.env.JEST_WORKERS;
 
   const writeAdvisory = (value, ageMs = 0) => {
@@ -30,16 +30,16 @@ describe('workers() pressure-valve advisory', () => {
 
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'knobs-advisory-test-'));
-    process.env.N3XA_ESTATE_HOME = home;
+    process.env.PROTEINJS_ESTATE_HOME = home;
     delete process.env.JEST_WORKERS;
   });
 
   afterEach(() => {
     fs.rmSync(home, { recursive: true, force: true });
     if (savedHome === undefined) {
-      delete process.env.N3XA_ESTATE_HOME;
+      delete process.env.PROTEINJS_ESTATE_HOME;
     } else {
-      process.env.N3XA_ESTATE_HOME = savedHome;
+      process.env.PROTEINJS_ESTATE_HOME = savedHome;
     }
     if (savedWorkers === undefined) {
       delete process.env.JEST_WORKERS;
