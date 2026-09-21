@@ -18,16 +18,21 @@ Commands:
 
   estate register --owner=<label> [--id=<id>] [--ports=3041,9010] [--dirs=/a,/b]
                   [--containers=spanner-x] [--pids=123] [--databases=<project>/<instance>/<db>,...]
-                  [--pin] [--note=...]
+                  [--holds=<label>,...] [--pin] [--note=...]
       Register (same id re-registers). Under HARD pressure (estate-watchdog's refusal flag)
       registration is REFUSED with the real numbers — reap or park before launching.
       --databases names the real databases the estate owns (dropped with it by reap-estates
       inside its --db-fence; see reap-estates --help).
+      --holds names resources OUTSIDE the estate whose only handle lives inside it (machines an
+      app leased and recorded in the estate's database, say): reap-estates refuses a held row
+      whole until the registrant's own teardown releases every hold.
   estate heartbeat --id=<id>          refresh the liveness heartbeat (stale > 36h = dead-by-contract)
   estate list [--json]                the machine's estates: owner, ports, dirs, containers, heartbeat age
   estate unregister --id=<id>         exit reaps the estate (cleanup-as-contract)
   estate pin --id=<id>                never auto-reaped (durable pin)
   estate unpin --id=<id>
+  estate hold --id=<id> --hold=<label>      add a hold (reap-estates refuses the row while it carries any)
+  estate release --id=<id> --hold=<label>   release one — the registrant's act, after its own teardown
   estate --help
 
 ie: \`npm run estate -- register --owner=lane-touchbars --ports=3041 --dirs=/tmp/claude-501/lane-touchbars\`
@@ -82,6 +87,7 @@ export const estate = async () => {
           containers: listArg('containers'),
           pids: numberListArg('pids'),
           databases: listArg('databases'),
+          holds: listArg('holds'),
           pinned: argsMap['pin'] === true,
           note: stringArg('note'),
         });
@@ -116,6 +122,23 @@ export const estate = async () => {
       logger.info({ message: `> ${command === 'pin' ? 'Pinned' : 'Unpinned'} ${updated.id}` });
       return;
     }
+    case 'hold':
+    case 'release': {
+      const label = stringArg('hold');
+      if (!label) {
+        throw new Error(`--hold=<label> is required for '${command}'`);
+      }
+      const updated = await (command === 'hold'
+        ? registry.hold(requireId(), label)
+        : registry.release(requireId(), label));
+      if (!updated) {
+        throw new Error(`no such estate: ${stringArg('id')}`);
+      }
+      logger.info({
+        message: `> ${command === 'hold' ? 'Held' : 'Released'} ${updated.id} (${label}) — holds now: ${updated.holds?.length ? updated.holds.join(', ') : 'none'}`,
+      });
+      return;
+    }
     case 'list': {
       const { estates, unreadable } = await registry.list();
       const pressure = await registry.readPressure();
@@ -144,6 +167,7 @@ function formatEstateLine(record: EstateRecord, cw: LogColorWrapper): string {
   const parts = [
     `${cw.color(record.id, secondaryLogColor)} (owner ${record.owner})`,
     record.pinned ? '[PINNED]' : undefined,
+    record.holds?.length ? `[HELD: ${record.holds.join(', ')}]` : undefined,
     record.ports.length ? `ports ${record.ports.join(',')}` : undefined,
     record.dirs.length ? `dirs ${record.dirs.join(', ')}` : undefined,
     record.containers.length ? `containers ${record.containers.join(',')}` : undefined,

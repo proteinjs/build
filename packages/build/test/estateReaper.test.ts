@@ -557,6 +557,102 @@ describe('EstateReaper', () => {
     expect(receipts).toContain(boom.record.id);
   });
 
+  // ── HOLDS: an estate that is the only handle on something outside itself ──
+  // A row may say its dirs, containers and databases are the ONLY handle on resources that live
+  // outside the estate (machines an app leased and recorded in its database, say). Deleting any of
+  // them strands those resources, and this reaper cannot tear them down — so a held row is refused
+  // WHOLE, on the scheduled sweep and on an owner's exit sweep alike, until its registrant releases it.
+  const HELD_FENCE = { project: 'acme', instance: 'dev', prefix: 'est-' };
+
+  test('a HELD dead estate is refused whole: dirs stay, containers are never stopped, its database never drops, the row stays — and the refusal says who releases it', async () => {
+    const dockerCalls: string[][] = [];
+    const spanner = fakeSpanner(['est-held']);
+    const { record, estateDir } = await registerStale({
+      containers: ['emulator-held'],
+      databases: ['acme/dev/est-held'],
+      holds: ['leased-machines'],
+    });
+
+    const result = await new EstateReaper({
+      registry,
+      apply: true,
+      dockerRun: async (args) => {
+        dockerCalls.push(args);
+        return { code: 0, stdout: '', stderr: '' };
+      },
+      databases: { fence: HELD_FENCE, env: { GCP_SA_KEY: KEY }, spannerFactory: () => spanner.client },
+    }).sweep();
+
+    expect(result.reports[0].verdict).toBe('spared');
+    expect(result.reports[0].acts).toEqual([]);
+    expect(result.reports[0].refusals.join('\n')).toMatch(
+      /held \(leased-machines\): this estate is the only handle on resources outside it — nothing of it is reaped until its registrant's own teardown releases the hold/
+    );
+    expect(await exists(estateDir)).toBe(true);
+    expect(dockerCalls).toEqual([]);
+    expect(spanner.dropped).toEqual([]);
+    expect(await registry.get(record.id)).toBeDefined();
+    // Its database is still a registered one: the orphan sweep keeps it too.
+    expect(result.databases!.kept).toEqual(['acme/dev/est-held: named by a registered estate']);
+  });
+
+  test("an owner's exit sweep refuses a held row too — the owner asking this reaper is not the teardown that releases it", async () => {
+    const spanner = fakeSpanner(['est-mine']);
+    const { record, estateDir } = await registerStale({
+      owner: 'lane-mine',
+      databases: ['acme/dev/est-mine'],
+      holds: ['leased-machines'],
+    });
+
+    const result = await new EstateReaper({
+      registry,
+      apply: true,
+      owner: 'lane-mine',
+      databases: { fence: HELD_FENCE, env: { GCP_SA_KEY: KEY }, spannerFactory: () => spanner.client },
+    }).sweep();
+
+    expect(result.reports[0].verdict).toBe('spared');
+    expect(result.reports[0].refusals.join('\n')).toMatch(/held \(leased-machines\)/);
+    expect(await exists(estateDir)).toBe(true);
+    expect(spanner.dropped).toEqual([]);
+    expect(await registry.get(record.id)).toBeDefined();
+  });
+
+  test('once the registrant RELEASES the hold the same dead row reaps, database and all', async () => {
+    const spanner = fakeSpanner(['est-held']);
+    const { record, estateDir, recordPath } = await registerStale({
+      databases: ['acme/dev/est-held'],
+      holds: ['leased-machines'],
+    });
+    const sweep = () =>
+      new EstateReaper({
+        registry,
+        apply: true,
+        databases: { fence: HELD_FENCE, env: { GCP_SA_KEY: KEY }, spannerFactory: () => spanner.client },
+      }).sweep();
+
+    expect((await sweep()).reports[0].verdict).toBe('spared');
+    const released = await registry.release(record.id, 'leased-machines');
+    expect(released!.holds).toEqual([]);
+    // A release is not a heartbeat: the row is exactly as dead as it was.
+    expect(JSON.parse(await fs.readFile(recordPath, 'utf-8')).heartbeatAt).toBe(record.heartbeatAt);
+
+    const result = await sweep();
+    expect(result.reports[0].verdict).toBe('reaped');
+    expect(await exists(estateDir)).toBe(false);
+    expect(spanner.dropped).toEqual(['est-held']);
+    expect(await registry.get(record.id)).toBeUndefined();
+  });
+
+  test('a held estate with a FRESH heartbeat is simply spared (no refusal noise on every scheduled run)', async () => {
+    const record = await registry.register({ owner: 'lane-live', holds: ['leased-machines'] }, { enforceValve: false });
+    const result = await new EstateReaper({ registry, apply: true }).sweep();
+    expect(result.reports[0].verdict).toBe('spared');
+    expect(result.reports[0].reason).toMatch(/heartbeat fresh/);
+    expect(result.reports[0].refusals).toEqual([]);
+    expect(await registry.get(record.id)).toBeDefined();
+  });
+
   test('a corrupt estate file is reported unreadable and never touched', async () => {
     await fs.mkdir(registry.estatesDir(), { recursive: true });
     const corrupt = path.join(registry.estatesDir(), 'corrupt.json');
