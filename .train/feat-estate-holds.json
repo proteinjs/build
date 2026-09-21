@@ -1,0 +1,10 @@
+{
+  "branch": "feat/estate-holds",
+  "packages": ["build"],
+  "suites": [
+    "packages/build/test/estateReaper.test.ts",
+    "packages/build/test/estateRegistry.test.ts",
+    "packages/build/test/estateCliHolds.test.ts"
+  ],
+  "removes": []
+}
