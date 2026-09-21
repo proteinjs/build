@@ -78,6 +78,35 @@ describe('EstateRegistry', () => {
     expect(legacy.databases).toBeUndefined();
   });
 
+  test('holds ride the record: registered, added one at a time, released one at a time — never touching the heartbeat', async () => {
+    const record = await registry.register({ owner: 'lane-held', holds: ['leased-machines'] }, { enforceValve: false });
+    expect(record.holds).toEqual(['leased-machines']);
+    expect((await registry.list()).estates[0].holds).toEqual(['leased-machines']);
+
+    const added = await registry.hold(record.id, 'open-tunnels');
+    expect(added!.holds).toEqual(['leased-machines', 'open-tunnels']);
+    // Holding twice is one hold.
+    expect((await registry.hold(record.id, 'open-tunnels'))!.holds).toEqual(['leased-machines', 'open-tunnels']);
+
+    const released = await registry.release(record.id, 'leased-machines');
+    expect(released!.holds).toEqual(['open-tunnels']);
+    expect(released!.heartbeatAt).toBe(record.heartbeatAt);
+    // Releasing a hold the row does not carry changes nothing; an unknown row is undefined.
+    expect((await registry.release(record.id, 'never-held'))!.holds).toEqual(['open-tunnels']);
+    expect(await registry.release('no-such-estate', 'open-tunnels')).toBeUndefined();
+
+    // An estate registered with nothing to hold carries none.
+    const plain = await registry.register({ owner: 'lane-plain' }, { enforceValve: false });
+    expect(plain.holds).toEqual([]);
+  });
+
+  test('a hold is a short label: empty, or carrying a comma (the CLI list separator), is refused at the door', async () => {
+    await expect(registry.register({ owner: 'lane-x', holds: [''] }, { enforceValve: false })).rejects.toThrow(/hold/);
+    await expect(registry.register({ owner: 'lane-x', holds: ['a,b'] }, { enforceValve: false })).rejects.toThrow(
+      /hold/
+    );
+  });
+
   test('under HARD pressure the valve-enforced register path REFUSES, with the real numbers', async () => {
     registry.writePressureSync(hardPressure());
 

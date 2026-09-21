@@ -84,6 +84,9 @@ export type EstateReaperOptions = {
  *  - Never unpushed git work: every git repo/worktree found under an estate's dirs must have no
  *    uncommitted non-lockfile dirt, no stashes, and no commits missing from the remote (with a
  *    patch-id equivalence check so re-landed work — the "orphaned lane" dup class — still sweeps).
+ *  - Never a HELD estate: a row whose `holds` names resources outside the estate (the estate is
+ *    their only handle) is refused whole — no dir, container or database of it is touched, on
+ *    either path — until its registrant's own teardown releases the hold.
  *  - Refusals are listed, never overridden; there is no --force (a human deletes by hand or the
  *    owner unpins — mixed estates reap their clean parts and RETAIN the record trimmed to what
  *    was refused, so the refusal stays visible).
@@ -174,6 +177,18 @@ export class EstateReaper {
     const heartbeatAgeMs = now - estate.heartbeatAt;
     if (!ownerScoped && heartbeatAgeMs < this.ttlMs()) {
       report.reason = `heartbeat fresh (${EstateReaper.formatAge(heartbeatAgeMs)} old < TTL ${EstateReaper.formatAge(this.ttlMs())})`;
+      return report;
+    }
+
+    // ── Holds: an estate that is the only handle on something outside itself ────────────────
+    // Judged before ANY act and on both paths (an owner's exit sweep too): the dirs hold the
+    // registrant's record of what it must tear down, a container or database may hold the only
+    // reference to what it leased — deleting any of them strands it, and this reaper cannot
+    // tear it down. The registrant's own teardown releases the hold; then the row reaps.
+    const holds = estate.holds ?? [];
+    if (holds.length > 0) {
+      report.reason = `held (${holds.join(', ')}): this estate is the only handle on resources outside it — nothing of it is reaped until its registrant's own teardown releases the hold (estate release --id=${estate.id} --hold=<label>)`;
+      report.refusals.push(report.reason);
       return report;
     }
 

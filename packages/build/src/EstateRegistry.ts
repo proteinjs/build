@@ -31,6 +31,16 @@ export type EstateRecord = {
    * in code (DEV_ESTATES.md §3.3). Absent on rows written before the field existed (= none).
    */
   databases?: string[];
+  /**
+   * HOLDS — short labels for resources OUTSIDE the estate whose only handle lives inside it (for
+   * example machines an app leased and recorded in one of the estate's databases). Deleting the
+   * estate's dirs, containers or databases would strand them, and the reaper cannot tear them down
+   * itself — so while a row carries any hold the reaper refuses the row WHOLE, on the scheduled
+   * sweep and on an owner's exit sweep alike. Only the registrant's own teardown releases a hold
+   * (`release`, or by unregistering once everything is gone). Absent on rows written before the
+   * field existed (= none).
+   */
+  holds?: string[];
   startedAt: number;
   /** Freshness signal: estates heartbeat while alive; stale > TTL is dead-by-contract. */
   heartbeatAt: number;
@@ -48,6 +58,7 @@ export type EstateRegistration = {
   containers?: string[];
   pids?: number[];
   databases?: string[];
+  holds?: string[];
   pinned?: boolean;
   note?: string;
 };
@@ -216,6 +227,34 @@ export class EstateRegistry {
     return updated;
   }
 
+  /** Add a hold to a row (idempotent). Never a heartbeat: holding an estate says nothing about its liveness. */
+  async hold(id: string, hold: string): Promise<EstateRecord | undefined> {
+    const record = await this.get(id);
+    if (!record) {
+      return undefined;
+    }
+    const label = EstateRegistry.holdLabel(hold);
+    const held = record.holds ?? [];
+    const updated: EstateRecord = { ...record, holds: held.includes(label) ? held : [...held, label] };
+    this.writeRecordSync(updated);
+    return updated;
+  }
+
+  /**
+   * Release one hold — the registrant's act, after its own teardown removed what the hold stood
+   * for. Never a heartbeat: a released row is exactly as live or as dead as it was, so a dead one
+   * reaps on the next sweep.
+   */
+  async release(id: string, hold: string): Promise<EstateRecord | undefined> {
+    const record = await this.get(id);
+    if (!record) {
+      return undefined;
+    }
+    const updated: EstateRecord = { ...record, holds: (record.holds ?? []).filter((held) => held !== hold) };
+    this.writeRecordSync(updated);
+    return updated;
+  }
+
   /** The valve's latest state (undefined when the watchdog has never run or the file is unreadable). */
   async readPressure(): Promise<PressureState | undefined> {
     try {
@@ -278,11 +317,21 @@ export class EstateRegistry {
       containers: registration.containers ?? [],
       pids: registration.pids ?? [],
       databases: registration.databases ?? [],
+      holds: (registration.holds ?? []).map((hold) => EstateRegistry.holdLabel(hold)),
       startedAt: now,
       heartbeatAt: now,
       pinned: registration.pinned || undefined,
       note: registration.note,
     };
+  }
+
+  /** A hold is a short label: non-empty, no comma (the CLI's list separator), no line break. */
+  static holdLabel(hold: string): string {
+    const label = typeof hold === 'string' ? hold.trim() : '';
+    if (label.length === 0 || /[,\n\r]/.test(label)) {
+      throw new Error(`an estate hold is a short label (non-empty, no comma, one line), got: ${JSON.stringify(hold)}`);
+    }
+    return label;
   }
 
   /** Filesystem-safe id: anything outside [A-Za-z0-9._-] folds to '-'. */
