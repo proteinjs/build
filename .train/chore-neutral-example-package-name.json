@@ -1,0 +1,10 @@
+{
+  "branch": "chore/neutral-example-package-name",
+  "packages": [
+    "build"
+  ],
+  "suites": [
+    "packages/build/test/servePackageSupervisor.test.ts"
+  ],
+  "removes": []
+}
