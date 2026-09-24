@@ -7,10 +7,8 @@ const MAX_CHAIN_DEPTH = 30;
 
 /**
  * The INSTALLED GRAPH — a lerna workspace's trees judged as they sit on disk, not as the locks
- * describe them (n3xa's DEV_SKILL_ORCHESTRATION §10.1a leg (a) and the dev workspace's linked
- * build; LANDING_TRAINS §1.4p: the linked verify runs it after the packed dists replaced the
- * registry copies, when the locks no longer describe the tree). Three legs over each tree's
- * node_modules:
+ * describe them (a linked build runs it after the packed dists replaced the registry copies, when
+ * the locks no longer describe the tree). Three legs over each tree's node_modules:
  *   (a') one COPY per internal package per tree — a second copy, even at the same version, is a
  *        second module instance in the process (duplicate reflection graphs: the router keeps ONE
  *        interface per qualified name); a nested registry copy beside a linked one is exactly this;
@@ -20,12 +18,13 @@ const MAX_CHAIN_DEPTH = 30;
  *        installed version inside the declared range (a linked branch whose floors the tree does
  *        not meet, or that adds a dependency the tree does not install, reds here by name).
  * On a registry install every leg holds by construction (npm resolved the lock); a linked tree
- * proves it. `scopes` names the internal scopes (the caller's: n3xa passes `@proteinjs/`, `@n3xah/`).
+ * proves it. `scopes` names the internal scopes (the caller's, e.g. `@proteinjs/`; required — an
+ * empty list judges nothing and is refused by `run`).
  * The tree readers (`installedPackages`, `resolveFrom`, `parentChains`) are the lock-shaped view the
  * linker's `place` reads through too.
  */
 class InstalledGraph {
-  constructor({ repoRoot, scopes = ['@proteinjs/', '@n3xah/'], log = console.log } = {}) {
+  constructor({ repoRoot, scopes = [], log = console.log } = {}) {
     this.repoRoot = repoRoot || process.cwd();
     this.scopes = scopes;
     this.log = log;
@@ -33,6 +32,11 @@ class InstalledGraph {
 
   /** The three legs over every non-root lerna tree. Returns { ok, failures: [{ leg, message }], counted }. */
   run() {
+    if (!Array.isArray(this.scopes) || !this.scopes.length) {
+      throw new Error(
+        'installed graph: no internal scopes were given (LINK_SCOPES, or `scopes` to the constructor) — nothing would be judged'
+      );
+    }
     const trees = this.loadTrees();
     for (const tree of trees) {
       tree.pkg = this.readJson(path.join(tree.dir, 'package.json'));

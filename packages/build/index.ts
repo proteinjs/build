@@ -12,11 +12,10 @@ export * from './src/EstateReaper';
 export * from './src/PressureValve';
 export * from './src/DockerGuardian';
 export * from './src/LogGovernor';
-// The linked workspace (n3xa's LANDING_TRAINS §1.4p; DEV_ENVIRONMENT "Deploy a workspace"): one
-// owner of "check a repo out at a commit, build it, pack it, put the pack in place of every
-// registry copy, judge the installed graph" — the dev deploy's image, the parallel-verify train's
-// verify-train run and the land tool all read it from here. Plain JS cores (allowJs): the
-// `link-workspace` bin is their CI door.
+// The linked workspace: one owner of "check a repo out at a commit, build it, pack it, put the pack
+// in place of every registry copy, judge the installed graph" — an image build with linked branches,
+// a library's linked verify run and its release tooling all read it from here. Plain JS cores
+// (allowJs): the `link-workspace` bin is their CI door.
 export * from './src/links/LinkedWorkspace';
 export * from './src/links/InstalledGraph';
 export * from './src/links/LockEquivalence';

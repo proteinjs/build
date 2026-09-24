@@ -11,8 +11,8 @@ const { DistHash } = require('../src/links/DistHash');
 /* eslint-enable @typescript-eslint/no-var-requires */
 
 /**
- * The linked workspace (n3xa's LANDING_TRAINS §1.4p; DEV_ENVIRONMENT "Deploy a workspace"), on
- * fixtures built in a temp dir at run time under fixture package names (@n3xah/fixture-*): the
+ * The linked workspace, on fixtures built in a temp dir at run time under fixture package names
+ * (@acme/fixture-*, the organization `acme` as the caller's inputs): the
  * dispatch's preflight, the link (each linked package built at its commit, its pack in place of
  * EVERY copy, one copy per tree), the train's plan from `.train/links.json`, the dist hash (the same
  * number from a tarball and from an installed copy; a version bump and lerna's sibling floors do not
@@ -22,6 +22,8 @@ const { DistHash } = require('../src/links/DistHash');
  */
 
 const SHA_A = 'a'.repeat(40);
+/** The organization every test links: the owner, the allow-list of linkable repos, the internal scope the graph judges — the caller's inputs. */
+const ORG = { owner: 'acme', repos: ['flow', 'util', 'core'], scopes: ['@acme/'] };
 
 const made: string[] = [];
 const tmp = (label: string) => {
@@ -59,50 +61,45 @@ const fixtureWorkspace = () => {
   writeJson(path.join(root, 'package.json'), { name: 'root', private: true });
   const nm = (tree: string) => path.join(root, 'packages', tree, 'node_modules');
   writeJson(path.join(root, 'packages', 'common', 'package.json'), {
-    name: '@n3xa/fixture-app-common',
-    dependencies: { '@n3xah/fixture-flow-common': '^1.0.0' },
+    name: '@consumer/fixture-app-common',
+    dependencies: { '@acme/fixture-flow-common': '^1.0.0' },
   });
-  installRegistryCopy(path.join(nm('common'), '@n3xah', 'fixture-flow-common'), '@n3xah/fixture-flow-common', '1.0.0');
+  installRegistryCopy(path.join(nm('common'), '@acme', 'fixture-flow-common'), '@acme/fixture-flow-common', '1.0.0');
   writeJson(path.join(root, 'packages', 'server', 'package.json'), {
-    name: '@n3xa/fixture-app-server',
+    name: '@consumer/fixture-app-server',
     dependencies: {
-      '@n3xah/fixture-flow-common': '^1.0.0',
-      '@n3xah/fixture-flow-server': '^1.0.0',
-      '@n3xah/fixture-space-server': '^1.0.0',
+      '@acme/fixture-flow-common': '^1.0.0',
+      '@acme/fixture-flow-server': '^1.0.0',
+      '@acme/fixture-space-server': '^1.0.0',
     },
   });
-  installRegistryCopy(path.join(nm('server'), '@n3xah', 'fixture-flow-common'), '@n3xah/fixture-flow-common', '1.0.0');
-  installRegistryCopy(path.join(nm('server'), '@n3xah', 'fixture-flow-server'), '@n3xah/fixture-flow-server', '1.0.0', {
-    '@n3xah/fixture-flow-common': '^1.0.0',
+  installRegistryCopy(path.join(nm('server'), '@acme', 'fixture-flow-common'), '@acme/fixture-flow-common', '1.0.0');
+  installRegistryCopy(path.join(nm('server'), '@acme', 'fixture-flow-server'), '@acme/fixture-flow-server', '1.0.0', {
+    '@acme/fixture-flow-common': '^1.0.0',
     'fixture-openai': '6.0.0',
   });
   installRegistryCopy(path.join(nm('server'), 'fixture-openai'), 'fixture-openai', '4.0.0');
   installRegistryCopy(
-    path.join(nm('server'), '@n3xah', 'fixture-flow-server', 'node_modules', 'fixture-openai'),
+    path.join(nm('server'), '@acme', 'fixture-flow-server', 'node_modules', 'fixture-openai'),
     'fixture-openai',
     '6.0.0'
   );
+  installRegistryCopy(path.join(nm('server'), '@acme', 'fixture-space-server'), '@acme/fixture-space-server', '1.0.0', {
+    '@acme/fixture-flow-server': '^1.0.0',
+  });
   installRegistryCopy(
-    path.join(nm('server'), '@n3xah', 'fixture-space-server'),
-    '@n3xah/fixture-space-server',
+    path.join(nm('server'), '@acme', 'fixture-space-server', 'node_modules', '@acme', 'fixture-flow-server'),
+    '@acme/fixture-flow-server',
     '1.0.0',
-    {
-      '@n3xah/fixture-flow-server': '^1.0.0',
-    }
-  );
-  installRegistryCopy(
-    path.join(nm('server'), '@n3xah', 'fixture-space-server', 'node_modules', '@n3xah', 'fixture-flow-server'),
-    '@n3xah/fixture-flow-server',
-    '1.0.0',
-    { '@n3xah/fixture-flow-common': '^1.0.0' }
+    { '@acme/fixture-flow-common': '^1.0.0' }
   );
   writeJson(path.join(root, 'packages', 'ui', 'package.json'), {
-    name: '@n3xa/fixture-app-ui',
-    dependencies: { '@n3xah/fixture-flow-common': '^1.0.0', '@n3xah/fixture-flow-ui': '^1.0.0' },
+    name: '@consumer/fixture-app-ui',
+    dependencies: { '@acme/fixture-flow-common': '^1.0.0', '@acme/fixture-flow-ui': '^1.0.0' },
   });
-  installRegistryCopy(path.join(nm('ui'), '@n3xah', 'fixture-flow-common'), '@n3xah/fixture-flow-common', '1.0.0');
-  installRegistryCopy(path.join(nm('ui'), '@n3xah', 'fixture-flow-ui'), '@n3xah/fixture-flow-ui', '1.0.0', {
-    '@n3xah/fixture-flow-common': '^1.0.0',
+  installRegistryCopy(path.join(nm('ui'), '@acme', 'fixture-flow-common'), '@acme/fixture-flow-common', '1.0.0');
+  installRegistryCopy(path.join(nm('ui'), '@acme', 'fixture-flow-ui'), '@acme/fixture-flow-ui', '1.0.0', {
+    '@acme/fixture-flow-common': '^1.0.0',
   });
   return root;
 };
@@ -131,12 +128,12 @@ const fixtureLinkedRepo = (
       scripts: { build: script(name) },
       dependencies,
     });
-  pkg('a-server', '@n3xah/fixture-flow-server', serverVersion, {
-    '@n3xah/fixture-flow-common': serverDeclares,
+  pkg('a-server', '@acme/fixture-flow-server', serverVersion, {
+    '@acme/fixture-flow-common': serverDeclares,
     'fixture-openai': '6.0.0',
   });
-  pkg('common', '@n3xah/fixture-flow-common', '1.1.0', {});
-  pkg('ui', '@n3xah/fixture-flow-ui', '1.1.0', { '@n3xah/fixture-flow-common': '^1.1.0' });
+  pkg('common', '@acme/fixture-flow-common', '1.1.0', {});
+  pkg('ui', '@acme/fixture-flow-ui', '1.1.0', { '@acme/fixture-flow-common': '^1.1.0' });
   git(dir, 'init', '-q');
   git(dir, 'add', '.');
   git(dir, 'commit', '-q', '-m', 'fixture');
@@ -180,19 +177,20 @@ const linker = ({
     log: () => undefined,
     packDir: tmp('pack'),
     workspacePackages,
+    ...ORG,
   });
 
 const trainLinks = (
   sha: string,
-  packages = ['@n3xah/fixture-flow-common', '@n3xah/fixture-flow-server', '@n3xah/fixture-flow-ui']
-) => JSON.stringify({ links: [{ repo: 'n3xah/flow', sha, packages }], floors: [] });
+  packages = ['@acme/fixture-flow-common', '@acme/fixture-flow-server', '@acme/fixture-flow-ui']
+) => JSON.stringify({ links: [{ repo: 'acme/flow', sha, packages }], floors: [] });
 
 // ─── the dispatch (the dev deploy) ───────────────────────────────────────────────────────────────
 
 describe('plan (the dev deploy)', () => {
   it('parses repo=ref pairs over the allow-list, in order; no links is the registry road', () => {
     expect(
-      new LinkedWorkspace().plan({
+      new LinkedWorkspace(ORG).plan({
         links: ' flow=feat/dev-skill-x , util=main ',
         environment: 'dev',
         dockerfile: 'FROM scratch AS links\n',
@@ -201,26 +199,31 @@ describe('plan (the dev deploy)', () => {
       { repo: 'flow', ref: 'feat/dev-skill-x' },
       { repo: 'util', ref: 'main' },
     ]);
-    expect(new LinkedWorkspace().plan({ links: '', environment: 'dev', dockerfile: '' })).toEqual([]);
-    expect(LinkedWorkspace.DEFAULT_REPOS).toEqual([
-      'util',
-      'chat',
-      'thought',
-      'space',
-      'flow',
-      'sandbox',
-      'component-template',
-    ]);
+    expect(new LinkedWorkspace(ORG).plan({ links: '', environment: 'dev', dockerfile: '' })).toEqual([]);
+  });
+
+  it("the owner, the allow-list and the scopes are the caller's — nothing links or judges without them", () => {
+    expect(() =>
+      new LinkedWorkspace({ owner: 'acme' }).plan({
+        links: 'flow=main',
+        environment: 'dev',
+        dockerfile: 'FROM scratch AS links\n',
+      })
+    ).toThrow(/no allow-list of linkable repos was given \(LINK_REPOS/);
+    expect(() => new LinkedWorkspace({ repos: ['flow'], scopes: ['@acme/'] }).planFromTrain(trainLinks(SHA_A))).toThrow(
+      /no owner was given \(LINK_OWNER/
+    );
+    expect(() => new InstalledGraph({ repoRoot: fixtureWorkspace(), log: () => undefined }).run()).toThrow(
+      /no internal scopes were given \(LINK_SCOPES/
+    );
   });
 
   it('refuses a repo outside the allow-list, a malformed entry, a repeated repo, a ref a shell could misread, a non-dev target, a Dockerfile without the links stage', () => {
     const plan =
       (links: string, over: Record<string, unknown> = {}) =>
       () =>
-        new LinkedWorkspace().plan({ links, environment: 'dev', dockerfile: 'FROM scratch AS links\n', ...over });
-    expect(plan('flow=main,app=main')).toThrow(
-      /app is not a linkable repo \(util, chat, thought, space, flow, sandbox, component-template\)/
-    );
+        new LinkedWorkspace(ORG).plan({ links, environment: 'dev', dockerfile: 'FROM scratch AS links\n', ...over });
+    expect(plan('flow=main,app=main')).toThrow(/app is not a linkable repo \(flow, util, core\)/);
     expect(plan('flow')).toThrow(/"flow" is not repo=ref/);
     expect(plan('flow=main,flow=feat/x')).toThrow(/flow is linked twice/);
     for (const ref of ['main;rm -rf /', 'feat/$(id)', 'a..b', '-rf', 'feat//x', 'feat/x/', 'x.lock', 'feat x']) {
@@ -233,7 +236,7 @@ describe('plan (the dev deploy)', () => {
       /its Dockerfile has no `FROM scratch AS links` stage/
     );
     expect(() =>
-      new LinkedWorkspace({ repos: ['x'] }).plan({
+      new LinkedWorkspace({ ...ORG, repos: ['x'] }).plan({
         links: 'flow=main',
         environment: 'dev',
         dockerfile: 'FROM scratch AS links\n',
@@ -242,7 +245,7 @@ describe('plan (the dev deploy)', () => {
   });
 
   it('resolve: each ref to the commit it names; a ref that does not resolve is refused by name', () => {
-    const links = new LinkedWorkspace();
+    const links = new LinkedWorkspace(ORG);
     expect(
       links.resolve([{ repo: 'flow', ref: 'feat/x' }], (repo: string, ref: string) =>
         repo === 'flow' && ref === 'feat/x' ? SHA_A : null
@@ -252,7 +255,7 @@ describe('plan (the dev deploy)', () => {
       links.resolve([{ repo: 'flow', ref: 'feat/gone' }], () => {
         throw new Error('HTTP 422');
       })
-    ).toThrow(/flow=feat\/gone does not resolve in n3xah\/flow/);
+    ).toThrow(/flow=feat\/gone does not resolve in acme\/flow/);
   });
 
   it('the manifest (BUILD_LINKS): repo=ref@sha entries, rendered and parsed as one format', () => {
@@ -262,9 +265,9 @@ describe('plan (the dev deploy)', () => {
     ];
     const manifest = LinkedWorkspace.renderManifest(links);
     expect(manifest).toBe(`flow=feat/x@${SHA_A} util=main@${'b'.repeat(40)}`);
-    expect(new LinkedWorkspace().parseManifest(manifest)).toEqual(links);
-    expect(new LinkedWorkspace().parseManifest('')).toEqual([]);
-    expect(() => new LinkedWorkspace().parseManifest('flow=feat/x')).toThrow(
+    expect(new LinkedWorkspace(ORG).parseManifest(manifest)).toEqual(links);
+    expect(new LinkedWorkspace(ORG).parseManifest('')).toEqual([]);
+    expect(() => new LinkedWorkspace(ORG).parseManifest('flow=feat/x')).toThrow(
       /BUILD_LINKS entry "flow=feat\/x" is not repo=ref@sha/
     );
   });
@@ -274,31 +277,31 @@ describe('plan (the dev deploy)', () => {
 
 describe('planFromTrain (.train/links.json)', () => {
   it('reads the derived links: repo, slug, sha and the packages; an absent file is the plain road', () => {
-    const plan = new LinkedWorkspace().planFromTrain(trainLinks(SHA_A));
+    const plan = new LinkedWorkspace(ORG).planFromTrain(trainLinks(SHA_A));
     expect(plan).toEqual([
       {
         repo: 'flow',
-        slug: 'n3xah/flow',
+        slug: 'acme/flow',
         ref: SHA_A,
         sha: SHA_A,
-        packages: ['@n3xah/fixture-flow-common', '@n3xah/fixture-flow-server', '@n3xah/fixture-flow-ui'],
+        packages: ['@acme/fixture-flow-common', '@acme/fixture-flow-server', '@acme/fixture-flow-ui'],
       },
     ]);
-    expect(new LinkedWorkspace().planFromTrain(null)).toEqual([]);
-    expect(new LinkedWorkspace().planFromTrain('')).toEqual([]);
+    expect(new LinkedWorkspace(ORG).planFromTrain(null)).toEqual([]);
+    expect(new LinkedWorkspace(ORG).planFromTrain('')).toEqual([]);
   });
 
   it('refuses not-JSON, no list, a foreign owner, a repo outside the allow-list, a short sha, a repo linked twice', () => {
-    const links = new LinkedWorkspace();
+    const links = new LinkedWorkspace(ORG);
     expect(() => links.planFromTrain('{nope')).toThrow(/not JSON/);
     expect(() => links.planFromTrain('{}')).toThrow(/no "links" list/);
     expect(() => links.planFromTrain(JSON.stringify({ links: [{ repo: 'other/util', sha: SHA_A }] }))).toThrow(
-      /not under n3xah/
+      /not under acme/
     );
-    expect(() => links.planFromTrain(JSON.stringify({ links: [{ repo: 'n3xah/app', sha: SHA_A }] }))).toThrow(
+    expect(() => links.planFromTrain(JSON.stringify({ links: [{ repo: 'acme/app', sha: SHA_A }] }))).toThrow(
       /app is not a linkable repo/
     );
-    expect(() => links.planFromTrain(JSON.stringify({ links: [{ repo: 'n3xah/util', sha: 'abc' }] }))).toThrow(
+    expect(() => links.planFromTrain(JSON.stringify({ links: [{ repo: 'acme/util', sha: 'abc' }] }))).toThrow(
       /not a full commit sha/
     );
     expect(() =>
@@ -306,7 +309,7 @@ describe('planFromTrain (.train/links.json)', () => {
         JSON.stringify({
           links: [
             { repo: 'util', sha: SHA_A },
-            { repo: 'n3xah/util', sha: SHA_A },
+            { repo: 'acme/util', sha: SHA_A },
           ],
         })
       )
@@ -324,12 +327,12 @@ describe('link', () => {
       repoRoot,
       linksDir: tmp('links'),
       calls,
-      workspacePackages: async () => ['@n3xa/fixture-app-common', '@n3xa/fixture-app-ui'],
+      workspacePackages: async () => ['@consumer/fixture-app-common', '@consumer/fixture-app-ui'],
     }).install();
     expect(calls).toEqual([
       {
         cmd: 'npm',
-        args: ['run', 'build-workspace', '--', '--no-build=@n3xa/fixture-app-common,@n3xa/fixture-app-ui'],
+        args: ['run', 'build-workspace', '--', '--no-build=@consumer/fixture-app-common,@consumer/fixture-app-ui'],
         cwd: repoRoot,
       },
     ]);
@@ -342,18 +345,18 @@ describe('link', () => {
     const calls: Call[] = [];
     const receipts = linker({ repoRoot, linksDir, calls }).link({ links: [{ repo: 'flow', ref: 'feat/x', sha }] });
     const served = (rel: string) => fs.readFileSync(path.join(repoRoot, rel, 'dist', 'index.js'), 'utf8');
-    expect(served('packages/common/node_modules/@n3xah/fixture-flow-common')).toMatch(
-      /linked @n3xah\/fixture-flow-common/
+    expect(served('packages/common/node_modules/@acme/fixture-flow-common')).toMatch(
+      /linked @acme\/fixture-flow-common/
     );
-    expect(served('packages/server/node_modules/@n3xah/fixture-flow-server')).toMatch(
-      /linked @n3xah\/fixture-flow-server/
+    expect(served('packages/server/node_modules/@acme/fixture-flow-server')).toMatch(
+      /linked @acme\/fixture-flow-server/
     );
-    expect(served('packages/ui/node_modules/@n3xah/fixture-flow-ui')).toMatch(/linked @n3xah\/fixture-flow-ui/);
+    expect(served('packages/ui/node_modules/@acme/fixture-flow-ui')).toMatch(/linked @acme\/fixture-flow-ui/);
     expect(
       fs.existsSync(
         path.join(
           repoRoot,
-          'packages/server/node_modules/@n3xah/fixture-space-server/node_modules/@n3xah/fixture-flow-server'
+          'packages/server/node_modules/@acme/fixture-space-server/node_modules/@acme/fixture-flow-server'
         )
       )
     ).toBe(false);
@@ -361,21 +364,21 @@ describe('link', () => {
       readJson(
         path.join(
           repoRoot,
-          'packages/server/node_modules/@n3xah/fixture-flow-server/node_modules/fixture-openai/package.json'
+          'packages/server/node_modules/@acme/fixture-flow-server/node_modules/fixture-openai/package.json'
         )
       ).version
     ).toBe('6.0.0');
-    const server = receipts.find((r: { name: string }) => r.name === '@n3xah/fixture-flow-server');
-    expect(server.placed).toEqual(['packages/server/node_modules/@n3xah/fixture-flow-server']);
+    const server = receipts.find((r: { name: string }) => r.name === '@acme/fixture-flow-server');
+    expect(server.placed).toEqual(['packages/server/node_modules/@acme/fixture-flow-server']);
     expect(server.removed.sort()).toEqual([
-      'packages/server/node_modules/@n3xah/fixture-flow-server',
-      'packages/server/node_modules/@n3xah/fixture-space-server/node_modules/@n3xah/fixture-flow-server',
+      'packages/server/node_modules/@acme/fixture-flow-server',
+      'packages/server/node_modules/@acme/fixture-space-server/node_modules/@acme/fixture-flow-server',
     ]);
     expect(server.hash).toMatch(/^[0-9a-f]{64}$/);
     // the placed copy hashes to the pack: the number the verify records is the number the publish will read from node_modules
     expect(
-      DistHash.ofDirectory(path.join(repoRoot, 'packages/server/node_modules/@n3xah/fixture-flow-server'), {
-        scope: '@n3xah',
+      DistHash.ofDirectory(path.join(repoRoot, 'packages/server/node_modules/@acme/fixture-flow-server'), {
+        scope: '@acme',
       })
     ).toBe(server.hash);
     const builds = calls
@@ -384,11 +387,11 @@ describe('link', () => {
     expect(builds).toEqual(['common', 'a-server', 'ui']);
     expect(
       fs.readFileSync(
-        path.join(linksDir, 'flow/packages/a-server/node_modules/@n3xah/fixture-flow-common/dist/index.js'),
+        path.join(linksDir, 'flow/packages/a-server/node_modules/@acme/fixture-flow-common/dist/index.js'),
         'utf8'
       )
     ).toMatch(/linked/);
-    expect(new InstalledGraph({ repoRoot, log: () => undefined }).run().ok).toBe(true);
+    expect(new InstalledGraph({ repoRoot, scopes: ORG.scopes, log: () => undefined }).run().ok).toBe(true);
   });
 
   it('refuses: no links but a tree present; a tree at another sha; a linked repo the workspace installs nothing from; a dev-only build that is not dev; a cycle', () => {
@@ -407,7 +410,7 @@ describe('link', () => {
       })
     ).toThrow(/links build into dev-… images only/);
     const common = path.join(dir, 'packages/common/package.json');
-    writeJson(common, { ...readJson(common), dependencies: { '@n3xah/fixture-flow-ui': '^1.1.0' } });
+    writeJson(common, { ...readJson(common), dependencies: { '@acme/fixture-flow-ui': '^1.1.0' } });
     git(dir, 'commit', '-qam', 'cycle');
     const cyc = git(dir, 'rev-parse', 'HEAD');
     expect(() => linker({ repoRoot, linksDir }).link({ links: [{ repo: 'flow', ref: 'feat/x', sha: cyc }] })).toThrow(
@@ -429,9 +432,9 @@ describe('DistHash', () => {
   const pkgDir = (label: string, over: Record<string, unknown> = {}, files: Record<string, string> = {}) => {
     const dir = tmp(label);
     writeJson(path.join(dir, 'package.json'), {
-      name: '@n3xah/fixture-x',
+      name: '@acme/fixture-x',
       version: '1.0.0',
-      dependencies: { '@n3xah/fixture-y': '^1.0.0', lodash: '4.0.0' },
+      dependencies: { '@acme/fixture-y': '^1.0.0', lodash: '4.0.0' },
       ...over,
     });
     fs.mkdirSync(path.join(dir, 'dist'), { recursive: true });
@@ -444,29 +447,29 @@ describe('DistHash', () => {
   };
 
   it('a version bump, lerna sibling floor moves, gitHead, CHANGELOG.md and node_modules do not move it; a changed byte, a third-party range, a new file do', () => {
-    const base = DistHash.ofDirectory(pkgDir('base'), { scope: '@n3xah' });
+    const base = DistHash.ofDirectory(pkgDir('base'), { scope: '@acme' });
     expect(base).toMatch(/^[0-9a-f]{64}$/);
-    expect(DistHash.ofDirectory(pkgDir('bump', { version: '1.1.0' }), { scope: '@n3xah' })).toBe(base);
+    expect(DistHash.ofDirectory(pkgDir('bump', { version: '1.1.0' }), { scope: '@acme' })).toBe(base);
     expect(
-      DistHash.ofDirectory(pkgDir('floor', { dependencies: { '@n3xah/fixture-y': '^1.2.0', lodash: '4.0.0' } }), {
-        scope: '@n3xah',
+      DistHash.ofDirectory(pkgDir('floor', { dependencies: { '@acme/fixture-y': '^1.2.0', lodash: '4.0.0' } }), {
+        scope: '@acme',
       })
     ).toBe(base);
-    expect(DistHash.ofDirectory(pkgDir('githead', { gitHead: 'abc', _id: 'x' }), { scope: '@n3xah' })).toBe(base);
+    expect(DistHash.ofDirectory(pkgDir('githead', { gitHead: 'abc', _id: 'x' }), { scope: '@acme' })).toBe(base);
     expect(
       DistHash.ofDirectory(pkgDir('changelog', {}, { 'CHANGELOG.md': '# 1.1.0\n', 'node_modules/z/index.js': '1' }), {
-        scope: '@n3xah',
+        scope: '@acme',
       })
     ).toBe(base);
     expect(
-      DistHash.ofDirectory(pkgDir('byte', {}, { 'dist/index.js': 'module.exports = 2;\n' }), { scope: '@n3xah' })
+      DistHash.ofDirectory(pkgDir('byte', {}, { 'dist/index.js': 'module.exports = 2;\n' }), { scope: '@acme' })
     ).not.toBe(base);
     expect(
-      DistHash.ofDirectory(pkgDir('third', { dependencies: { '@n3xah/fixture-y': '^1.0.0', lodash: '4.1.0' } }), {
-        scope: '@n3xah',
+      DistHash.ofDirectory(pkgDir('third', { dependencies: { '@acme/fixture-y': '^1.0.0', lodash: '4.1.0' } }), {
+        scope: '@acme',
       })
     ).not.toBe(base);
-    expect(DistHash.ofDirectory(pkgDir('newfile', {}, { 'dist/extra.js': '' }), { scope: '@n3xah' })).not.toBe(base);
+    expect(DistHash.ofDirectory(pkgDir('newfile', {}, { 'dist/extra.js': '' }), { scope: '@acme' })).not.toBe(base);
     expect(DistHash.ofDirectory(pkgDir('noscope'), { scope: null })).not.toBe(base);
   });
 
@@ -483,8 +486,8 @@ describe('DistHash', () => {
     const tarball = path.join(dest, filename);
     const installed = tmp('installed');
     execFileSync('tar', ['-xzf', tarball, '-C', installed, '--strip-components=1']);
-    expect(DistHash.ofTarball(tarball, { scope: '@n3xah' })).toBe(DistHash.ofDirectory(installed, { scope: '@n3xah' }));
-    expect(DistHash.scopeOf('@n3xah/util-server')).toBe('@n3xah');
+    expect(DistHash.ofTarball(tarball, { scope: '@acme' })).toBe(DistHash.ofDirectory(installed, { scope: '@acme' }));
+    expect(DistHash.scopeOf('@acme/util-server')).toBe('@acme');
     expect(DistHash.scopeOf('lodash')).toBeNull();
   });
 
@@ -500,26 +503,30 @@ describe('DistHash', () => {
       links: [{ repo: 'flow', ref: 'feat/x', sha }],
     });
     const hash = (receipts: { name: string; hash: string }[]) =>
-      receipts.find((r) => r.name === '@n3xah/fixture-flow-common')!.hash;
+      receipts.find((r) => r.name === '@acme/fixture-flow-common')!.hash;
     expect(hash(first)).not.toBe(hash(second));
     // the publish's proof over the SECOND build's tree against the FIRST build's record: not equivalent, both hashes named
     const record = linker({ repoRoot, linksDir }).record({
       tip: SHA_A,
-      links: [{ repo: 'flow', slug: 'n3xah/flow', sha, packages: [] }],
+      links: [{ repo: 'flow', slug: 'acme/flow', sha, packages: [] }],
       receipts: first,
     });
     const proof = linker({ repoRoot, linksDir }).prove({
-      links: new LinkedWorkspace().planFromTrain(trainLinks(sha)),
+      links: new LinkedWorkspace(ORG).planFromTrain(trainLinks(sha)),
       record,
       trees: [],
     });
     expect(proof.ok).toBe(true); // the first tree still holds the first build
     const other = linker({ repoRoot: fixtureWorkspace(), linksDir });
     other.link({ links: [{ repo: 'flow', ref: 'feat/x', sha }] });
-    const proofOther = other.prove({ links: new LinkedWorkspace().planFromTrain(trainLinks(sha)), record, trees: [] });
+    const proofOther = other.prove({
+      links: new LinkedWorkspace(ORG).planFromTrain(trainLinks(sha)),
+      record,
+      trees: [],
+    });
     expect(proofOther.ok).toBe(false);
     expect(proofOther.why.join('\n')).toMatch(
-      /@n3xah\/fixture-flow-common installed [0-9a-f]{12} ≠ verified [0-9a-f]{12}/
+      /@acme\/fixture-flow-common installed [0-9a-f]{12} ≠ verified [0-9a-f]{12}/
     );
   });
 });
@@ -529,18 +536,18 @@ describe('DistHash', () => {
 describe('LockEquivalence', () => {
   const lock = (over: Record<string, unknown> = {}, root: Record<string, unknown> = {}) =>
     JSON.stringify({
-      name: '@n3xa/fixture-app-server',
+      name: '@consumer/fixture-app-server',
       version: '1.0.0',
       lockfileVersion: 3,
       requires: true,
       packages: {
         '': {
-          name: '@n3xa/fixture-app-server',
+          name: '@consumer/fixture-app-server',
           version: '1.0.0',
-          dependencies: { '@n3xah/util-server': '^1.30.1', lodash: '^4.0.0' },
+          dependencies: { '@acme/util-server': '^1.30.1', lodash: '^4.0.0' },
           ...root,
         },
-        'node_modules/@n3xah/util-server': {
+        'node_modules/@acme/util-server': {
           version: '1.30.1',
           resolved: 'https://r/util-server-1.30.1.tgz',
           integrity: 'sha512-a',
@@ -550,19 +557,19 @@ describe('LockEquivalence', () => {
         ...over,
       },
     });
-  const linked = ['@n3xah/util-server'];
+  const linked = ['@acme/util-server'];
 
   it("the linked package's own entry and the root's range on it may move; everything else is equivalent byte for byte", () => {
     const after = lock(
       {
-        'node_modules/@n3xah/util-server': {
+        'node_modules/@acme/util-server': {
           version: '1.30.2',
           resolved: 'https://r/util-server-1.30.2.tgz',
           integrity: 'sha512-c',
           dependencies: { lodash: '^4.1.0' },
         },
       },
-      { dependencies: { '@n3xah/util-server': '^1.30.2', lodash: '^4.0.0' } }
+      { dependencies: { '@acme/util-server': '^1.30.2', lodash: '^4.0.0' } }
     );
     expect(LockEquivalence.judge(lock(), after, { linked })).toEqual({ equivalent: true, differences: [] });
     expect(LockEquivalence.judge(lock(), lock(), { linked: [] }).equivalent).toBe(true);
@@ -595,14 +602,14 @@ describe('LockEquivalence', () => {
     ).toBe('semver was removed by the stamp');
     const split = LockEquivalence.judge(
       lock(),
-      lock({ 'node_modules/x/node_modules/@n3xah/util-server': { version: '1.30.2' } }),
+      lock({ 'node_modules/x/node_modules/@acme/util-server': { version: '1.30.2' } }),
       { linked }
     );
     expect(split.equivalent).toBe(false);
-    expect(split.differences[0].why).toMatch(/@n3xah\/util-server was added/);
+    expect(split.differences[0].why).toMatch(/@acme\/util-server was added/);
     const range = LockEquivalence.judge(
       lock(),
-      lock({}, { dependencies: { '@n3xah/util-server': '^1.30.1', lodash: '^4.1.0' } }),
+      lock({}, { dependencies: { '@acme/util-server': '^1.30.1', lodash: '^4.1.0' } }),
       { linked }
     );
     expect(range.differences).toEqual([
@@ -624,19 +631,19 @@ describe('LockEquivalence', () => {
   it("isVersionOnlyDiff: the floors chore's package.json shape (ranges, a graduation `a || ^b`, the version field) — anything else is not", () => {
     expect(
       LockEquivalence.isVersionOnlyDiff(
-        '--- a\n+++ b\n@@ -1 +1 @@\n-    "@n3xah/util-server": "^1.30.1",\n+    "@n3xah/util-server": "^1.30.2",\n'
+        '--- a\n+++ b\n@@ -1 +1 @@\n-    "@acme/util-server": "^1.30.1",\n+    "@acme/util-server": "^1.30.2",\n'
       )
     ).toBe(true);
     expect(
       LockEquivalence.isVersionOnlyDiff(
-        '-    "@n3xah/flow-common": "^0.50.0",\n+    "@n3xah/flow-common": "^0.50.0 || ^1.0.0-0",\n'
+        '-    "@acme/flow-common": "^0.50.0",\n+    "@acme/flow-common": "^0.50.0 || ^1.0.0-0",\n'
       )
     ).toBe(true);
     expect(LockEquivalence.isVersionOnlyDiff('-  "version": "1.0.0",\n+  "version": "1.0.1",\n')).toBe(true);
     expect(LockEquivalence.isVersionOnlyDiff('')).toBe(true);
     expect(LockEquivalence.isVersionOnlyDiff('+    "build": "tsc",\n')).toBe(false);
-    expect(LockEquivalence.isVersionOnlyDiff('+    "@n3xah/util-server": "^1.30.2",\n')).toBe(true);
-    expect(LockEquivalence.isVersionOnlyDiff('+    "@n3xah/util-server": "file:../x",\n')).toBe(false);
+    expect(LockEquivalence.isVersionOnlyDiff('+    "@acme/util-server": "^1.30.2",\n')).toBe(true);
+    expect(LockEquivalence.isVersionOnlyDiff('+    "@acme/util-server": "file:../x",\n')).toBe(false);
   });
 });
 
@@ -648,25 +655,25 @@ describe('assert / prove / mints', () => {
     const linksDir = tmp('links');
     const { sha } = fixtureLinkedRepo(linksDir, 'flow');
     const links = linker({ repoRoot, linksDir });
-    const plan = new LinkedWorkspace().planFromTrain(trainLinks(sha));
+    const plan = new LinkedWorkspace(ORG).planFromTrain(trainLinks(sha));
     const receipts = links.link({ links: plan });
     const record = links.record({ tip: SHA_A, links: plan, receipts });
     expect(record.tip).toBe(SHA_A);
     expect(record.links[0].packages.map((p: { name: string }) => p.name)).toEqual([
-      '@n3xah/fixture-flow-server',
-      '@n3xah/fixture-flow-common',
-      '@n3xah/fixture-flow-ui',
+      '@acme/fixture-flow-server',
+      '@acme/fixture-flow-common',
+      '@acme/fixture-flow-ui',
     ]);
     expect(links.assert({ record })).toMatchObject({ ok: true, checked: 5 });
     installRegistryCopy(
-      path.join(repoRoot, 'packages/ui/node_modules/@n3xah/fixture-flow-ui'),
-      '@n3xah/fixture-flow-ui',
+      path.join(repoRoot, 'packages/ui/node_modules/@acme/fixture-flow-ui'),
+      '@acme/fixture-flow-ui',
       '1.0.0'
     );
     const clobbered = links.assert({ record });
     expect(clobbered.ok).toBe(false);
     expect(clobbered.findings[0]).toMatch(
-      /packages\/ui: @n3xah\/fixture-flow-ui at node_modules\/@n3xah\/fixture-flow-ui hashes [0-9a-f]{12}, the pack was [0-9a-f]{12} — the linked copy was replaced/
+      /packages\/ui: @acme\/fixture-flow-ui at node_modules\/@acme\/fixture-flow-ui hashes [0-9a-f]{12}, the pack was [0-9a-f]{12} — the linked copy was replaced/
     );
   });
 
@@ -675,21 +682,21 @@ describe('assert / prove / mints', () => {
     const linksDir = tmp('links');
     const { sha } = fixtureLinkedRepo(linksDir, 'flow');
     const links = linker({ repoRoot, linksDir });
-    const plan = new LinkedWorkspace().planFromTrain(trainLinks(sha));
+    const plan = new LinkedWorkspace(ORG).planFromTrain(trainLinks(sha));
     const record = links.record({ tip: SHA_A, links: plan, receipts: links.link({ links: plan }) });
     const before = JSON.stringify({
       lockfileVersion: 3,
       packages: {
-        '': { dependencies: { '@n3xah/fixture-flow-common': '^1.0.0' } },
-        'node_modules/@n3xah/fixture-flow-common': { version: '1.0.0' },
+        '': { dependencies: { '@acme/fixture-flow-common': '^1.0.0' } },
+        'node_modules/@acme/fixture-flow-common': { version: '1.0.0' },
         'node_modules/x': { version: '1' },
       },
     });
     const after = JSON.stringify({
       lockfileVersion: 3,
       packages: {
-        '': { dependencies: { '@n3xah/fixture-flow-common': '^1.1.0' } },
-        'node_modules/@n3xah/fixture-flow-common': { version: '1.1.0' },
+        '': { dependencies: { '@acme/fixture-flow-common': '^1.1.0' } },
+        'node_modules/@acme/fixture-flow-common': { version: '1.1.0' },
         'node_modules/x': { version: '1' },
       },
     });
@@ -701,8 +708,7 @@ describe('assert / prove / mints', () => {
           rel: 'packages/common',
           lockBefore: before,
           lockAfter: after,
-          packageJsonDiff:
-            '-    "@n3xah/fixture-flow-common": "^1.0.0",\n+    "@n3xah/fixture-flow-common": "^1.1.0",\n',
+          packageJsonDiff: '-    "@acme/fixture-flow-common": "^1.0.0",\n+    "@acme/fixture-flow-common": "^1.1.0",\n',
         },
       ],
     });
@@ -712,8 +718,8 @@ describe('assert / prove / mints', () => {
     const stray = JSON.stringify({
       lockfileVersion: 3,
       packages: {
-        '': { dependencies: { '@n3xah/fixture-flow-common': '^1.1.0' } },
-        'node_modules/@n3xah/fixture-flow-common': { version: '1.1.0' },
+        '': { dependencies: { '@acme/fixture-flow-common': '^1.1.0' } },
+        'node_modules/@acme/fixture-flow-common': { version: '1.1.0' },
         'node_modules/x': { version: '2' },
       },
     });
@@ -743,11 +749,39 @@ describe('assert / prove / mints', () => {
       why: ['no links at the parent: the plain road'],
     });
     const otherSha = links.prove({
-      links: new LinkedWorkspace().planFromTrain(trainLinks('b'.repeat(40))),
+      links: new LinkedWorkspace(ORG).planFromTrain(trainLinks('b'.repeat(40))),
       record,
       trees: [],
     });
     expect(otherSha.why[0]).toMatch(/the record links flow at [0-9a-f]{12}, the parent's links.json at bbbbbbbbbbbb/);
+  });
+
+  it('tagsCreatedSince: the tags at HEAD and at every commit after --since — the release commit lerna tagged stays named when a lock re-stamp commit follows it; without --since, HEAD alone', () => {
+    const dir = tmp('tags');
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+    git(dir, 'init', '-q');
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-q', '-m', 'chore(train): depart');
+    const pushed = git(dir, 'rev-parse', 'HEAD');
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'b\n');
+    git(dir, 'commit', '-qam', 'chore(release): publish');
+    git(dir, 'tag', '@acme/fixture-x@1.0.1');
+    git(dir, 'tag', '@acme/fixture-y@2.3.0');
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'c\n');
+    git(dir, 'commit', '-qam', 'chore(locks): consumer locks re-stamped for the mint');
+    const runGit = (args: string[]) => git(dir, ...args);
+    expect(LinkedWorkspace.tagsCreatedSince({ git: runGit, since: pushed })).toEqual([
+      '@acme/fixture-x@1.0.1',
+      '@acme/fixture-y@2.3.0',
+    ]);
+    expect(LinkedWorkspace.tagsCreatedSince({ git: runGit })).toEqual([]);
+    git(dir, 'tag', 'at-head');
+    expect(LinkedWorkspace.tagsCreatedSince({ git: runGit, since: pushed })).toEqual([
+      '@acme/fixture-x@1.0.1',
+      '@acme/fixture-y@2.3.0',
+      'at-head',
+    ]);
+    expect(LinkedWorkspace.tagsCreatedSince({ git: runGit, since: 'HEAD' })).toEqual(['at-head']);
   });
 
   it("mints: the published tarballs hashed by tag; the number equals the pack's (the same bytes)", () => {
@@ -758,15 +792,15 @@ describe('assert / prove / mints', () => {
     const receipts = links.link({ links: [{ repo: 'flow', ref: 'feat/x', sha }] });
     const packs = fs.readdirSync(links.packDir).map((f) => path.join(links.packDir, f));
     const mints = links.mints({
-      tags: ['@n3xah/fixture-flow-common@1.1.0', 'not-a-tag'],
+      tags: ['@acme/fixture-flow-common@1.1.0', 'not-a-tag'],
       pack: (name: string) => packs.find((p) => path.basename(p).startsWith(name.replace('@', '').replace('/', '-')))!,
     });
     expect(mints).toEqual([
       {
-        name: '@n3xah/fixture-flow-common',
+        name: '@acme/fixture-flow-common',
         version: '1.1.0',
-        tag: '@n3xah/fixture-flow-common@1.1.0',
-        hash: receipts.find((r: { name: string }) => r.name === '@n3xah/fixture-flow-common').hash,
+        tag: '@acme/fixture-flow-common@1.1.0',
+        hash: receipts.find((r: { name: string }) => r.name === '@acme/fixture-flow-common').hash,
       },
     ]);
   });
@@ -777,33 +811,33 @@ describe('assert / prove / mints', () => {
 describe('InstalledGraph', () => {
   it("a second copy of an internal package in one tree, a version split across trees, and a range nothing installed resolves are findings; the scopes are the caller's", () => {
     const repoRoot = fixtureWorkspace();
-    const graph = new InstalledGraph({ repoRoot, log: () => undefined });
+    const graph = new InstalledGraph({ repoRoot, scopes: ORG.scopes, log: () => undefined });
     const first = graph.run();
     expect(first.ok).toBe(false);
     expect(first.failures.map((f: { leg: string }) => f.leg)).toEqual(['one-copy']);
-    expect(first.failures[0].message).toMatch(/packages\/server: @n3xah\/fixture-flow-server is installed 2 times/);
+    expect(first.failures[0].message).toMatch(/packages\/server: @acme\/fixture-flow-server is installed 2 times/);
     const scoped = new InstalledGraph({ repoRoot, scopes: ['@nobody/'], log: () => undefined }).run();
     expect(scoped.ok).toBe(true);
-    fs.rmSync(path.join(repoRoot, 'packages/server/node_modules/@n3xah/fixture-space-server/node_modules'), {
+    fs.rmSync(path.join(repoRoot, 'packages/server/node_modules/@acme/fixture-space-server/node_modules'), {
       recursive: true,
     });
     installRegistryCopy(
-      path.join(repoRoot, 'packages/ui/node_modules/@n3xah/fixture-flow-common'),
-      '@n3xah/fixture-flow-common',
+      path.join(repoRoot, 'packages/ui/node_modules/@acme/fixture-flow-common'),
+      '@acme/fixture-flow-common',
       '1.2.0'
     );
     writeJson(path.join(repoRoot, 'packages/ui/package.json'), {
-      name: '@n3xa/fixture-app-ui',
+      name: '@consumer/fixture-app-ui',
       dependencies: {
-        '@n3xah/fixture-flow-common': '^1.0.0',
-        '@n3xah/fixture-flow-ui': '^1.0.0',
-        '@n3xah/fixture-missing': '^1.0.0',
+        '@acme/fixture-flow-common': '^1.0.0',
+        '@acme/fixture-flow-ui': '^1.0.0',
+        '@acme/fixture-missing': '^1.0.0',
       },
     });
-    const second = new InstalledGraph({ repoRoot, log: () => undefined }).run();
+    const second = new InstalledGraph({ repoRoot, scopes: ORG.scopes, log: () => undefined }).run();
     expect(second.failures.map((f: { leg: string }) => f.leg).sort()).toEqual(['one-version', 'resolution']);
     expect(second.failures.find((f: { leg: string }) => f.leg === 'resolution').message).toMatch(
-      /declares @n3xah\/fixture-missing \^1.0.0; nothing installed resolves it/
+      /declares @acme\/fixture-missing \^1.0.0; nothing installed resolves it/
     );
   });
 });

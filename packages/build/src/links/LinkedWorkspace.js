@@ -9,29 +9,28 @@ const { LockEquivalence } = require('./LockEquivalence');
 /**
  * LINK A WORKSPACE FROM SOURCE — a lerna workspace whose internal dependencies are installed from a
  * registry receives, in place of EVERY registry copy of a package (hoisted or nested), the PACKED
- * dist of that package built from a sibling repo's checkout at one commit. Two callers, one owner
- * (n3xa's LANDING_TRAINS §1.4p (10); DEV_ENVIRONMENT "Deploy a workspace"):
+ * dist of that package built from a sibling repo's checkout at one commit. Two callers, one owner:
  *
- *   THE DEV DEPLOY (the app's image): deploy-dev.yml's `links` input names supporting-repo branches
- *   (`repo=ref[,repo=ref…]`), the preflight refuses what must never build (`plan`, `resolve`), and the
- *   Dockerfile's build stage installs every package at its own lock building none (`install`),
- *   builds each linked package at its branch and puts its pack in place (`link`, dev images only),
- *   then judges the installed graph.
+ *   AN IMAGE BUILD: a deploy workflow's `links` input names sibling-repo branches (`repo=ref[,repo=ref…]`),
+ *   the preflight refuses what must never build (`plan`, `resolve`), and the Dockerfile's build stage
+ *   installs every package at its own lock building none (`install`), builds each linked package at
+ *   its branch and puts its pack in place (`link`, for a named environment only), then judges the
+ *   installed graph.
  *
- *   THE PARALLEL-VERIFY TRAIN (a supporting repo's verify-train run): the train tip carries
- *   `.train/links.json` — the not-yet-minted upstream trains, each at the commit it was linked at,
- *   DERIVED by `land link` from the package graph — and the reusable `_test.yml` checks each out at
- *   that commit, links it (`plan --train`, `link --train --record`), builds and tests; the packed
- *   dists' hashes ride the run's `train-links` artifact. The publish run then PROVES the departed
+ *   A LINKED VERIFY (a library repository's CI run of its integration branch): the tip carries
+ *   `.train/links.json` — the not-yet-published upstream repositories, each at the commit it was linked
+ *   at, derived from the package graph by the release tooling — and the reusable test workflow checks
+ *   each out at that commit, links it (`plan --train`, `link --train --record`), builds and tests; the
+ *   packed dists' hashes ride the run's `train-links` artifact. The publish run then PROVES the released
  *   tip equivalent to the verified one (`prove`: the installed copies of the linked packages hash to
  *   what was packed, the locks equivalent over the linked names, the package.json diffs version-only)
- *   and its finalize records the published tarballs' hashes (`mints`). `assert` reds a verify whose
- *   linked copies were clobbered between the link and the tests.
+ *   and, after the publish, records the published tarballs' hashes (`mints`). `assert` reds a verify
+ *   whose linked copies were clobbered between the link and the tests.
  *
- * The workspace's trees are lerna.json's packages (the app's common/server/ui; a supporting repo's
- * own packages). Each linked repo checkout sits under `linksDir/<repo>` with its own `packages/`.
- * `owner`, `repos` (the allow-list) and `scopes` (the internal scopes the installed graph judges)
- * are the caller's — this package stays generic. A linked package is built in dependency order
+ * The workspace's trees are lerna.json's packages. Each linked repo checkout sits under
+ * `linksDir/<repo>` with its own `packages/`. `owner`, `repos` (the allow-list) and `scopes` (the
+ * internal scopes the installed graph judges) are the caller's — required inputs, never defaults:
+ * this package knows no organization. A linked package is built in dependency order
  * across every linked repo (a package builds against the linked build of every linked sibling it
  * declares); it copies (never symlinks) so a tree holds one real path per package, and what npm
  * nested under the registry copy (a third-party pin the tree top cannot meet) stays under the
@@ -44,9 +43,9 @@ class LinkedWorkspace {
     packDir = path.join(os.tmpdir(), 'link-workspace-packs'),
     exec = LinkedWorkspace.exec,
     workspacePackages,
-    owner = 'n3xah',
-    repos = LinkedWorkspace.DEFAULT_REPOS,
-    scopes = LinkedWorkspace.DEFAULT_SCOPES,
+    owner = null,
+    repos = null,
+    scopes = null,
     log = console.log,
   } = {}) {
     this.repoRoot = repoRoot;
@@ -58,7 +57,7 @@ class LinkedWorkspace {
     this.repos = repos;
     this.scopes = scopes;
     this.log = log;
-    this.graph = new InstalledGraph({ repoRoot, scopes, log });
+    this.graph = new InstalledGraph({ repoRoot, scopes: scopes || [], log });
   }
 
   // ---- the dispatch (the dev deploy) ----------------------------------------------------------
@@ -113,7 +112,7 @@ class LinkedWorkspace {
       }
       if (!/^[0-9a-f]{40}$/.test(sha)) {
         throw new Error(
-          `links: ${repo}=${ref} does not resolve in ${this.owner}/${repo} — push the branch, or name a tag or a full SHA`
+          `links: ${repo}=${ref} does not resolve in ${this.assertOwner()}/${repo} — push the branch, or name a tag or a full SHA`
         );
       }
       return { repo, ref, sha };
@@ -147,8 +146,8 @@ class LinkedWorkspace {
         throw new Error(`links: .train/links.json link ${i + 1} needs "repo" and "sha"`);
       }
       const repo = link.repo.includes('/') ? link.repo.slice(link.repo.indexOf('/') + 1) : link.repo;
-      const owner = link.repo.includes('/') ? link.repo.slice(0, link.repo.indexOf('/')) : this.owner;
-      if (owner !== this.owner) {
+      const owner = link.repo.includes('/') ? link.repo.slice(0, link.repo.indexOf('/')) : this.assertOwner();
+      if (owner !== this.assertOwner()) {
         throw new Error(`links: ${link.repo} is not under ${this.owner} — a train links its own owner's repos`);
       }
       this.assertRepo(repo);
@@ -292,7 +291,7 @@ class LinkedWorkspace {
       tip,
       links: links.map((l) => ({
         repo: l.repo,
-        slug: l.slug || `${this.owner}/${l.repo}`,
+        slug: l.slug || `${this.assertOwner()}/${l.repo}`,
         sha: l.sha,
         packages: receipts
           .filter((r) => r.repo === l.repo)
@@ -339,8 +338,7 @@ class LinkedWorkspace {
   }
 
   /**
-   * The publish run's proof that the departed tip is EQUIVALENT to the verified one (LANDING_TRAINS
-   * §1.4p (4)): `links` = the parent's `.train/links.json` plan; `record` = the verify run's
+   * The publish run's proof that the released tip is EQUIVALENT to the verified one: `links` = the parent's `.train/links.json` plan; `record` = the verify run's
    * `train-links` record (null when it could not be read); `trees` = [{ rel, lockBefore, lockAfter,
    * packageJsonDiff }] — the parent's and the head's lock texts and the unified diff of package.json,
    * per lerna tree. Judges: every recorded package's INSTALLED copy hashes to the pack; every tree's
@@ -448,6 +446,34 @@ class LinkedWorkspace {
     return proof;
   }
 
+  /**
+   * The tags a publish run created: every tag pointing at HEAD or at a commit between `since` (the
+   * commit the run was pushed for) and HEAD. The release commit lerna tags is not the last commit of
+   * the run when a lock re-stamp commit follows it, so HEAD alone would name nothing.
+   * `git(args)` → the command's stdout. Sorted, unique.
+   */
+  static tagsCreatedSince({ git, since = null }) {
+    const commits = ['HEAD'];
+    if (since) {
+      commits.push(
+        ...String(git(['rev-list', `${since}..HEAD`]) || '')
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      );
+    }
+    const tags = new Set();
+    for (const commit of commits) {
+      for (const tag of String(git(['tag', '--points-at', commit]) || '')
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean)) {
+        tags.add(tag);
+      }
+    }
+    return [...tags].sort();
+  }
+
   /** The published tarballs' hashes — the `train-mints` artifact: [{ name, version, tag, hash }]. `pack(name, version)` → a tarball path (the registry's copy). */
   mints({ tags, pack }) {
     const out = [];
@@ -492,9 +518,20 @@ class LinkedWorkspace {
   // ---- helpers -----------------------------------------------------------------------------------
 
   assertRepo(repo) {
+    if (!Array.isArray(this.repos) || !this.repos.length) {
+      throw new Error('links: no allow-list of linkable repos was given (LINK_REPOS, or `repos` to the constructor)');
+    }
     if (!this.repos.includes(repo)) {
       throw new Error(`links: ${repo} is not a linkable repo (${this.repos.join(', ')})`);
     }
+  }
+
+  /** The owner every linked repo belongs to — required (LINK_OWNER, or `owner` to the constructor). */
+  assertOwner() {
+    if (typeof this.owner !== 'string' || !this.owner.trim()) {
+      throw new Error('links: no owner was given (LINK_OWNER, or `owner` to the constructor)');
+    }
+    return this.owner;
   }
 
   /** Branch, tag or SHA characters only; nothing a shell, git or the manifest could read two ways. */
@@ -653,9 +690,6 @@ class LinkedWorkspace {
   }
 }
 
-/** The supporting repos a workspace may link by default — every repo whose packages n3xa's app installs from n3xah. */
-LinkedWorkspace.DEFAULT_REPOS = ['util', 'chat', 'thought', 'space', 'flow', 'sandbox', 'component-template'];
-LinkedWorkspace.DEFAULT_SCOPES = ['@proteinjs/', '@n3xah/'];
 LinkedWorkspace.DOCKERFILE_LINKS_STAGE = /^FROM scratch AS links$/m;
 LinkedWorkspace.TRAIN_LINKS_FILE = '.train/links.json';
 LinkedWorkspace.LINKS_ARTIFACT = 'train-links';

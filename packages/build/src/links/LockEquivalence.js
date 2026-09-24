@@ -1,10 +1,9 @@
 /**
- * LOCK EQUIVALENCE — the installed graph as the lock describes it, before and after a departure's
- * floors chore (n3xa's LANDING_TRAINS §1.4p, guard 1: the publish-skip / golden equivalence is
- * judged by the INSTALLED GRAPH, never by a file list). ONE predicate, kept in two places: here
- * (`@proteinjs/build`, run by `link-workspace prove` in the publish run's build job) and, verbatim,
- * as `scripts/ci/LockEquivalence.js` in the n3xa metarepo (the land tool judges the stamp on the Mac
- * before the push). Copy the file whole when it changes — the VerifiedTree.js discipline.
+ * LOCK EQUIVALENCE — the installed graph as the lock describes it, before and after a release's
+ * floors commit (the publish-skip equivalence is judged by the INSTALLED GRAPH, never by a file
+ * list). ONE predicate, kept in two places: here (`@proteinjs/build`, run by `link-workspace prove`
+ * in the publish run's build job) and, verbatim, in the release tooling that judges the stamp before
+ * the push. Copy the file whole when it changes.
  *
  * Two package-lock.json texts are EQUIVALENT over `linked` (the package names the verify linked
  * from source) when every entry is byte-identical except:

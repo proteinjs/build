@@ -3,31 +3,34 @@
  * link-workspace — the CI door of the linked workspace (src/links/LinkedWorkspace.js).
  *
  *   link-workspace plan [--train]            the links: `.train/links.json` (--train) or LINKS / DEPLOY_ENVIRONMENT /
- *                                            DOCKERFILE (the dev deploy); outputs repos=, <repo>=<sha>, manifest=
- *   link-workspace resolve                   (the dev deploy) each ref -> sha through `gh api`; outputs <repo>=<sha>, manifest=
+ *                                            DOCKERFILE (an image build); outputs repos=, <repo>=<sha>, manifest=
+ *   link-workspace resolve                   (an image build) each ref -> sha through `gh api`; outputs <repo>=<sha>, manifest=
  *   link-workspace install                   every workspace package at its own lock, none built
  *   link-workspace link [--train] [--record <file>]
  *                                            build + pack each linked package, put the packs in place of every registry
  *                                            copy, judge the installed graph; --record writes the train-links record
- *                                            (the verify's artifact); the dev deploy reads BUILD_LINKS / BUILD_VERSION
+ *                                            (the verify's artifact); an image build reads BUILD_LINKS / BUILD_VERSION
  *   link-workspace graph                     the installed graph alone
  *   link-workspace assert --record <file>    the linked copies as installed now hash to the record (after the build)
  *   link-workspace prove --out <file>        (the publish run) the departed tip equivalent to the verified one:
  *                                            HEAD^'s links, the verify run's record (VERIFY_WORKFLOW, gh), the installed
  *                                            copies' hashes, the locks' equivalence, the package.json diffs; outputs
  *                                            links_proven=; exit 0 always (a failed proof tests, never fails)
- *   link-workspace mints --out <file>        (finalize, after the publish) the published tarballs' hashes for the tags at HEAD
+ *   link-workspace mints --out <file> [--since <sha>]
+ *                                            (finalize, after the publish) the published tarballs' hashes for the tags this run
+ *                                            created: at HEAD and at every commit after --since (the pushed commit)
  *   link-workspace equivalence --before <lock> --after <lock> [--linked a,b]
  *
- * Env: LINK_OWNER (default n3xah), LINK_REPOS (the allow-list, comma), LINK_SCOPES (the internal scopes, comma),
- * LINKS_DIR (default ./links), GITHUB_OUTPUT (the step outputs), VERIFY_WORKFLOW (prove: the verify-train file).
+ * Env: LINK_OWNER (the owner of every linkable repo), LINK_REPOS (the allow-list, comma), LINK_SCOPES (the internal
+ * scopes the installed graph judges, comma) — the three are the caller's, required by the verbs that link or judge;
+ * LINKS_DIR (default ./links), GITHUB_OUTPUT (the step outputs), VERIFY_WORKFLOW (prove: the verify workflow's file).
  */
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 
-// The cores are plain JS (one file each, copied verbatim into n3xa's metarepo where noted).
+// The cores are plain JS (one file each; LockEquivalence is copied verbatim into consumers' release tooling).
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { LinkedWorkspace } = require('../links/LinkedWorkspace');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -96,9 +99,9 @@ const main = async () => {
   const links = new LinkedWorkspace({
     repoRoot,
     linksDir: env.LINKS_DIR ? path.resolve(env.LINKS_DIR) : path.join(repoRoot, 'links'),
-    owner: env.LINK_OWNER || 'n3xah',
-    repos: list(env.LINK_REPOS) || LinkedWorkspace.DEFAULT_REPOS,
-    scopes: list(env.LINK_SCOPES) || LinkedWorkspace.DEFAULT_SCOPES,
+    owner: env.LINK_OWNER || null,
+    repos: list(env.LINK_REPOS) || null,
+    scopes: list(env.LINK_SCOPES) || null,
   });
   const trainFile = path.join(repoRoot, LinkedWorkspace.TRAIN_LINKS_FILE);
   const trainText = fs.existsSync(trainFile) ? fs.readFileSync(trainFile, 'utf8') : null;
@@ -153,7 +156,7 @@ const main = async () => {
   if (verb === 'link') {
     const plan = flags.train ? links.planFromTrain(trainText) : links.parseManifest(env.BUILD_LINKS);
     if (flags.train) {
-      // The train's link installs every package at its own lock first (the dev deploy's Dockerfile runs `install` as its own layer).
+      // The train's link installs every package at its own lock first (an image build runs `install` as its own layer).
       await links.install();
     }
     const receipts = links.link({
@@ -213,7 +216,12 @@ const main = async () => {
       throw new Error('mints needs --out <file>');
     }
     const commit = git(['rev-parse', 'HEAD'], repoRoot);
-    const tags = git(['tag', '--points-at', 'HEAD'], repoRoot).split('\n').filter(Boolean);
+    // --since <sha>: the commit the run was pushed for (GITHUB_SHA). The tags of this run sit on the release
+    // commit lerna made, and a lock re-stamp commit may follow it — HEAD alone would name no tag.
+    const tags = LinkedWorkspace.tagsCreatedSince({
+      git: (args: string[]) => git(args, repoRoot),
+      since: typeof flags.since === 'string' ? flags.since : null,
+    });
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'link-workspace-mints-'));
     try {
       const mints = links.mints({

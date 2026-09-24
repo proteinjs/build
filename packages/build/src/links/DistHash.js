@@ -8,9 +8,9 @@ const { execFileSync } = require('child_process');
  * The DIST HASH — one number for "the bytes a package ships", the same whether they are read from
  * a tarball `npm pack` wrote (a linked verify's pack of a staged commit) or from the copy `npm ci`
  * put under node_modules (the registry tarball of the mint). The parallel-verify train ties the
- * two together with it (n3xa's LANDING_TRAINS §1.4p, guard 2: the proof must be for the bytes that
- * ship): the verify records the hash of what it linked, the publish records the hash of what it
- * published, and a departure compares them — a mismatch refuses, both hashes named.
+ * two together with it (the proof must be for the bytes that ship): the verify records the hash of
+ * what it linked, the publish records the hash of what it published, and the release tooling
+ * compares them — a mismatch refuses, both hashes named.
  *
  * sha256 over the package's files in sorted path order, each as `<path>\0<size>\0<bytes>\0`, with
  * exactly the differences lerna's release commit introduces removed:
@@ -18,8 +18,8 @@ const { execFileSync } = require('child_process');
  *     packs it);
  *   - `package.json` is hashed NORMALIZED: keys sorted at every level; `version`, `gitHead` and
  *     npm's own `_`-prefixed fields dropped; a dependency range on a name in the package's OWN
- *     scope (the sibling floors lerna's release commit moves — `@n3xah/util-common` inside
- *     `@n3xah/util-server`) dropped to '' — every other field verbatim, so an added dependency, a
+ *     scope (the sibling floors lerna's release commit moves — `@scope/common` inside
+ *     `@scope/server`) dropped to '' — every other field verbatim, so an added dependency, a
  *     changed script or a new export still changes the hash;
  *   - `node_modules/` under the package (what npm nested there for the copy) is not the package.
  * Everything else — every dist file, README, LICENSE, the `files` list's every entry — byte for
@@ -58,7 +58,7 @@ class DistHash {
     }
   }
 
-  /** `@n3xah` from `@n3xah/util-server`; null for an unscoped name. */
+  /** `@scope` from `@scope/server`; null for an unscoped name. */
   static scopeOf(name) {
     return typeof name === 'string' && name.startsWith('@') && name.includes('/')
       ? name.slice(0, name.indexOf('/'))
