@@ -22,7 +22,8 @@
     "verify-workspace": "dist/src/bin/runVerifyWorkspace.js",
     "sync-workspace": "dist/src/bin/runSyncWorkspace.js",
     "pull-forward": "dist/src/bin/runPullForward.js",
-    "serve-package": "dist/src/bin/runServePackage.js"
+    "serve-package": "dist/src/bin/runServePackage.js",
+    "link-workspace": "dist/src/bin/runLinkWorkspace.js"
   },
   "publishConfig": {
     "access": "public"
