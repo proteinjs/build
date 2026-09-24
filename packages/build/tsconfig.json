@@ -2,6 +2,7 @@
   "compilerOptions": {
     "rootDir": "./",
     "target": "es5",
+    "downlevelIteration": true,
     "module": "commonjs",
     "declaration": true,
     "declarationMap": true,
