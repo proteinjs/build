@@ -1,9 +1,0 @@
-{
-  "branch": "fix/linked-workspace-build-order-in-dist",
-  "packages": ["build"],
-  "suites": [
-    "packages/build/test/linkedWorkspaceDist.test.ts",
-    "packages/build/test/linkedWorkspace.test.ts"
-  ],
-  "removes": []
-}
