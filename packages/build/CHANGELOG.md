@@ -3,6 +3,24 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.17.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.16.2...@proteinjs/build@2.17.0) (2026-09-24)
+
+
+### Bug Fixes
+
+* **build:** link-workspace mints reads the tags a run created since the pushed commit; the owner, the allow-list and the scopes are the caller's inputs ([ad0cec2](https://github.com/proteinjs/build/commit/ad0cec20053307b37412e9a5dea2eb59cd2b72eb))
+* **build:** release reads a hold's label the way register and hold write it ([18e3b94](https://github.com/proteinjs/build/commit/18e3b94ce3424e4b38169f7af2e96f7ee0034bf1))
+
+
+### Features
+
+* **build:** an estate row can carry holds — the reaper refuses a held estate whole until its registrant releases it ([c8821cf](https://github.com/proteinjs/build/commit/c8821cf0cd1e8605fab085228a88e5efcdc1c673))
+* **build:** link-workspace — a lerna workspace linked from sibling checkouts at commits, the installed graph, the dist hash and the lock equivalence ([8f0df29](https://github.com/proteinjs/build/commit/8f0df29c5c305a41baf1011284b4773db88a4313))
+
+
+
+
+
 ## [2.16.2](https://github.com/proteinjs/build/compare/@proteinjs/build@2.16.1...@proteinjs/build@2.16.2) (2026-09-15)
 
 
