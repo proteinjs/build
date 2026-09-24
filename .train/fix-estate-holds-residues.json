@@ -1,9 +1,0 @@
-{
-  "branch": "fix/estate-holds-residues",
-  "packages": ["build"],
-  "suites": [
-    "packages/build/test/estateRegistry.test.ts",
-    "packages/build/test/estateCliHolds.test.ts"
-  ],
-  "removes": []
-}

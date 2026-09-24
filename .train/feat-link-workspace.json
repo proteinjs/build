@@ -1,6 +1,0 @@
-{
-  "branch": "feat/link-workspace",
-  "packages": ["build"],
-  "suites": ["packages/build/test/linkedWorkspace.test.ts"],
-  "removes": []
-}
