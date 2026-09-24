@@ -250,7 +250,9 @@ export class EstateRegistry {
     if (!record) {
       return undefined;
     }
-    const updated: EstateRecord = { ...record, holds: (record.holds ?? []).filter((held) => held !== hold) };
+    // The label as register and hold write it (trimmed, validated), so a release names the hold it matches.
+    const label = EstateRegistry.holdLabel(hold);
+    const updated: EstateRecord = { ...record, holds: (record.holds ?? []).filter((held) => held !== label) };
     this.writeRecordSync(updated);
     return updated;
   }
