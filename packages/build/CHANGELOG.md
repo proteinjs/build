@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.17.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.17.0...@proteinjs/build@2.17.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **build:** the shipped links cores iterate Sets and Maps — downlevelIteration for the plain-JS sources under the ES5 target ([a06eb43](https://github.com/proteinjs/build/commit/a06eb4330f8ff67d801e3d262c57a144500ccd27))
+
+
+
+
+
 # [2.17.0](https://github.com/proteinjs/build/compare/@proteinjs/build@2.16.2...@proteinjs/build@2.17.0) (2026-09-24)
 
 
