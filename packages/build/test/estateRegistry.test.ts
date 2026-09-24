@@ -100,6 +100,18 @@ describe('EstateRegistry', () => {
     expect(plain.holds).toEqual([]);
   });
 
+  test('release reads the label the way register and hold write it: a padded label releases the hold it names; a malformed one is refused', async () => {
+    const record = await registry.register(
+      { owner: 'lane-held', holds: [' leased-machines ', 'open-tunnels'] },
+      { enforceValve: false }
+    );
+    expect(record.holds).toEqual(['leased-machines', 'open-tunnels']);
+
+    expect((await registry.release(record.id, ' leased-machines '))!.holds).toEqual(['open-tunnels']);
+    await expect(registry.release(record.id, 'open,tunnels')).rejects.toThrow(/hold/);
+    expect((await registry.get(record.id))!.holds).toEqual(['open-tunnels']);
+  });
+
   test('a hold is a short label: empty, or carrying a comma (the CLI list separator), is refused at the door', async () => {
     await expect(registry.register({ owner: 'lane-x', holds: [''] }, { enforceValve: false })).rejects.toThrow(/hold/);
     await expect(registry.register({ owner: 'lane-x', holds: ['a,b'] }, { enforceValve: false })).rejects.toThrow(

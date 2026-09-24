@@ -62,6 +62,34 @@ describe('estate CLI — holds', () => {
     expect((await new EstateRegistry(home).get('lane-held'))!.holds).toEqual(['leased-machines']);
   });
 
+  test('list marks a held row with its holds, and the mark goes once the last hold is released', async () => {
+    await run('register', '--id=lane-held', '--owner=lane-held', '--holds=leased-machines,open-tunnels');
+    await run('register', '--id=lane-plain', '--owner=lane-plain');
+    const listed = async () => {
+      const printed: string[] = [];
+      const log = jest.spyOn(console, 'log').mockImplementation((line: string) => {
+        printed.push(String(line));
+      });
+      try {
+        await run('list');
+      } finally {
+        log.mockRestore();
+      }
+      const lineOf = (id: string) => printed.find((line) => line.includes(`${id}`) && line.includes('(owner '))!;
+      return { held: lineOf('lane-held'), plain: lineOf('lane-plain') };
+    };
+
+    const before = await listed();
+    expect(before.held).toContain('[HELD: leased-machines, open-tunnels]');
+    expect(before.plain).not.toContain('[HELD');
+
+    await run('release', '--id=lane-held', '--hold=leased-machines');
+    expect((await listed()).held).toContain('[HELD: open-tunnels]');
+
+    await run('release', '--id=lane-held', '--hold=open-tunnels');
+    expect((await listed()).held).not.toContain('[HELD');
+  });
+
   test('a register with no --holds writes a row that holds nothing', async () => {
     await run('register', '--id=lane-plain', '--owner=lane-plain');
     expect((await new EstateRegistry(home).get('lane-plain'))!.holds).toEqual([]);
