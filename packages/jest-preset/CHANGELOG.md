@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.3.0](https://github.com/proteinjs/build/compare/@proteinjs/jest-preset@1.2.0...@proteinjs/jest-preset@1.3.0) (2026-09-30)
+
+
+### Features
+
+* **jest-preset:** testTimeoutForBackend — the per-test clock derived from the database driver's operation deadline ([ae294a0](https://github.com/proteinjs/build/commit/ae294a0f659cb5ffdddba760b8320cea7b3f2d37))
+
+
+
+
+
 # [1.2.0](https://github.com/proteinjs/build/compare/@proteinjs/jest-preset@1.1.0...@proteinjs/jest-preset@1.2.0) (2026-08-31)
 
 
