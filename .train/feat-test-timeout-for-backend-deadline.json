@@ -1,0 +1,10 @@
+{
+  "branch": "feat/test-timeout-for-backend-deadline",
+  "packages": ["jest-preset"],
+  "suites": [
+    "packages/jest-preset/test/knobsTestTimeout.test.js",
+    "packages/jest-preset/test/knobsAdvisory.test.js",
+    "packages/jest-preset/test/jestPresetBuilder.test.js"
+  ],
+  "removes": []
+}

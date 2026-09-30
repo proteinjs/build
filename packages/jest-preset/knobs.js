@@ -19,6 +19,10 @@
  * `-w=1` throttle practice. Env still wins outright (an explicit operator/CI choice), a stale
  * advisory (> 24h — a watchdog that stopped running) is ignored, and serial `maxWorkers: 1`
  * literals never pass through here at all.
+ *
+ * The per-test clock of a package whose tests drive a backend is a knob too:
+ * `testTimeoutForBackend(opDeadlineMs)` derives it from the database driver's own per-operation
+ * deadline (its doc below) — never a number typed by hand in the package config.
  */
 
 const fs = require('fs');
@@ -63,4 +67,23 @@ const workers = (packageDefault) => {
 
 const workerIdleMemoryLimit = (packageDefault) => process.env.JEST_WORKER_IDLE_MEMORY_LIMIT || packageDefault;
 
-module.exports = { workers, workerIdleMemoryLimit };
+/**
+ * The per-test clock (jest's `testTimeout`) for a package whose tests drive a backend through a
+ * database driver that enforces its own per-operation deadline: TWO operation deadlines — one for
+ * the test's own work at an operation's worst latency, one for a single stalled operation the
+ * driver still tolerates before it fails the op — so a stalled operation ends as the driver's
+ * NAMED failure (which op, which deadline) and never as jest's bare timeout, which reports nothing
+ * but the number. A clock at or below the driver's deadline is exactly the flake: jest kills the
+ * test first and the cause is lost. Pass the driver's deadline as the driver reports it (its
+ * accessor or exported constant), never a copy of the number.
+ */
+const testTimeoutForBackend = (opDeadlineMs) => {
+  if (typeof opDeadlineMs !== 'number' || !Number.isFinite(opDeadlineMs) || opDeadlineMs <= 0) {
+    throw new Error(
+      `testTimeoutForBackend takes the database driver's operation deadline in ms (a positive number), got '${opDeadlineMs}'`
+    );
+  }
+  return 2 * opDeadlineMs;
+};
+
+module.exports = { workers, workerIdleMemoryLimit, testTimeoutForBackend };
