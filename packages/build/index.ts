@@ -20,3 +20,6 @@ export * from './src/links/LinkedWorkspace';
 export * from './src/links/InstalledGraph';
 export * from './src/links/LockEquivalence';
 export * from './src/links/DistHash';
+// The formatter pass's argv (prettier --write / --check, eslint --fix, the excluded globs): a
+// consumer's guard runs the same pass read-only from the one owner.
+export * from './src/PackageFormatter';

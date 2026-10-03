@@ -5,7 +5,9 @@ import { WorkspaceFixture } from './WorkspaceFixture';
  * formats a package's sources and never its recorded test fixtures: a recording under
  * `test/fixtures` is bytes a test compares its subject against, byte for byte, so the pass
  * leaves it exactly as committed — in every package, by construction, never by each package's
- * own ignore file. Every assertion is an OUTCOME: the bytes of each file after the real pass ran.
+ * own ignore file. Generated code is the same class: `generated/` is a build's output (the
+ * reflection build emits its index there), never a hand-formatted source, so the pass leaves it
+ * byte-identical too. Every assertion is an OUTCOME: the bytes of each file after the real pass ran.
  */
 describe('the formatter pass', () => {
   // A real build plus real `npx prettier` and `npx eslint` runs (≈ 1 s each).
@@ -17,6 +19,7 @@ describe('the formatter pass', () => {
   const recordingHtml = '<div><p>one line</p><p>no trailing newline</p></div>';
   const recordingJs = 'let   recorded=1';
   const generatedJs = 'let   generated=1';
+  const generatedIndexTs = 'let   index=1';
 
   beforeEach(async () => {
     fixture = await WorkspaceFixture.create();
@@ -24,10 +27,16 @@ describe('the formatter pass', () => {
     await fixture.addPackage(name);
     await fixture.writeFile(name, '.prettierrc', '{ "singleQuote": true }\n');
     await fixture.writeFile(name, '.prettierignore', 'dist/\ngenerated.js\n');
+    // TypeScript files are linted through an override, as a package that lints its sources sets up.
     await fixture.writeFile(
       name,
       '.eslintrc.json',
-      JSON.stringify({ root: true, parserOptions: { ecmaVersion: 2020 }, rules: { 'prefer-const': 'warn' } }) + '\n'
+      JSON.stringify({
+        root: true,
+        parserOptions: { ecmaVersion: 2020, sourceType: 'module' },
+        rules: { 'prefer-const': 'warn' },
+        overrides: [{ files: ['*.ts'] }],
+      }) + '\n'
     );
     await fixture.writeFile(name, '.eslintignore', 'dist/\ngenerated.js\n');
     await fixture.writeFile(name, 'src/a.ts', 'export const a=1;export const b  = "x"\n');
@@ -35,6 +44,7 @@ describe('the formatter pass', () => {
     await fixture.writeFile(name, 'test/fixtures/recording.html', recordingHtml);
     await fixture.writeFile(name, 'test/fixtures/recording.js', recordingJs);
     await fixture.writeFile(name, 'generated.js', generatedJs);
+    await fixture.writeFile(name, 'generated/index.ts', generatedIndexTs);
     fixture.commit();
   });
 
@@ -58,5 +68,12 @@ describe('the formatter pass', () => {
     await fixture.run({ args, lintEnabled: true });
 
     expect(await fixture.readFile(name, 'generated.js')).toBe(generatedJs);
+  });
+
+  it('leaves the generated code under generated/ byte-identical — a build output, never a source', async () => {
+    await fixture.run({ args, lintEnabled: true });
+
+    // Neither tool reached the emitted index, whatever the package's own ignore files say.
+    expect(await fixture.readFile(name, 'generated/index.ts')).toBe(generatedIndexTs);
   });
 });
