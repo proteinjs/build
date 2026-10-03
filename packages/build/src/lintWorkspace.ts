@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import { LocalPackage, LogColorWrapper, PackageUtil, cmd, parseArgsMap } from '@proteinjs/util-node';
 import { Logger } from '@proteinjs/logger';
 import { primaryLogColor, secondaryLogColor } from './logColors';
+import { PackageFormatter } from './PackageFormatter';
 
 /**
  * Lint workspace, in dependency order.
@@ -35,8 +36,9 @@ export async function lintWorkspace() {
     const localPackage = packageMap[packageName];
     const packageDir = path.dirname(localPackage.filePath);
 
-    await cmd('npx', ['prettier', '.', '--write'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
-    await cmd('npx', ['eslint', '.', '--fix'], { cwd: packageDir }, { logPrefix: `[${cw.color(packageName)}] ` });
+    const logPrefix = `[${cw.color(packageName)}] `;
+    await cmd('npx', PackageFormatter.prettierArgs(), { cwd: packageDir }, { logPrefix });
+    await cmd('npx', PackageFormatter.eslintArgs(), { cwd: packageDir }, { logPrefix });
     logger.info({ message: `Linted ${cw.color(packageName)} (${packageDir})` });
   }
 

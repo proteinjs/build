@@ -9,6 +9,7 @@ import { hasLintConfig } from './lintWorkspace';
 import { DependencyScheduler, ScheduledTask } from './DependencyScheduler';
 import { LockfileSnapshot } from './LockfileSnapshot';
 import { MATERIALIZE_INSTALL_ARGS } from './materializeDependencies';
+import { PackageFormatter } from './PackageFormatter';
 import { PackageProcessError, PackageProcessRunner } from './PackageProcessRunner';
 import { InstallStamp, PackageStamps } from './PackageStamps';
 import { PackageTreeHash, PackageTreeHasher } from './PackageTreeHasher';
@@ -90,6 +91,7 @@ export class WorkspaceBuilder {
   private readonly cw = new LogColorWrapper();
   private readonly logger: Logger;
   private readonly runner: PackageProcessRunner;
+  private readonly formatter: PackageFormatter;
   private readonly args: BuildWorkspaceArgs;
   private readonly concurrency: number;
   private readonly lintEnabled: boolean;
@@ -108,6 +110,7 @@ export class WorkspaceBuilder {
     this.lintEnabled = !!options.lintEnabled;
     this.ci = !!options.ci;
     this.runner = options.runner ?? new PackageProcessRunner();
+    this.formatter = new PackageFormatter(this.runner);
     this.logger =
       options.logger ??
       new Logger({ name: this.cw.color('workspace:', primaryLogColor) + this.cw.color('build', secondaryLogColor) });
@@ -352,8 +355,7 @@ export class WorkspaceBuilder {
       !(this.args.noLint && this.args.noLint.includes(packageName))
     ) {
       const lintStarted = Date.now();
-      await this.runner.run('npx', ['prettier', '.', '--write'], processOptions);
-      await this.runner.run('npx', ['eslint', '.', '--fix'], processOptions);
+      await this.formatter.format(processOptions);
       this.summary.linted.push(packageName);
       this.logger.info({
         message: `Linted ${this.cw.color(packageName)} (${packageDir}) in ${WorkspaceBuilder.seconds(lintStarted)}`,

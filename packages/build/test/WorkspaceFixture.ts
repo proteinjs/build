@@ -123,6 +123,30 @@ if (process.env.FIXTURE_BUILD_HANG === pkg.name) {
     }
   }
 
+  /**
+   * `npx prettier` and `npx eslint` resolvable from every fixture package, offline: the fixture
+   * root's `node_modules/.bin` links this package's own binaries — npx walks up from the package
+   * dir to the first `node_modules/.bin` holding the name, the layout of a real workspace root.
+   */
+  async linkFormatterBins(): Promise<void> {
+    const bin = path.join(this.root, 'node_modules', '.bin');
+    await fs.mkdir(bin, { recursive: true });
+    for (const name of ['prettier', 'eslint']) {
+      await fs.symlink(path.join(__dirname, '..', 'node_modules', '.bin', name), path.join(bin, name));
+    }
+  }
+
+  /** a package-relative file, its directories created */
+  async writeFile(name: string, relativePath: string, content: string): Promise<void> {
+    const file = path.join(this.packageDir(name), relativePath);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, content);
+  }
+
+  async readFile(name: string, relativePath: string): Promise<string> {
+    return fs.readFile(path.join(this.packageDir(name), relativePath), 'utf-8');
+  }
+
   commit(message = 'fixture'): void {
     this.git('add', '-A');
     this.git('-c', 'user.name=fixture', '-c', 'user.email=fixture@test', 'commit', '-q', '-m', message);
