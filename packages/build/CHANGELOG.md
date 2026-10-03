@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.17.2](https://github.com/proteinjs/build/compare/@proteinjs/build@2.17.1...@proteinjs/build@2.17.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* **build:** the CI formatter pass never rewrites a package's generated code ([2b30ccb](https://github.com/proteinjs/build/commit/2b30ccbc0c62ea56115b68f281adda69e0941829))
+* **build:** the CI formatter pass never rewrites a package's test recordings ([be5686f](https://github.com/proteinjs/build/commit/be5686f2bc7e840503f9afb541b2a81374e3ae0c))
+
+
+
+
+
 ## [2.17.1](https://github.com/proteinjs/build/compare/@proteinjs/build@2.17.0...@proteinjs/build@2.17.1) (2026-09-24)
 
 
