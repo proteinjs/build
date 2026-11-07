@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.4.0](https://github.com/proteinjs/build/compare/@proteinjs/jest-preset@1.3.0...@proteinjs/jest-preset@1.4.0) (2026-11-07)
+
+
+### Features
+
+* **jest-preset:** the in-band declaration (package.json jestPreset.inBand) and the one CI test practice stated whole ([15a0946](https://github.com/proteinjs/build/commit/15a0946ec6374982788aa32b5570655c8cc9cbd1))
+* **jest-preset:** the TypeScript floor for Node16 / NodeNext packages, named at config load ([1b910b8](https://github.com/proteinjs/build/commit/1b910b815014f8e7afe41bd6186fef32794d590f))
+
+
+
+
+
 # [1.3.0](https://github.com/proteinjs/build/compare/@proteinjs/jest-preset@1.2.0...@proteinjs/jest-preset@1.3.0) (2026-09-30)
 
 

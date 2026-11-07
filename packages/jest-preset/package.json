@@ -1,6 +1,6 @@
 {
   "name": "@proteinjs/jest-preset",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Shared jest preset — the one CI test practice (DECISIONS 1121): transpile-only ts-jest (tsconfig.isolatedModules), worker/memory convergence knobs, the in-band declaration (package.json jestPreset.inBand), standard setup hooks",
   "main": "jest-preset.js",
   "files": [
