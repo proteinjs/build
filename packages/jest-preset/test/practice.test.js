@@ -149,6 +149,117 @@ describe('the judge: a pure read of package.json + jest.config.js, one rule at a
     expect(TestPractice.readConfig(spreadAndTyped).spreads).toEqual(['FlowServerJestPreset.fragment()']);
   });
 
+  test('P1: a config that mutates the process or reads the run’s mode — round 1’s thought-export seam (the flag joined to NODE_OPTIONS at config load, the in-process run refused by the config itself) — is named by line; the declaration is the one owner', () => {
+    // thought-export's jest.config.js at 2cf56144 (round 1 of row 3260), retired by the declaration in round 2: every
+    // mutation line verbatim, the prose shortened. The judge at db26962c read it as [] — the hole this pin closes.
+    const R1_EXPORT_CONFIG = [
+      "'use strict';",
+      "const vm = require('vm');",
+      '',
+      '// THE ROUND-1 SEAM (thought-export 2cf56144, retired by the declaration): the flag joined to NODE_OPTIONS by the',
+      "// config itself and the in-process run refused by the config itself — a parallel mechanism beside the preset's one owner.",
+      "const VM_MODULES_FLAG = '--experimental-vm-modules';",
+      "const nodeOptions = process.env.NODE_OPTIONS || '';",
+      'if (!nodeOptions.split(/\\s+/).includes(VM_MODULES_FLAG)) {',
+      '  process.env.NODE_OPTIONS = `${nodeOptions} ${VM_MODULES_FLAG}`.trim();',
+      '}',
+      "const IN_PROCESS_FLAGS = ['--runInBand', '-i', '--detectOpenHandles'];",
+      'const inProcess = process.argv.filter((arg) => IN_PROCESS_FLAGS.includes(arg));',
+      "if (inProcess.length && typeof vm.SyntheticModule !== 'function') {",
+      '  throw new Error(',
+      "    `thought-export: an in-process jest run (${inProcess.join(' ')}) needs node's ${VM_MODULES_FLAG} — PptxGenJS's ` +",
+      "      `write() starts a dynamic import that jest's vm refuses without it. Run \\`NODE_OPTIONS=${VM_MODULES_FLAG} npx jest ` +",
+      "      `${inProcess.join(' ')} …\\`, or drop the flag: jest's workers carry it from this config.`",
+      '  );',
+      '}',
+      '',
+      'module.exports = {',
+      "  preset: '@proteinjs/jest-preset',",
+      "  roots: ['<rootDir>/test'],",
+      '  moduleNameMapper: {',
+      "    '^@proteinjs/([^/]+)$': '<rootDir>/node_modules/@proteinjs/$1',",
+      '  },',
+      '};',
+      '',
+    ].join('\n');
+    const found = judge(manifest(), R1_EXPORT_CONFIG);
+    expect(rules(found)).toEqual(['P1']);
+    expect(found[0].detail).toMatch(
+      /^jest\.config\.js reads or writes the process at 7 \(process\.env\.NODE_OPTIONS\), 9 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\), 12 \(process\.argv\) — a config never mutates the process or reads the run's mode/
+    );
+    expect(found[0].detail).toMatch(/jestPreset\.nodeOptions/);
+    // the declaration beside the seam does not excuse it: both mechanisms is still two owners
+    const declared = manifest({ jestPreset: { nodeOptions: ['--experimental-vm-modules'], reason: 'pptxgenjs' } });
+    expect(rules(judge(declared, R1_EXPORT_CONFIG))).toEqual(['P1']);
+    // the round-2 shape — the declaration alone, the config a plain literal — passes
+    expect(judge(declared, R1_EXPORT_CONFIG.slice(R1_EXPORT_CONFIG.indexOf('module.exports')))).toEqual([]);
+    // every read of the process the rule names, each by its kind, on one line each
+    const kinds = judge(
+      manifest(),
+      [
+        "process.env.TZ = 'UTC';",
+        "process.env['NODE_OPTIONS'] += ' --x';",
+        'const started = process.execArgv;',
+        'if (process.argv.includes("-i")) process.exit(1);',
+        'delete process.env.JEST_WORKERS;',
+        "Object.assign(process.env, { A: '1' });",
+        "module.exports = { preset: '@proteinjs/jest-preset' };",
+      ].join('\n')
+    );
+    expect(rules(kinds)).toEqual(['P1']);
+    expect(kinds[0].detail).toMatch(
+      /at 1 \(a write to process\.env\), 2 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\), 3 \(process\.execArgv\), 4 \(process\.argv \+ process\.exit\), 5 \(a write to process\.env\), 6 \(a write to process\.env\)/
+    );
+    // a read of another env key is a seam's input, not a mutation; a comment or a message that spells the words is prose
+    expect(
+      judge(
+        manifest(),
+        [
+          '// a config that said process.exit() or process.env.NODE_OPTIONS = x here would be named',
+          "const ci = process.env.CI === 'true';",
+          "const note = 'never write process.env.NODE_OPTIONS = … in a config; see process.argv';",
+          "module.exports = { preset: '@proteinjs/jest-preset', testTimeout: ci ? 120000 : 30000, displayName: note };",
+        ].join('\n')
+      )
+    ).toEqual([]);
+  });
+
+  test('P1: a local module the config requires is read the same way when the caller hands it in (modules); localRequires names the specifiers to read', () => {
+    const config =
+      "const { Fragment } = require('./test/Fragment');\nconst { testTimeoutForBackend } = require('@proteinjs/jest-preset/knobs');\nmodule.exports = {\n  preset: '@proteinjs/jest-preset',\n  ...Fragment.config(),\n};\n";
+    expect(TestPractice.localRequires(config)).toEqual(['./test/Fragment']);
+    expect(TestPractice.localRequires("require('@n3xah/flow-server/test/jest-preset');\nrequire('vm');\n")).toEqual([]);
+    const hidden = [
+      {
+        path: 'test/Fragment.js',
+        text: "'use strict';\n// the seam, moved out of sight\nprocess.env.NODE_OPTIONS = '--experimental-vm-modules';\nmodule.exports = { Fragment: { config: () => ({}) } };\n",
+      },
+    ];
+    expect(TestPractice.judge({ manifest: manifest(), config, modules: hidden })).toEqual([
+      {
+        rule: 'P1',
+        detail: expect.stringMatching(
+          /^test\/Fragment\.js reads or writes the process at 3 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\)/
+        ),
+      },
+    ]);
+    expect(
+      TestPractice.judge({
+        manifest: manifest(),
+        config,
+        modules: [{ path: 'test/Fragment.js', text: 'module.exports = {};\n' }],
+      })
+    ).toEqual([]);
+    expect(TestPractice.judge({ manifest: manifest(), config })).toEqual([]);
+    // drift carries the modules through
+    expect(
+      TestPractice.drift([{ dir: 'server', manifest: manifest(), config, modules: hidden }]).map((p) => [
+        p.dir,
+        rules(p.deviations),
+      ])
+    ).toEqual([['server', ['P1']]]);
+  });
+
   test('P2: --runInBand, a typed NODE_OPTIONS, a bare `jest`, a missing script beside a config — each named with the practice’s script', () => {
     for (const test of [
       'jest --runInBand --passWithNoTests',
@@ -279,7 +390,7 @@ describe('one owner: the judge ships with the preset, the builder reads the judg
     expect(peerDependencies['ts-jest']).toMatch(new RegExp(`^>=${TS_JEST_FLOOR.replace(/\\./g, '\\.')} `));
   });
 
-  test('the judge and its types ship in the package (npm pack lists practice.js and practice.d.ts): a consumer’s require resolves', () => {
+  test('the judge, the knobs and their types ship in the package (npm pack lists practice.js, practice.d.ts, knobs.js, knobs.d.ts): a consumer’s require resolves', () => {
     const out = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
       cwd: path.join(__dirname, '..'),
       encoding: 'utf8',
@@ -287,7 +398,14 @@ describe('one owner: the judge ships with the preset, the builder reads the judg
     });
     const files = JSON.parse(out)[0].files.map((f) => f.path);
     expect(files).toEqual(
-      expect.arrayContaining(['practice.js', 'practice.d.ts', 'jest-preset.js', 'JestPresetBuilder.js', 'knobs.js'])
+      expect.arrayContaining([
+        'practice.js',
+        'practice.d.ts',
+        'jest-preset.js',
+        'JestPresetBuilder.js',
+        'knobs.js',
+        'knobs.d.ts',
+      ])
     );
   });
 });

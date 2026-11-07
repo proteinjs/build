@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { JestPresetBuilder } = require('../JestPresetBuilder');
-const { workers, workerIdleMemoryLimit } = require('../knobs');
+const { workers, workerIdleMemoryLimit, declaration, nodeOptions } = require('../knobs');
 
 /**
  * Pins the shared preset's load-bearing behavior (DEV_INFRA_PLAN §13.6-§13.8):
@@ -334,6 +334,30 @@ describe('the node-options declaration (package.json jestPreset.nodeOptions with
     expect(JestPresetBuilder.NODE_OPTIONS_KEY).toBe('nodeOptions');
     expect(JestPresetBuilder.REASON_KEY).toBe('reason');
     expect(JestPresetBuilder.IN_PROCESS_FLAGS).toEqual(['--runInBand', '-i', '--detectOpenHandles']);
+  });
+
+  test('ONE reader of the declaration — knobs.declaration(packageDir) / knobs.nodeOptions(packageDir): the builder’s own read and the land tool’s (`land reds` starts node under the declared flags) read the same function; a declaration without its reason is refused there by name', () => {
+    const dir = declared();
+    expect(nodeOptions(dir)).toEqual({ flags: [VM], reason: REASON });
+    expect(declaration(dir)).toEqual({
+      name: '@fixture/server',
+      inBand: null,
+      nodeOptions: { flags: [VM], reason: REASON },
+    });
+    expect(new JestPresetBuilder({ env: {}, packageDir: dir, tsJestVersion: TS_JEST_OK }).declaration()).toEqual(
+      declaration(dir)
+    );
+    // none declared, and no package.json at all (the preset's own fixtures): null — nothing to start node under
+    expect(nodeOptions(makePackageDirWith({ 'package.json': manifest() }))).toBeNull();
+    expect(
+      nodeOptions(makePackageDirWith({ 'package.json': manifest({ jestPreset: { inBand: 'one database' } }) }))
+    ).toBeNull();
+    expect(nodeOptions(makePackageDir([]))).toBeNull();
+    // the reader refuses what the builder refuses — the one read, the one refusal
+    expect(() => nodeOptions(declared({ reason: '' }))).toThrow(/declares jestPreset\.nodeOptions without its reason/);
+    expect(() =>
+      nodeOptions(makePackageDirWith({ 'package.json': manifest({ jestPreset: { inband: 'x' } }) }))
+    ).toThrow(/jestPreset\.inband — no key the preset reads/);
   });
 });
 

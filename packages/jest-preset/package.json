@@ -1,12 +1,13 @@
 {
   "name": "@proteinjs/jest-preset",
   "version": "1.5.0",
-  "description": "Shared jest preset — the one CI test practice (DECISIONS 1121): transpile-only ts-jest (tsconfig.isolatedModules), worker/memory convergence knobs, the declarations (package.json jestPreset.inBand — one suite at a time; jestPreset.nodeOptions — node flags for the workers, with its reason), the worker default at the physical cores, standard setup hooks; the practice's judge (practice.js — a pure read of package.json + jest.config.js, P1–P3) and ts-jest's one floor",
+  "description": "Shared jest preset — the one CI test practice (DECISIONS 1121): transpile-only ts-jest (tsconfig.isolatedModules), worker/memory convergence knobs, the declarations (package.json jestPreset.inBand — one suite at a time; jestPreset.nodeOptions — node flags for the workers, with its reason) read by ONE reader (knobs.declaration / knobs.nodeOptions — the builder's and the land tool's), the worker default at the physical cores, standard setup hooks; the practice's judge (practice.js — a pure read of package.json + jest.config.js, P1–P3, a config that reads or writes the process named by line) and ts-jest's one floor",
   "main": "jest-preset.js",
   "files": [
     "jest-preset.js",
     "JestPresetBuilder.js",
     "knobs.js",
+    "knobs.d.ts",
     "practice.js",
     "practice.d.ts"
   ],
