@@ -6,9 +6,10 @@
  *
  * - `JEST_WORKERS`: overrides `workers(packageDefault)` (e.g. the linux-8core runner exports
  *   JEST_WORKERS=8 and flow-server's `workers(2)` default scales up without a code change).
- *   Packages that must stay serial regardless of runner (Spanner-emulator sweeps: the emulator's
- *   single-transaction limit) pin a literal `maxWorkers: 1` instead of using this helper —
- *   config literals beat the preset, so the env knob can never un-serialize them.
+ *   A package that must stay serial regardless of runner DECLARES it in its package.json
+ *   (`"jestPreset": { "inBand": "<the reason>" }`, DECISIONS 1121 P3): the preset reads the
+ *   declaration and sets `maxWorkers: 1`, and this knob can never un-serialize it — never a
+ *   literal `maxWorkers` in the config, never `--runInBand` in the script.
  * - `JEST_WORKER_IDLE_MEMORY_LIMIT`: overrides `workerIdleMemoryLimit(packageDefault)`; the
  *   preset's converged default is 1500MB (load-bearing against OOM on 7 GB runners — raise it
  *   only WITH a bigger runner, §13.8).

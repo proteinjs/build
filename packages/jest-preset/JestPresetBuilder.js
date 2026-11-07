@@ -4,8 +4,29 @@ const path = require('path');
 
 /**
  * Builds the shared jest preset (DEV_INFRA_PLAN §13.6 centralization ruling: test config is
- * inherited, never repeated). Every repo's package jest config becomes
- * `preset: '@proteinjs/jest-preset'` plus its own overrides, each with a named reason.
+ * inherited, never repeated) — THE ONE CI TEST PRACTICE every repo we own carries (DECISIONS 1121,
+ * 2026-11-07: "all of our n3xah and n3xa repos need to follow the same practice"; `land stage`
+ * refuses a tip whose packages deviate, so a new repo or package follows by construction):
+ *
+ *   P1 — every package's jest.config.js is `preset: '@proteinjs/jest-preset'` plus the package's OWN
+ *        seams only (a moduleNameMapper, a setup file beyond the standard hooks, a testTimeout, roots),
+ *        each seam with its named reason — never a second transform, never `preset: 'ts-jest'`, never
+ *        a typed testEnvironment (jsdom stays the per-file docblock road), never a typed maxWorkers
+ *        or workerIdleMemoryLimit (both are this preset's).
+ *   P2 — the package's test script is exactly `jest --passWithNoTests` — never `--runInBand`, never a
+ *        typed NODE_OPTIONS (a worker's heap is this preset's workerIdleMemoryLimit; an in-band run's
+ *        heap is the CI step's env, never the script's).
+ *   P3 — a package that must run one suite at a time DECLARES it, never flags it: package.json
+ *        `"jestPreset": { "inBand": "<the reason: one Spanner CI database per run / …>" }`. This
+ *        builder reads the declaration and sets `maxWorkers: 1`; CI's JEST_WORKERS CANNOT override a
+ *        declared in-band — the knob dials the parallel packages, a declared package ignores it by
+ *        construction. A declaration without its reason is refused at config load (the reason is the
+ *        record a later lift reads; lifting it is its own change with proof). A package whose suites
+ *        provision their own per-worker databases (thought-server's shape) is NOT in band.
+ *   P4 — CI sets JEST_WORKERS from the scope step (the runner's cores; a DB leg's database budget)
+ *        and nothing else: no --maxWorkers / --runInBand in any step; the DB-less packages take the
+ *        runner's workers (jest's default when the knob is unset); a declared in-band package ignores
+ *        the knob by P3.
  *
  * What the preset carries:
  * - Transpile-only ts-jest via the COMPILER option (`tsconfig: { isolatedModules: true }`
@@ -19,7 +40,7 @@ const path = require('path');
  *   the version floor below exists (older ts-jest ignores the tsconfig option and silently
  *   runs full type-check again).
  * - The worker/memory convergence knobs (see knobs.js): converged 1500MB worker cap,
- *   env-overridable; maxWorkers only when CI exports JEST_WORKERS.
+ *   env-overridable; maxWorkers from JEST_WORKERS when CI exports it — or 1, declared (P3).
  * - The standard setup hooks, probed from the consuming package's layout: `test/setup` as
  *   setupFiles and the cross-package emulator lock as globalSetup/globalTeardown, inherited
  *   when the standard files exist and omitted when they don't. Packages with a nonstandard
@@ -28,10 +49,15 @@ const path = require('path');
  *
  * The probe keys on process.cwd(): jest gives a preset module no consumer context, and every
  * house runner (`npm test`, test-workspace) invokes jest from the package root. Running jest
- * from anywhere else with this preset skips hook inheritance — configs that need hooks from
- * odd invocation directories must declare them explicitly.
+ * from anywhere else with this preset skips hook inheritance and the declaration — configs that
+ * need hooks from odd invocation directories must declare them explicitly.
  */
 class JestPresetBuilder {
+  /** The declaration's key in the consuming package's package.json — the ONE spelling the land tool's law reads too. */
+  static DECLARATION_KEY = 'jestPreset';
+  /** The in-band declaration under it: a non-empty string, the reason. */
+  static IN_BAND_KEY = 'inBand';
+
   constructor({ env = process.env, packageDir = process.cwd(), tsJestVersion } = {}) {
     this.env = env;
     this.packageDir = packageDir;
@@ -48,7 +74,7 @@ class JestPresetBuilder {
         '^.+\\.tsx?$': ['ts-jest', { tsconfig: { isolatedModules: true } }],
       },
       workerIdleMemoryLimit: this.env.JEST_WORKER_IDLE_MEMORY_LIMIT || '1500MB',
-      ...this.maxWorkersFromEnv(),
+      ...this.workerPolicy(),
       ...this.standardSetupHooks(),
     };
   }
@@ -64,6 +90,11 @@ class JestPresetBuilder {
     }
   }
 
+  /** P3 over P4: a declared in-band package is `maxWorkers: 1` whatever JEST_WORKERS says; otherwise the env knob. */
+  workerPolicy() {
+    return this.inBandDeclaration() === null ? this.maxWorkersFromEnv() : { maxWorkers: 1 };
+  }
+
   maxWorkersFromEnv() {
     const raw = this.env.JEST_WORKERS;
     if (raw === undefined || raw === '') {
@@ -74,6 +105,37 @@ class JestPresetBuilder {
       throw new Error(`JEST_WORKERS must be a positive integer, got '${raw}'`);
     }
     return { maxWorkers: count };
+  }
+
+  /**
+   * The consuming package's in-band declaration (its package.json `jestPreset.inBand`): the reason, or null when
+   * the package declares none (no package.json at the package dir counts as none — the preset's own fixtures).
+   * A declaration that is not a non-empty string is refused by name: a reason is what a later lift reads.
+   */
+  inBandDeclaration() {
+    const manifestPath = path.join(this.packageDir, 'package.json');
+    if (!fs.existsSync(manifestPath)) {
+      return null;
+    }
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    const declaration = manifest[JestPresetBuilder.DECLARATION_KEY];
+    if (declaration === undefined) {
+      return null;
+    }
+    const key = `${JestPresetBuilder.DECLARATION_KEY}.${JestPresetBuilder.IN_BAND_KEY}`;
+    const shaped = declaration && typeof declaration === 'object' && !Array.isArray(declaration);
+    const reason = shaped ? declaration[JestPresetBuilder.IN_BAND_KEY] : undefined;
+    if (shaped && reason === undefined) {
+      return null;
+    }
+    if (typeof reason !== 'string' || !reason.trim()) {
+      throw new Error(
+        `@proteinjs/jest-preset: ${manifest.name || this.packageDir} declares ${key} without its reason — the declaration ` +
+          `is the record of why this package runs one suite at a time (one Spanner CI database per run, the suites ` +
+          `sharing one emulator database, …); write the reason as the value, never true or an empty string.`
+      );
+    }
+    return reason.trim();
   }
 
   standardSetupHooks() {

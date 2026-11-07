@@ -167,3 +167,62 @@ describe('jest-preset entry', () => {
     expect(entry.workerIdleMemoryLimit).toBeDefined();
   });
 });
+
+/**
+ * THE IN-BAND DECLARATION (DECISIONS 1121, P3): a package that must run one suite at a time DECLARES it in its
+ * package.json — `"jestPreset": { "inBand": "<the reason>" }` — never by a `--runInBand` flag in its test script.
+ * The preset reads the declaration and sets `maxWorkers: 1`; CI's JEST_WORKERS cannot override a declared in-band
+ * (the knob is the parallel packages' dial, and a declared package ignores it by construction). A declaration
+ * without its reason is refused at config load: the reason is the record a later lift reads.
+ */
+const makePackageDirWith = (files) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jest-preset-test-'));
+  for (const [file, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), text);
+  }
+  return dir;
+};
+const manifest = (extra = {}) => JSON.stringify({ name: '@fixture/server', version: '1.0.0', ...extra }, null, 2);
+
+describe('the in-band declaration (package.json jestPreset.inBand)', () => {
+  test('a declared in-band package runs one suite at a time: maxWorkers 1 from the preset', () => {
+    const dir = makePackageDirWith({
+      'package.json': manifest({ jestPreset: { inBand: 'one Spanner CI database per run (the LEGS budget: 1)' } }),
+    });
+    expect(buildAt(dir).maxWorkers).toBe(1);
+  });
+
+  test("CI's JEST_WORKERS cannot override a declared in-band: the declaration wins", () => {
+    const dir = makePackageDirWith({
+      'package.json': manifest({ jestPreset: { inBand: 'the suites share one emulator database' } }),
+    });
+    expect(buildAt(dir, { JEST_WORKERS: '8' }).maxWorkers).toBe(1);
+  });
+
+  test('no declaration: maxWorkers stays the env knob’s (absent unset, the count when set)', () => {
+    const dir = makePackageDirWith({ 'package.json': manifest() });
+    expect(buildAt(dir)).not.toHaveProperty('maxWorkers');
+    expect(buildAt(dir, { JEST_WORKERS: '8' }).maxWorkers).toBe(8);
+    expect(buildAt(makePackageDir([]), { JEST_WORKERS: '3' }).maxWorkers).toBe(3);
+  });
+
+  test('a declaration without its reason is refused at config load, naming the key', () => {
+    for (const jestPreset of [
+      { inBand: true },
+      { inBand: '' },
+      { inBand: '   ' },
+      { inBand: 1 },
+      'inBand',
+      ['inBand'],
+    ]) {
+      const dir = makePackageDirWith({ 'package.json': manifest({ jestPreset }) });
+      expect(() => buildAt(dir)).toThrow(/jestPreset\.inBand/);
+    }
+  });
+
+  test('the declaration’s spelling is the wire the land tool’s law reads (one spelling, two readers)', () => {
+    expect(JestPresetBuilder.DECLARATION_KEY).toBe('jestPreset');
+    expect(JestPresetBuilder.IN_BAND_KEY).toBe('inBand');
+  });
+});
