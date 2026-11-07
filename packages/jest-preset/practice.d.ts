@@ -22,9 +22,9 @@ export interface PackageDrift {
 }
 
 export interface ConfigRead {
-  /** Every top-level key → its value when a plain string literal, else null. */
+  /** Every top-level key → its value when a plain string literal, else null — an object literal spread in place (`...{ … }`) is read through into it (the package's own writing). */
   keys: Map<string, string | null>;
-  /** The expressions the top-level spread entries carry. */
+  /** The expressions the other top-level spread entries carry (`...fragment`): the fragment owners' keys, not read here. */
   spreads: string[];
 }
 
@@ -43,6 +43,7 @@ export class TestPractice {
   static underTheLaw(manifest: Record<string, any> | null, config: string | null): boolean;
   static describe(drift: PackageDrift[]): string;
   static readConfig(text: string): ConfigRead | null;
+  static readEntries(body: string, keys: Map<string, string | null>, spreads: string[]): void;
   static topLevelKeys(text: string): Map<string, string | null> | null;
   static exportedLiteral(text: string): string | null;
   static entriesOf(body: string): string[];

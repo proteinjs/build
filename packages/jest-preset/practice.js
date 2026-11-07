@@ -18,7 +18,8 @@
  *      any indent, CRLF, `const config = {…}; module.exports = config;`), comments stripped; an export that is not an
  *      object literal (a require, an Object.assign, a function) is unreadable and deviates by name. A spread entry
  *      (`...fragment`) is read as the spread it is: the keys it carries belong to the fragment's owner, who keeps them in
- *      the practice — the law judges what the package WRITES.
+ *      the practice — the law judges what the package WRITES; so an object literal spread IN PLACE (`...{ maxWorkers: 2 }`)
+ *      IS the package's writing and is read through, its keys the package's own (no road smuggles a preset key).
  *   P2 the script — `scripts.test` is exactly `jest --passWithNoTests`: never `--runInBand`, never a typed NODE_OPTIONS,
  *      never a bare `jest` (a package with no suite yet reds the leg otherwise).
  *   P3 the declaration — a `jestPreset` key is an object; its `inBand`, when present, is a non-empty string, the reason
@@ -169,8 +170,8 @@ class TestPractice {
 
   /**
    * The config's exported object literal, read entry by entry: { keys, spreads } — `keys` a Map of every top-level
-   * key → its value when a plain string literal, else null; `spreads` the expressions the top-level `...` entries
-   * carry. The literal is found behind `module.exports =` (the literal itself, or the name of a `const`/`let`/`var`
+   * key → its value when a plain string literal, else null (an object literal spread in place is read through into it);
+   * `spreads` the expressions the other top-level `...` entries carry (the fragment owners' keys, not read). The literal is found behind `module.exports =` (the literal itself, or the name of a `const`/`let`/`var`
    * bound to one) in the comment-stripped, LF-normalized text and scanned by its own braces — any layout. Null when
    * the text exports no object literal the scan can read.
    */
@@ -181,9 +182,27 @@ class TestPractice {
     }
     const keys = new Map();
     const spreads = [];
-    for (const entry of TestPractice.entriesOf(literal)) {
+    TestPractice.readEntries(literal, keys, spreads);
+    return { keys, spreads };
+  }
+
+  /**
+   * A literal's body read into `keys` and `spreads`: a spread of an object literal written in place (`...{ … }`) is the
+   * package's own writing — read through, its entries joining `keys` (nested in-place spreads the same) — while a spread
+   * of any other expression (`...fragment`, `...Preset.fragment()`) names the fragment owner's keys and joins `spreads`.
+   */
+  static readEntries(body, keys, spreads) {
+    for (const entry of TestPractice.entriesOf(body)) {
       if (entry.startsWith('...')) {
-        spreads.push(entry.slice(3).trim());
+        const expression = entry.slice(3).trim();
+        if (expression.startsWith('{')) {
+          const end = TestPractice.closeOf(expression, 0);
+          if (end !== -1) {
+            TestPractice.readEntries(expression.slice(1, end), keys, spreads);
+          }
+        } else {
+          spreads.push(expression);
+        }
         continue;
       }
       const named = /^([A-Za-z_$][\w$]*|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")\s*(?::\s*([\s\S]*))?$/.exec(entry);
@@ -197,7 +216,6 @@ class TestPractice {
       const value = match[2] === undefined ? null : /^'((?:[^'\\]|\\.)*)'$|^"((?:[^"\\]|\\.)*)"$/.exec(match[2].trim());
       keys.set(key, value ? (value[1] !== undefined ? value[1] : value[2]) : null);
     }
-    return { keys, spreads };
   }
 
   /** The Map of top-level keys alone (readConfig's `keys`), or null when the config is unreadable. */

@@ -1,0 +1,11 @@
+{
+  "branch": "feat/jest-preset-judge-reads-inline-spreads",
+  "packages": ["jest-preset"],
+  "suites": [
+    "packages/jest-preset/test/jestPresetBuilder.test.js",
+    "packages/jest-preset/test/knobsAdvisory.test.js",
+    "packages/jest-preset/test/knobsTestTimeout.test.js",
+    "packages/jest-preset/test/practice.test.js"
+  ],
+  "removes": []
+}

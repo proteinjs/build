@@ -138,15 +138,38 @@ describe('the judge: a pure read of package.json + jest.config.js, one rule at a
     }
   });
 
-  test('P1: a spread entry is read as the spread it is — it passes beside the preset line and the typed key beside it is still named', () => {
+  test('P1: a spread entry is read as the spread it is — an expression spread (the fragment owner’s keys) passes beside the preset line and the typed key beside it is still named; an object literal spread IN PLACE is the package’s own writing and its preset key is named', () => {
     const spread =
       "const { fragment } = require('@n3xah/flow-server/jest');\nmodule.exports = {\n  preset: '@proteinjs/jest-preset',\n  ...fragment,\n  testTimeout: 120000,\n};\n";
     expect(judge(manifest(), spread)).toEqual([]);
-    expect(TestPractice.readConfig(spread).spreads).toEqual(['fragment']);
     const spreadAndTyped =
       "module.exports = {\n  preset: '@proteinjs/jest-preset',\n  ...FlowServerJestPreset.fragment(),\n  maxWorkers: 2,\n};\n";
     expect(p1(judge(manifest(), spreadAndTyped))[0]).toMatch(/types maxWorkers/);
-    expect(TestPractice.readConfig(spreadAndTyped).spreads).toEqual(['FlowServerJestPreset.fragment()']);
+    // the outcome of the spread read: a literal written in place and spread carries the package's OWN keys — a preset
+    // key there is named (no road smuggles maxWorkers past the law), a seam there passes; a nested in-place spread the same
+    const inPlace =
+      "module.exports = {\n  preset: '@proteinjs/jest-preset',\n  ...{ roots: ['<rootDir>/test'], maxWorkers: 2 },\n};\n";
+    expect(p1(judge(manifest(), inPlace))).toEqual([expect.stringMatching(/types maxWorkers/)]);
+    expect(
+      judge(
+        manifest(),
+        "module.exports = {\n  preset: '@proteinjs/jest-preset',\n  ...{ roots: ['<rootDir>/test'] },\n};\n"
+      )
+    ).toEqual([]);
+    expect(
+      p1(
+        judge(
+          manifest(),
+          "module.exports = {\n  preset: '@proteinjs/jest-preset',\n  ...{ ...{ testEnvironment: 'node' } },\n};\n"
+        )
+      )
+    ).toEqual([expect.stringMatching(/types testEnvironment/)]);
+    // the preset line itself may ride an in-place literal: it is the package's own writing too
+    expect(
+      judge(manifest(), "module.exports = { ...{ preset: '@proteinjs/jest-preset' }, roots: ['<rootDir>/test'] };\n")
+    ).toEqual([]);
+    // the read's shape: an expression spread is recorded as the spread it is, never read through
+    expect(TestPractice.readConfig(spread).spreads).toEqual(['fragment']);
   });
 
   test('P2: --runInBand, a typed NODE_OPTIONS, a bare `jest`, a missing script beside a config — each named with the practice’s script', () => {
