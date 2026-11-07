@@ -36,6 +36,9 @@ export class TestPractice {
   static CONFIG: string;
   static DECLARATION_KEY: string;
   static IN_BAND_KEY: string;
+  static NODE_OPTIONS_KEY: string;
+  static REASON_KEY: string;
+  static DECLARATION_KEYS: string[];
   static PRESET_KEYS: string[];
   static RULES: { P1: string; P2: string; P3: string };
   static drift(packages: PackageRead[]): PackageDrift[];

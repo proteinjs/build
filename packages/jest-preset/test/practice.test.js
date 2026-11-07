@@ -207,6 +207,43 @@ describe('the judge: a pure read of package.json + jest.config.js, one rule at a
     expect(judge(manifest({ jestPreset: {} }))).toEqual([]);
   });
 
+  test('P3: the node-options declaration — flags without their reason, a reason without flags, flags that are not a list of node flags, a key outside the vocabulary — each named; a reasoned one passes', () => {
+    const VM = '--experimental-vm-modules';
+    expect(
+      judge(
+        manifest({
+          jestPreset: {
+            nodeOptions: [VM],
+            reason: 'pptxgenjs 4.0.1 dynamic-imports node:fs (dist/pptxgen.cjs.js:4844)',
+          },
+        })
+      )
+    ).toEqual([]);
+    expect(judge(manifest({ jestPreset: { inBand: 'one database', nodeOptions: [VM], reason: 'the flag' } }))).toEqual(
+      []
+    );
+    for (const jestPreset of [
+      { nodeOptions: [VM] },
+      { nodeOptions: [VM], reason: '' },
+      { nodeOptions: [VM], reason: 1 },
+    ]) {
+      const found = judge(manifest({ jestPreset }));
+      expect(rules(found)).toEqual(['P3']);
+      expect(found[0].detail).toMatch(/jestPreset\.nodeOptions carries no reason/);
+    }
+    const alone = judge(manifest({ jestPreset: { reason: 'a reason beside no flags' } }));
+    expect(rules(alone)).toEqual(['P3']);
+    expect(alone[0].detail).toMatch(/jestPreset\.reason without jestPreset\.nodeOptions/);
+    for (const nodeOptions of [VM, [], ['experimental-vm-modules'], [1]]) {
+      const found = judge(manifest({ jestPreset: { nodeOptions, reason: 'r' } }));
+      expect(rules(found)).toEqual(['P3']);
+      expect(found[0].detail).toMatch(/jestPreset\.nodeOptions is not a list of node flags/);
+    }
+    const typo = judge(manifest({ jestPreset: { inband: 'one database' } }));
+    expect(rules(typo)).toEqual(['P3']);
+    expect(typo[0].detail).toMatch(/jestPreset\.inband is no key the preset reads/);
+  });
+
   test('the preset’s own package reads itself (preset: ./jest-preset.js); any other package naming that file deviates', () => {
     const own =
       "module.exports = {\n  preset: './jest-preset.js',\n  roots: ['<rootDir>/test'],\n  testMatch: ['**/?(*.)+(spec|test).js'],\n};\n";
@@ -243,6 +280,13 @@ describe('one owner: the judge ships with the preset, the builder reads the judg
   test('the declaration’s spelling is the judge’s and the builder’s alike (one spelling, every reader)', () => {
     expect(JestPresetBuilder.DECLARATION_KEY).toBe(TestPractice.DECLARATION_KEY);
     expect(JestPresetBuilder.IN_BAND_KEY).toBe(TestPractice.IN_BAND_KEY);
+    expect(JestPresetBuilder.NODE_OPTIONS_KEY).toBe(TestPractice.NODE_OPTIONS_KEY);
+    expect(JestPresetBuilder.REASON_KEY).toBe(TestPractice.REASON_KEY);
+    expect(TestPractice.DECLARATION_KEYS).toEqual([
+      TestPractice.IN_BAND_KEY,
+      TestPractice.NODE_OPTIONS_KEY,
+      TestPractice.REASON_KEY,
+    ]);
   });
 
   test('TS_JEST_FLOOR is the number the builder refuses below and accepts at, and the number the peer range states', () => {

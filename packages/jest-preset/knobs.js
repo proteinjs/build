@@ -1,15 +1,21 @@
 'use strict';
 /**
- * Worker/memory convergence knobs (DEV_INFRA_PLAN §13.6/§13.8): package jest configs express
- * their DEFAULT worker count / worker-memory cap through these helpers, and CI overrides both
- * through env — one env contract for every repo, no per-repo flag soup.
+ * Worker/memory convergence knobs (DEV_INFRA_PLAN §13.6/§13.8; DECISIONS 1121 P4): the preset resolves the worker
+ * count and the worker-memory cap through these helpers, and CI overrides both through env — one env contract for
+ * every repo, no per-repo flag soup.
  *
- * - `JEST_WORKERS`: overrides `workers(packageDefault)` (e.g. the linux-8core runner exports
- *   JEST_WORKERS=8 and flow-server's `workers(2)` default scales up without a code change).
- *   A package that must stay serial regardless of runner DECLARES it in its package.json
- *   (`"jestPreset": { "inBand": "<the reason>" }`, DECISIONS 1121 P3): the preset reads the
- *   declaration and sets `maxWorkers: 1`, and this knob can never un-serialize it — never a
- *   literal `maxWorkers` in the config, never `--runInBand` in the script.
+ * - `JEST_WORKERS`: the count when CI exports it (the scope step: the runner's cores, a DB leg's database budget).
+ *   UNSET, the count is THE PHYSICAL CORES — max(1, floor(os.availableParallelism() / 2)) — never jest's own default
+ *   (the logical count − 1): on the pool's hyperthreaded e2-standard-8 (8 logical, 4 physical) jest's 7 workers ran
+ *   the jsdom sweeps 7–10× slower than local and tripped reloadScrollAnchor's clocks (DECISIONS 764's measurement; the
+ *   fix then was a typed `--maxWorkers=4` on one repo's step, which the one practice replaces with this default — one
+ *   owner, every repo, no typed number anywhere; a Mac reads the same way: 14 logical → 7). The preset hands this
+ *   count to every package that declares no in-band (JestPresetBuilder.workerPolicy). A package that must stay serial
+ *   regardless of runner DECLARES it in its package.json (`"jestPreset": { "inBand": "<the reason>" }`, DECISIONS
+ *   1121 P3): the preset reads the declaration and sets `maxWorkers: 1`, and this knob can never un-serialize it —
+ *   never a literal `maxWorkers` in the config, never `--runInBand` in the script. The `packageDefault` argument is
+ *   the pre-practice road (a config's `maxWorkers: workers(2)`): P1 types no maxWorkers, so the preset passes none; it
+ *   stays for the configs not yet adopted.
  * - `JEST_WORKER_IDLE_MEMORY_LIMIT`: overrides `workerIdleMemoryLimit(packageDefault)`; the
  *   preset's converged default is 1500MB (load-bearing against OOM on 7 GB runners — raise it
  *   only WITH a bigger runner, §13.8).
@@ -17,9 +23,9 @@
  * Local pressure-valve advisory (RESOURCE_GOVERNANCE §B.3): under memory pressure the
  * estate-watchdog drops `~/.n3xa/advisories/jest-workers` (content: a worker count, i.e. `1`).
  * `workers()` honors it as a CEILING on the resolved count — the machine-output form of the
- * `-w=1` throttle practice. Env still wins outright (an explicit operator/CI choice), a stale
- * advisory (> 24h — a watchdog that stopped running) is ignored, and serial `maxWorkers: 1`
- * literals never pass through here at all.
+ * `-w=1` throttle practice — so it caps the physical-cores default of every preset package too. Env still wins
+ * outright (an explicit operator/CI choice), a stale advisory (> 24h — a watchdog that stopped running) is ignored,
+ * and a declared in-band's `maxWorkers: 1` never passes through here at all.
  *
  * The per-test clock of a package whose tests drive a backend is a knob too:
  * `testTimeoutForBackend(opDeadlineMs)` derives it from the database driver's own per-operation
@@ -32,10 +38,10 @@ const path = require('path');
 
 const ADVISORY_MAX_AGE_MS = 24 * 3600 * 1000;
 
-/** The pressure valve's advisory worker count, or undefined (missing/stale/unparseable). */
-const advisoryWorkers = () => {
+/** The pressure valve's advisory worker count, or undefined (missing/stale/unparseable); the estate home from `env`. */
+const advisoryWorkers = (env) => {
   try {
-    const home = process.env.N3XA_ESTATE_HOME || path.join(os.homedir(), '.n3xa');
+    const home = env.N3XA_ESTATE_HOME || path.join(os.homedir(), '.n3xa');
     const advisoryPath = path.join(home, 'advisories', 'jest-workers');
     const stat = fs.statSync(advisoryPath);
     if (Date.now() - stat.mtimeMs > ADVISORY_MAX_AGE_MS) {
@@ -48,8 +54,16 @@ const advisoryWorkers = () => {
   }
 };
 
-const workers = (packageDefault) => {
-  const raw = process.env.JEST_WORKERS;
+/** The physical cores: half the logical count (os.availableParallelism — a hyperthreaded core counts twice there; Node 18.14+), at least 1. */
+const physicalCores = () => Math.max(1, Math.floor(os.availableParallelism() / 2));
+
+/**
+ * The worker count: `env.JEST_WORKERS` when set (a positive integer, else refused by name); otherwise the package
+ * default when one is given (the pre-practice road), else the physical cores — the advisory a ceiling on either.
+ * `env` is process.env unless the caller hands its own (the preset's builder hands the env it was built with).
+ */
+const workers = (packageDefault, env = process.env) => {
+  const raw = env.JEST_WORKERS;
   if (raw !== undefined && raw !== '') {
     const count = Number(raw);
     if (!Number.isInteger(count) || count < 1) {
@@ -57,13 +71,14 @@ const workers = (packageDefault) => {
     }
     return count;
   }
-  const advisory = advisoryWorkers();
+  const resolved = packageDefault === undefined ? physicalCores() : packageDefault;
+  const advisory = advisoryWorkers(env);
   if (advisory === undefined) {
-    return packageDefault;
+    return resolved;
   }
-  // A ceiling, never a raise: numeric defaults clamp; percentage-string defaults (e.g. '50%')
+  // A ceiling, never a raise: numeric counts clamp; percentage-string defaults (e.g. '50%')
   // resolve to multiple cores on any dev machine, so the advisory count stands in for them.
-  return typeof packageDefault === 'number' ? Math.min(advisory, packageDefault) : advisory;
+  return typeof resolved === 'number' ? Math.min(advisory, resolved) : advisory;
 };
 
 const workerIdleMemoryLimit = (packageDefault) => process.env.JEST_WORKER_IDLE_MEMORY_LIMIT || packageDefault;

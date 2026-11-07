@@ -74,9 +74,42 @@ describe('workers() pressure-valve advisory', () => {
     expect(workers('50%')).toBe(1);
   });
 
-  test('no advisory: the package default passes through untouched', () => {
+  test('no advisory: a package default passes through untouched (the pre-practice road)', () => {
     expect(workers(4)).toBe(4);
-    expect(workers(undefined)).toBeUndefined();
+    expect(workers('50%')).toBe('50%');
+  });
+
+  test('JEST_WORKERS unset and no package default: the physical cores — half the logical count, at least 1 (DECISIONS 764: the jsdom legs at jest’s cpus − 1 ran 7–10× slower on the pool)', () => {
+    const spy = jest.spyOn(os, 'availableParallelism');
+    try {
+      for (const [logical, expected] of [
+        [8, 4],
+        [14, 7],
+        [1, 1],
+        [2, 1],
+        [3, 1],
+      ]) {
+        spy.mockReturnValue(logical);
+        expect(workers()).toBe(expected);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('the advisory caps the physical-cores default too', () => {
+    writeAdvisory('1');
+    const spy = jest.spyOn(os, 'availableParallelism').mockReturnValue(8);
+    try {
+      expect(workers()).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('an env handed in is read in place of process.env (the preset’s builder hands its own)', () => {
+    process.env.JEST_WORKERS = '8';
+    expect(workers(undefined, { JEST_WORKERS: '3' })).toBe(3);
   });
 
   test('a garbage advisory is ignored, never a crash', () => {
