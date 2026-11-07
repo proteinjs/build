@@ -58,9 +58,26 @@ describe('worker/memory convergence knobs', () => {
     expect(preset.workerIdleMemoryLimit).toBe('4GB');
   });
 
-  test('maxWorkers is absent unless JEST_WORKERS is set (jest default / package config decides)', () => {
-    const preset = buildAt(makePackageDir([]));
-    expect(preset).not.toHaveProperty('maxWorkers');
+  test('JEST_WORKERS unset: maxWorkers is the physical cores (knobs.workers — half the logical count), never jest’s cpus − 1', () => {
+    const spy = jest.spyOn(os, 'availableParallelism').mockReturnValue(8);
+    try {
+      expect(buildAt(makePackageDir([])).maxWorkers).toBe(4);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('the pressure-valve advisory caps the preset’s count too (the local valve lives in the preset); JEST_WORKERS still wins', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jest-preset-advisory-'));
+    fs.mkdirSync(path.join(home, 'advisories'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'advisories', 'jest-workers'), '1\n');
+    const spy = jest.spyOn(os, 'availableParallelism').mockReturnValue(8);
+    try {
+      expect(buildAt(makePackageDir([]), { N3XA_ESTATE_HOME: home }).maxWorkers).toBe(1);
+      expect(buildAt(makePackageDir([]), { N3XA_ESTATE_HOME: home, JEST_WORKERS: '6' }).maxWorkers).toBe(6);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test('JEST_WORKERS sets maxWorkers on the preset', () => {
@@ -200,30 +217,123 @@ describe('the in-band declaration (package.json jestPreset.inBand)', () => {
     expect(buildAt(dir, { JEST_WORKERS: '8' }).maxWorkers).toBe(1);
   });
 
-  test('no declaration: maxWorkers stays the env knob’s (absent unset, the count when set)', () => {
+  test('no declaration: maxWorkers is the env knob’s count when set, the physical cores when unset', () => {
     const dir = makePackageDirWith({ 'package.json': manifest() });
-    expect(buildAt(dir)).not.toHaveProperty('maxWorkers');
+    const spy = jest.spyOn(os, 'availableParallelism').mockReturnValue(8);
+    try {
+      expect(buildAt(dir).maxWorkers).toBe(4);
+    } finally {
+      spy.mockRestore();
+    }
     expect(buildAt(dir, { JEST_WORKERS: '8' }).maxWorkers).toBe(8);
     expect(buildAt(makePackageDir([]), { JEST_WORKERS: '3' }).maxWorkers).toBe(3);
   });
 
-  test('a declaration without its reason is refused at config load, naming the key', () => {
-    for (const jestPreset of [
-      { inBand: true },
-      { inBand: '' },
-      { inBand: '   ' },
-      { inBand: 1 },
-      'inBand',
-      ['inBand'],
-    ]) {
+  test('a declaration without its reason is refused at config load, naming the key; a jestPreset that is no object is refused as that', () => {
+    for (const jestPreset of [{ inBand: true }, { inBand: '' }, { inBand: '   ' }, { inBand: 1 }]) {
       const dir = makePackageDirWith({ 'package.json': manifest({ jestPreset }) });
-      expect(() => buildAt(dir)).toThrow(/jestPreset\.inBand/);
+      expect(() => buildAt(dir)).toThrow(/jestPreset\.inBand without its reason/);
+    }
+    for (const jestPreset of ['inBand', ['inBand'], 1]) {
+      const dir = makePackageDirWith({ 'package.json': manifest({ jestPreset }) });
+      expect(() => buildAt(dir)).toThrow(/jestPreset is not an object/);
     }
   });
 
   test('the declaration’s spelling is the wire the land tool’s law reads (one spelling, two readers)', () => {
     expect(JestPresetBuilder.DECLARATION_KEY).toBe('jestPreset');
     expect(JestPresetBuilder.IN_BAND_KEY).toBe('inBand');
+  });
+});
+
+/**
+ * THE NODE-OPTIONS DECLARATION (DECISIONS 1121 P3; thought-export, 2026-11-07): a package whose suites need a node
+ * flag DECLARES it — `"jestPreset": { "nodeOptions": ["--experimental-vm-modules"], "reason": "<why>" }` — never a
+ * typed NODE_OPTIONS in its script (P2) and never a config of its own that mutates the environment (a second
+ * mechanism beside the preset, which the next package copies). The builder applies it the one way: each declared flag
+ * the process did not start with joins NODE_OPTIONS at config load, the env jest's forked workers inherit; an
+ * in-process run (--runInBand / -i / --detectOpenHandles — jest's in-process set under this preset) that lacks a
+ * declared flag is refused by name with the command that carries it, because a node flag cannot be taken after the
+ * fact. The declaration's vocabulary is closed: a key outside it is refused, never read as nothing.
+ */
+describe('the node-options declaration (package.json jestPreset.nodeOptions with its reason)', () => {
+  const VM = '--experimental-vm-modules';
+  const REASON = 'pptxgenjs 4.0.1 dynamic-imports node:fs';
+  const declared = (extra = {}) =>
+    makePackageDirWith({ 'package.json': manifest({ jestPreset: { nodeOptions: [VM], reason: REASON, ...extra } }) });
+  const buildWith = (dir, { env = {}, argv = ['node', 'jest'], execArgv = [] } = {}) =>
+    new JestPresetBuilder({ env, packageDir: dir, tsJestVersion: TS_JEST_OK, argv, execArgv }).build();
+
+  test('a declared flag joins NODE_OPTIONS at config load — the env the forked workers inherit — after what was there; no declaration leaves the env alone', () => {
+    const empty = {};
+    buildWith(declared(), { env: empty });
+    expect(empty.NODE_OPTIONS).toBe(VM);
+    const heap = { NODE_OPTIONS: '--max-old-space-size=3072' };
+    buildWith(declared(), { env: heap });
+    expect(heap.NODE_OPTIONS).toBe(`--max-old-space-size=3072 ${VM}`);
+    const undeclared = { NODE_OPTIONS: '--max-old-space-size=3072' };
+    buildWith(makePackageDirWith({ 'package.json': manifest() }), { env: undeclared });
+    expect(undeclared.NODE_OPTIONS).toBe('--max-old-space-size=3072');
+  });
+
+  test('a flag the process started with (NODE_OPTIONS or execArgv) is not appended again; a second build in the same process appends nothing more', () => {
+    const carried = { NODE_OPTIONS: VM };
+    buildWith(declared(), { env: carried });
+    expect(carried.NODE_OPTIONS).toBe(VM);
+    const viaExecArgv = {};
+    buildWith(declared(), { env: viaExecArgv, execArgv: [VM] });
+    expect(viaExecArgv).not.toHaveProperty('NODE_OPTIONS');
+    const twice = {};
+    const dir = declared();
+    buildWith(dir, { env: twice });
+    buildWith(dir, { env: twice });
+    expect(twice.NODE_OPTIONS).toBe(VM);
+  });
+
+  test('an in-process run (--runInBand / -i / --detectOpenHandles) that lacks a declared flag is refused by name, with the command that carries it; carried, or a workers run, it stands', () => {
+    for (const flag of ['--runInBand', '-i', '--detectOpenHandles']) {
+      expect(() => buildWith(declared(), { argv: ['node', 'jest', flag, 'test/PptxWriter.test.ts'] })).toThrow(
+        new RegExp(`jestPreset\\.nodeOptions.*${VM}.*\\(${flag}\\).*NODE_OPTIONS='${VM}' npx jest ${flag}`)
+      );
+    }
+    expect(() =>
+      buildWith(declared(), { env: { NODE_OPTIONS: VM }, argv: ['node', 'jest', '--runInBand'] })
+    ).not.toThrow();
+    expect(() => buildWith(declared(), { execArgv: [VM], argv: ['node', 'jest', '-i'] })).not.toThrow();
+    expect(() => buildWith(declared(), { argv: ['node', 'jest', 'test/PptxWriter.test.ts'] })).not.toThrow();
+  });
+
+  test('flags without their reason, a reason without flags, flags that are not a list of node flags, a flag NODE_OPTIONS cannot carry — each refused by name at config load', () => {
+    const refused = (jestPreset, pattern) =>
+      expect(() => buildWith(makePackageDirWith({ 'package.json': manifest({ jestPreset }) }))).toThrow(pattern);
+    refused({ nodeOptions: [VM] }, /jestPreset\.nodeOptions without its reason/);
+    refused({ nodeOptions: [VM], reason: '  ' }, /jestPreset\.nodeOptions without its reason/);
+    refused({ reason: 'a reason beside no flags' }, /jestPreset\.reason without jestPreset\.nodeOptions/);
+    refused({ nodeOptions: VM, reason: 'r' }, /jestPreset\.nodeOptions is not a list of node flags/);
+    refused({ nodeOptions: [], reason: 'r' }, /jestPreset\.nodeOptions is not a list of node flags/);
+    refused(
+      { nodeOptions: ['experimental-vm-modules'], reason: 'r' },
+      /jestPreset\.nodeOptions is not a list of node flags/
+    );
+    refused({ nodeOptions: ['--version'], reason: 'r' }, /--version.*NODE_OPTIONS cannot carry/);
+  });
+
+  test('a key outside the declaration’s vocabulary is refused by name — a misspelled inBand would otherwise run with workers against one database', () => {
+    const dir = makePackageDirWith({ 'package.json': manifest({ jestPreset: { inband: 'one database' } }) });
+    expect(() => buildWith(dir)).toThrow(/jestPreset\.inband/);
+  });
+
+  test('both declarations together: one worker, started under the flags', () => {
+    const env = {};
+    const preset = buildWith(declared({ inBand: 'one Spanner CI database per run' }), { env });
+    expect(preset.maxWorkers).toBe(1);
+    expect(env.NODE_OPTIONS).toBe(VM);
+  });
+
+  test('the declaration’s spellings and jest’s in-process set are the builder’s constants (the judge reads the same spellings)', () => {
+    expect(JestPresetBuilder.NODE_OPTIONS_KEY).toBe('nodeOptions');
+    expect(JestPresetBuilder.REASON_KEY).toBe('reason');
+    expect(JestPresetBuilder.IN_PROCESS_FLAGS).toEqual(['--runInBand', '-i', '--detectOpenHandles']);
   });
 });
 

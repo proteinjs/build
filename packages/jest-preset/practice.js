@@ -21,8 +21,11 @@
  *      the practice — the law judges what the package WRITES.
  *   P2 the script — `scripts.test` is exactly `jest --passWithNoTests`: never `--runInBand`, never a typed NODE_OPTIONS,
  *      never a bare `jest` (a package with no suite yet reds the leg otherwise).
- *   P3 the declaration — a `jestPreset` key is an object; its `inBand`, when present, is a non-empty string, the reason
- *      (the builder sets maxWorkers 1 from it and ignores JEST_WORKERS; a later lift is its own change with proof).
+ *   P3 the declaration — a `jestPreset` key is an object over a closed vocabulary (inBand, nodeOptions, reason — a key
+ *      outside it is named, never read as nothing); its `inBand`, when present, is a non-empty string, the reason (the
+ *      builder sets maxWorkers 1 from it and ignores JEST_WORKERS); its `nodeOptions`, when present, is a non-empty list
+ *      of node flags with `reason` beside it, a non-empty string (the builder starts jest's workers under the flags and
+ *      refuses an in-process run that lacks them); a later lift of either is its own change with proof.
  *
  * UNDER THE LAW: a package whose `test` script invokes jest, or that carries a jest.config.js at its root. A package
  * tested by node:test, or with neither, is outside it.
@@ -43,12 +46,17 @@ class TestPractice {
   /** The declaration's spelling — the one the builder reads (JestPresetBuilder takes it from here). */
   static DECLARATION_KEY = 'jestPreset';
   static IN_BAND_KEY = 'inBand';
+  /** The node-options declaration: the flags jest's workers start under, with REASON_KEY beside them. */
+  static NODE_OPTIONS_KEY = 'nodeOptions';
+  static REASON_KEY = 'reason';
+  /** The declaration's whole vocabulary — the builder refuses, and the judge names, a key outside it. */
+  static DECLARATION_KEYS = [TestPractice.IN_BAND_KEY, TestPractice.NODE_OPTIONS_KEY, TestPractice.REASON_KEY];
   /** The top-level keys a package never types: the preset's. */
   static PRESET_KEYS = ['transform', 'testEnvironment', 'maxWorkers', 'workerIdleMemoryLimit'];
   static RULES = {
     P1: "the config is the house preset plus the package's own seams",
     P2: `the test script is exactly "${TestPractice.SCRIPT}"`,
-    P3: 'an in-band declaration carries its reason',
+    P3: 'a declaration (in band, node options) carries its reason',
   };
 
   /**
@@ -136,18 +144,50 @@ class TestPractice {
         ? manifest[TestPractice.DECLARATION_KEY]
         : undefined;
     if (declaration !== undefined) {
+      const { DECLARATION_KEY, IN_BAND_KEY, NODE_OPTIONS_KEY, REASON_KEY, DECLARATION_KEYS } = TestPractice;
       const shaped = declaration && typeof declaration === 'object' && !Array.isArray(declaration);
-      const reason = shaped ? declaration[TestPractice.IN_BAND_KEY] : undefined;
       if (!shaped) {
         say(
           'P3',
-          `${TestPractice.DECLARATION_KEY} is not an object (the declaration: { "${TestPractice.IN_BAND_KEY}": "<the reason>" })`
+          `${DECLARATION_KEY} is not an object (the declaration: { "${IN_BAND_KEY}": "<the reason>" } and/or { "${NODE_OPTIONS_KEY}": ["<node flag>"], "${REASON_KEY}": "<the reason>" })`
         );
-      } else if (reason !== undefined && (typeof reason !== 'string' || !reason.trim())) {
-        say(
-          'P3',
-          `${TestPractice.DECLARATION_KEY}.${TestPractice.IN_BAND_KEY} carries no reason (a non-empty string: why this package runs one suite at a time)`
-        );
+      } else {
+        const unknown = Object.keys(declaration).filter((k) => !DECLARATION_KEYS.includes(k));
+        if (unknown.length) {
+          say(
+            'P3',
+            `${unknown.map((k) => `${DECLARATION_KEY}.${k}`).join(', ')} is no key the preset reads (the declaration's keys: ${DECLARATION_KEYS.join(', ')}; a key read as nothing runs the package as if it declared nothing)`
+          );
+        }
+        const reason = declaration[IN_BAND_KEY];
+        if (reason !== undefined && (typeof reason !== 'string' || !reason.trim())) {
+          say(
+            'P3',
+            `${DECLARATION_KEY}.${IN_BAND_KEY} carries no reason (a non-empty string: why this package runs one suite at a time)`
+          );
+        }
+        const flags = declaration[NODE_OPTIONS_KEY];
+        const why = declaration[REASON_KEY];
+        if (flags !== undefined) {
+          const isFlag = (flag) => typeof flag === 'string' && /^-\S+$/.test(flag.trim());
+          if (!Array.isArray(flags) || !flags.length || !flags.every(isFlag)) {
+            say(
+              'P3',
+              `${DECLARATION_KEY}.${NODE_OPTIONS_KEY} is not a list of node flags (["--experimental-vm-modules"]: the flags jest's workers start under)`
+            );
+          }
+          if (typeof why !== 'string' || !why.trim()) {
+            say(
+              'P3',
+              `${DECLARATION_KEY}.${NODE_OPTIONS_KEY} carries no reason (${DECLARATION_KEY}.${REASON_KEY}, a non-empty string: why this package's workers need the flags)`
+            );
+          }
+        } else if (why !== undefined) {
+          say(
+            'P3',
+            `${DECLARATION_KEY}.${REASON_KEY} without ${DECLARATION_KEY}.${NODE_OPTIONS_KEY} (the reason belongs beside the flags it explains; the in-band declaration carries its reason as its value)`
+          );
+        }
       }
     }
     return found;
