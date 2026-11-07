@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.5.0](https://github.com/proteinjs/build/compare/@proteinjs/jest-preset@1.4.0...@proteinjs/jest-preset@1.5.0) (2026-11-07)
+
+
+### Features
+
+* **jest-preset:** the practice's judge ships with the preset (practice.js — @proteinjs/jest-preset/practice: a pure read of package.json + jest.config.js naming each deviation from P1–P3, the exported object literal read in any layout) and ts-jest's one floor (TS_JEST_FLOOR — the builder refuses below it, the peer range states it) ([89bf648](https://github.com/proteinjs/build/commit/89bf648f36997353f5b82979474ca978bcd56e29))
+
+
+
+
+
 # [1.4.0](https://github.com/proteinjs/build/compare/@proteinjs/jest-preset@1.3.0...@proteinjs/jest-preset@1.4.0) (2026-11-07)
 
 
