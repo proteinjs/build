@@ -1,12 +1,18 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { TestPractice, TS_JEST_FLOOR } = require('./practice');
 
 /**
  * Builds the shared jest preset (DEV_INFRA_PLAN §13.6 centralization ruling: test config is
  * inherited, never repeated) — THE ONE CI TEST PRACTICE every repo we own carries (DECISIONS 1121,
  * 2026-11-07: "all of our n3xah and n3xa repos need to follow the same practice"; `land stage`
- * refuses a tip whose packages deviate, so a new repo or package follows by construction):
+ * refuses a tip whose packages deviate, so a new repo or package follows by construction). The
+ * practice's JUDGE ships from this package too — `@proteinjs/jest-preset/practice` (practice.js: a
+ * pure read of a package's package.json + jest.config.js naming each deviation from P1–P3 by rule;
+ * the land tool's law, `land practice <repo>` and the component template's suite all read that one
+ * judge) — with ts-jest's floor as THE ONE NUMBER (TS_JEST_FLOOR there; this builder refuses below it,
+ * the peer range states it):
  *
  *   P1 — every package's jest.config.js is `preset: '@proteinjs/jest-preset'` plus the package's OWN
  *        seams only (a moduleNameMapper, a setup file beyond the standard hooks, a testTimeout, roots),
@@ -53,10 +59,12 @@ const path = require('path');
  * need hooks from odd invocation directories must declare them explicitly.
  */
 class JestPresetBuilder {
-  /** The declaration's key in the consuming package's package.json — the ONE spelling the land tool's law reads too. */
-  static DECLARATION_KEY = 'jestPreset';
+  /** The declaration's key in the consuming package's package.json — the judge's spelling (practice.js), the one the land tool's law reads too. */
+  static DECLARATION_KEY = TestPractice.DECLARATION_KEY;
   /** The in-band declaration under it: a non-empty string, the reason. */
-  static IN_BAND_KEY = 'inBand';
+  static IN_BAND_KEY = TestPractice.IN_BAND_KEY;
+  /** ts-jest's floor — practice.js's TS_JEST_FLOOR, the one number (below it ts-jest ignores tsconfig.isolatedModules). */
+  static TS_JEST_FLOOR = TS_JEST_FLOOR;
 
   /** TypeScript's floor for a Node16 / NodeNext package: ts-jest's transpile-only road for those module kinds reads JSDocParsingMode (5.3+). */
   static NODE_MODULES_TYPESCRIPT_FLOOR = '5.3.0';
@@ -85,14 +93,29 @@ class JestPresetBuilder {
   }
 
   assertTsJestFloor() {
-    const [major, minor] = this.tsJestVersion.split('.').map(Number);
-    if (major < 29 || (major === 29 && minor < 3)) {
+    if (JestPresetBuilder.compareVersions(this.tsJestVersion, JestPresetBuilder.TS_JEST_FLOOR) < 0) {
       throw new Error(
-        `@proteinjs/jest-preset requires ts-jest >= 29.3.0 (found ${this.tsJestVersion}): older ts-jest ` +
+        `@proteinjs/jest-preset requires ts-jest >= ${JestPresetBuilder.TS_JEST_FLOOR} (found ${this.tsJestVersion}): older ts-jest ` +
           `ignores tsconfig.isolatedModules and silently falls back to full type-check — the exact ` +
           `worker-heap/boot-floor cost this preset exists to remove. Bump the package's ts-jest.`
       );
     }
+  }
+
+  /** `a` against `b` as dotted numbers: negative below, 0 equal, positive above (a prerelease suffix is read as its numbers). */
+  static compareVersions(a, b) {
+    const read = (v) =>
+      String(v)
+        .split('.')
+        .map((n) => parseInt(n, 10) || 0);
+    const [x, y] = [read(a), read(b)];
+    for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
+      const d = (x[i] || 0) - (y[i] || 0);
+      if (d !== 0) {
+        return d;
+      }
+    }
+    return 0;
   }
 
   /**
@@ -111,9 +134,7 @@ class JestPresetBuilder {
     if (version === null) {
       return;
     }
-    const [major, minor] = version.split('.').map(Number);
-    const [floorMajor, floorMinor] = JestPresetBuilder.NODE_MODULES_TYPESCRIPT_FLOOR.split('.').map(Number);
-    if (major < floorMajor || (major === floorMajor && minor < floorMinor)) {
+    if (JestPresetBuilder.compareVersions(version, JestPresetBuilder.NODE_MODULES_TYPESCRIPT_FLOOR) < 0) {
       throw new Error(
         `@proteinjs/jest-preset: this package compiles under module ${moduleKind} and ts-jest's transpile-only road for ` +
           `that module kind reads TypeScript ${JestPresetBuilder.NODE_MODULES_TYPESCRIPT_FLOOR}'s JSDocParsingMode — found TypeScript ${version} ` +
@@ -219,7 +240,7 @@ class JestPresetBuilder {
     } catch (resolutionError) {
       throw new Error(
         `@proteinjs/jest-preset: ts-jest is not resolvable from ${this.packageDir} — it is a peer ` +
-          `dependency; install ts-jest >= 29.3.0 in the consuming package.`
+          `dependency; install ts-jest >= ${JestPresetBuilder.TS_JEST_FLOOR} in the consuming package.`
       );
     }
     // eslint-disable-next-line @typescript-eslint/no-var-requires

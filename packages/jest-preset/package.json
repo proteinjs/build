@@ -1,12 +1,14 @@
 {
   "name": "@proteinjs/jest-preset",
   "version": "1.4.0",
-  "description": "Shared jest preset — the one CI test practice (DECISIONS 1121): transpile-only ts-jest (tsconfig.isolatedModules), worker/memory convergence knobs, the in-band declaration (package.json jestPreset.inBand), standard setup hooks",
+  "description": "Shared jest preset — the one CI test practice (DECISIONS 1121): transpile-only ts-jest (tsconfig.isolatedModules), worker/memory convergence knobs, the in-band declaration (package.json jestPreset.inBand), standard setup hooks; the practice's judge (practice.js — a pure read of package.json + jest.config.js, P1–P3) and ts-jest's one floor",
   "main": "jest-preset.js",
   "files": [
     "jest-preset.js",
     "JestPresetBuilder.js",
-    "knobs.js"
+    "knobs.js",
+    "practice.js",
+    "practice.d.ts"
   ],
   "publishConfig": {
     "access": "public"
