@@ -8,7 +8,8 @@
  * here too — `require('@proteinjs/jest-preset/practice')` — and every reader reads ONE judge: the land tool's law
  * (`land stage` refuses a deviating tip, `land release` a composed sha, `land practice <repo>` prints the census), and
  * the component template's own suite (a repo started from the template starts right). Nothing here touches the
- * filesystem: the caller hands in the parsed package.json and the config's text.
+ * filesystem: the caller hands in the parsed package.json and the config's text — and, as `modules`, the texts of the
+ * local modules the config requires (`localRequires` names them), read by the same rule.
  *
  *   P1 the config — jest.config.js is `module.exports = { preset: '@proteinjs/jest-preset', <the package's OWN seams> }`
  *      (this package's own config names its entry file, `preset: './jest-preset.js'`): never `preset: 'ts-jest'`, never
@@ -20,6 +21,11 @@
  *      (`...fragment`) is read as the spread it is: the keys it carries belong to the fragment's owner, who keeps them in
  *      the practice — the law judges what the package WRITES; so an object literal spread IN PLACE (`...{ maxWorkers: 2 }`)
  *      IS the package's writing and is read through, its keys the package's own (no road smuggles a preset key).
+ *      And the config never reads or writes the PROCESS
+ *      (PROCESS_READS, named by line in the config and in any local module it requires): process.env written,
+ *      process.env.NODE_OPTIONS / process.argv / process.execArgv read, process.exit — the one owner of a node flag and
+ *      of the run's mode is P3's declaration through the preset (thought-export's round-1 seam joined NODE_OPTIONS and
+ *      refused an in-process run from its config: a second mechanism beside the preset's, row 3260).
  *   P2 the script — `scripts.test` is exactly `jest --passWithNoTests`: never `--runInBand`, never a typed NODE_OPTIONS,
  *      never a bare `jest` (a package with no suite yet reds the leg otherwise).
  *   P3 the declaration — a `jestPreset` key is an object over a closed vocabulary (inBand, nodeOptions, reason — a key
@@ -54,6 +60,27 @@ class TestPractice {
   static DECLARATION_KEYS = [TestPractice.IN_BAND_KEY, TestPractice.NODE_OPTIONS_KEY, TestPractice.REASON_KEY];
   /** The top-level keys a package never types: the preset's. */
   static PRESET_KEYS = ['transform', 'testEnvironment', 'maxWorkers', 'workerIdleMemoryLimit'];
+  /**
+   * P1's process reads — what a jest.config.js (or a local module it requires) never does, each named by line: the
+   * process is the preset's to shape (P3's declaration carries a node flag; the builder joins it to NODE_OPTIONS for the
+   * workers and refuses an in-process run that lacks it) — a config that joins NODE_OPTIONS itself, reads the run's
+   * mode from process.argv / process.execArgv, or exits is a second owner beside it. Each kind is a regular expression
+   * over one line of the text with comments and prose strings blanked (`blank`; a computed key's string —
+   * `process.env['NODE_OPTIONS']` — stays). A read of another env key (`process.env.CI`) is a seam's input, not named.
+   */
+  static PROCESS_READS = [
+    {
+      what: 'process.env.NODE_OPTIONS',
+      re: /\bprocess\.env\s*(?:\.\s*NODE_OPTIONS\b|\[\s*(['"`])NODE_OPTIONS\1\s*\])/,
+    },
+    {
+      what: 'a write to process.env',
+      re: /\bdelete\s+process\.env\b|\bObject\.assign\(\s*process\.env\b|\bprocess\.env\s*(?:\.\s*[A-Za-z_$][\w$]*|\[[^\]\n]*\])\s*(?:[+\-*/%&|^]|\*\*|<<|>>>?|\?\?|&&|\|\|)?=(?!=)/,
+    },
+    { what: 'process.execArgv', re: /\bprocess\.execArgv\b/ },
+    { what: 'process.argv', re: /\bprocess\.argv\b/ },
+    { what: 'process.exit', re: /\bprocess\.exit\s*\(/ },
+  ];
   static RULES = {
     P1: "the config is the house preset plus the package's own seams",
     P2: `the test script is exactly "${TestPractice.SCRIPT}"`,
@@ -67,8 +94,8 @@ class TestPractice {
    */
   static drift(packages) {
     const out = [];
-    for (const { dir, manifest, config } of packages) {
-      const deviations = TestPractice.judge({ manifest, config });
+    for (const { dir, manifest, config, modules } of packages) {
+      const deviations = TestPractice.judge({ manifest, config, modules });
       if (deviations.length) {
         out.push({ dir, name: (manifest && manifest.name) || dir, deviations });
       }
@@ -76,8 +103,12 @@ class TestPractice {
     return out;
   }
 
-  /** The deviations of one package — [{ rule, detail }] — or [] (follows the practice, or outside the law). */
-  static judge({ manifest, config }) {
+  /**
+   * The deviations of one package — [{ rule, detail }] — or [] (follows the practice, or outside the law). `modules`,
+   * when the caller hands them in, are the local modules the config requires ([{ path, text }]; `localRequires` names
+   * the specifiers), read for the process reads the config itself never makes.
+   */
+  static judge({ manifest, config, modules = [] }) {
     if (!TestPractice.underTheLaw(manifest, config)) {
       return [];
     }
@@ -120,6 +151,12 @@ class TestPractice {
           );
         }
       }
+    }
+    if (config !== null && config !== undefined) {
+      TestPractice.sayProcessReads(say, TestPractice.CONFIG, config);
+    }
+    for (const { path: file, text } of modules) {
+      TestPractice.sayProcessReads(say, file, text);
     }
     // P2 — the script
     const test = scripts.test;
@@ -198,6 +235,108 @@ class TestPractice {
   static underTheLaw(manifest, config) {
     const test = manifest && manifest.scripts && manifest.scripts.test;
     return (typeof test === 'string' && /\bjest\b/.test(test)) || (config !== null && config !== undefined);
+  }
+
+  /** P1's process reads of one file, said once with every line: `<file> reads or writes the process at 7 (…), 9 (…) — …`. */
+  static sayProcessReads(say, file, text) {
+    const reads = TestPractice.processReads(text);
+    if (!reads.length) {
+      return;
+    }
+    const { DECLARATION_KEY, IN_BAND_KEY, NODE_OPTIONS_KEY } = TestPractice;
+    say(
+      'P1',
+      `${file} reads or writes the process at ${reads.map((r) => `${r.line} (${r.kinds.join(' + ')})`).join(', ')} — a config never mutates the process or reads the run's mode: a node flag is package.json ${DECLARATION_KEY}.${NODE_OPTIONS_KEY} with its reason, one suite at a time is ${DECLARATION_KEY}.${IN_BAND_KEY}; the preset starts jest's workers under the declared flags and refuses an in-process run that lacks them`
+    );
+  }
+
+  /**
+   * The lines of `text` that read or write the process (PROCESS_READS) — [{ line, kinds }], 1-based, each kind once —
+   * over the text with its comments and prose strings blanked; [] when none.
+   */
+  static processReads(text) {
+    const out = [];
+    TestPractice.blank(text.replace(/\r\n?/g, '\n'))
+      .split('\n')
+      .forEach((line, i) => {
+        const kinds = TestPractice.PROCESS_READS.filter(({ re }) => re.test(line)).map(({ what }) => what);
+        if (kinds.length) {
+          out.push({ line: i + 1, kinds });
+        }
+      });
+    return out;
+  }
+
+  /**
+   * The local modules a text requires — the `require('./…')` / `require('../…')` specifiers, in order, each once —
+   * for the caller to read and hand to `judge` as `modules`. A package's require (`@n3xah/flow-server/test/jest-preset`)
+   * is that package's own practice, read where it is published.
+   */
+  static localRequires(text) {
+    const src = TestPractice.blank(text.replace(/\r\n?/g, '\n'), { strings: false });
+    const found = [];
+    const re = /\brequire\s*\(\s*(['"])(\.\.?\/[^'"\n]+)\1\s*\)/g;
+    let match;
+    while ((match = re.exec(src)) !== null) {
+      if (!found.includes(match[2])) {
+        found.push(match[2]);
+      }
+    }
+    return found;
+  }
+
+  /**
+   * The text with its comments blanked and, unless `strings` is false, its string literals' prose blanked — every
+   * line kept at its number (a blank is a space; newlines stay), so a read names the line it sits on. A string whose
+   * body is identifier-shaped (`'NODE_OPTIONS'`, a computed key) keeps its body; a template's `${…}` is read as text.
+   */
+  static blank(text, { strings = true } = {}) {
+    const out = [];
+    const n = text.length;
+    let i = 0;
+    while (i < n) {
+      const c = text[i];
+      const next = text[i + 1];
+      if (c === '/' && next === '*') {
+        const end = text.indexOf('*/', i + 2);
+        const stop = end === -1 ? n : end + 2;
+        for (let j = i; j < stop; j += 1) {
+          out.push(text[j] === '\n' ? '\n' : ' ');
+        }
+        i = stop;
+      } else if (c === '/' && next === '/') {
+        while (i < n && text[i] !== '\n') {
+          out.push(' ');
+          i += 1;
+        }
+      } else if (c === "'" || c === '"' || c === '`') {
+        let j = i + 1;
+        while (j < n && text[j] !== c) {
+          if (text[j] === '\\') {
+            j += 1;
+          }
+          j += 1;
+        }
+        const close = Math.min(j, n);
+        const body = text.slice(i + 1, close);
+        if (!strings || /^[A-Za-z_$][\w$]*$/.test(body)) {
+          out.push(text.slice(i, Math.min(close + 1, n)));
+        } else {
+          out.push(c);
+          for (const ch of body) {
+            out.push(ch === '\n' ? '\n' : ' ');
+          }
+          if (j < n) {
+            out.push(c);
+          }
+        }
+        i = close + 1;
+      } else {
+        out.push(c);
+        i += 1;
+      }
+    }
+    return out.join('');
   }
 
   /**

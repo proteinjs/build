@@ -35,6 +35,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { TestPractice } = require('./practice');
 
 const ADVISORY_MAX_AGE_MS = 24 * 3600 * 1000;
 
@@ -102,4 +103,96 @@ const testTimeoutForBackend = (opDeadlineMs) => {
   return 2 * opDeadlineMs;
 };
 
-module.exports = { workers, workerIdleMemoryLimit, testTimeoutForBackend };
+/**
+ * THE DECLARATION'S ONE READER (DECISIONS 1121 P3): the consuming package's package.json `jestPreset`, read whole and
+ * refused by name — `{ name, inBand: <the reason> | null, nodeOptions: { flags, reason } | null }`; no package.json at
+ * the dir counts as none (the preset's own fixtures). Every consumer of the declaration reads it HERE: the builder at
+ * config load (JestPresetBuilder — maxWorkers 1 for a declared in-band; the declared flags joined to NODE_OPTIONS for
+ * the workers jest forks, an in-process run that lacks them refused), and the metarepo's land tool before an in-band
+ * run it makes itself (`land reds` runs `npm test -- --runInBand`, which has no worker to inherit the flags: node must
+ * START under them — PackageVerifier reads `nodeOptions(packageDir)` through the package's own installed preset and
+ * carries the flags as that run's NODE_OPTIONS, never parsing package.json a second time). The vocabulary is closed
+ * (TestPractice.DECLARATION_KEYS) because a key outside it read as nothing is the silent failure: a misspelled
+ * `inband` would run the package with workers against its one database. The in-band declaration carries its reason
+ * as its value; the node-options declaration carries its flags and, beside them, `reason`; each reason is the record
+ * a later lift reads. A declared flag is one NODE_OPTIONS can carry (node's process.allowedNodeEnvironmentFlags) —
+ * any other would kill every worker at spawn.
+ */
+const declaration = (packageDir) => {
+  const manifestPath = path.join(packageDir, 'package.json');
+  if (!fs.existsSync(manifestPath)) {
+    return { name: packageDir, inBand: null, nodeOptions: null };
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+  const name = manifest.name || packageDir;
+  const declared = manifest[TestPractice.DECLARATION_KEY];
+  if (declared === undefined) {
+    return { name, inBand: null, nodeOptions: null };
+  }
+  const { DECLARATION_KEY, IN_BAND_KEY, NODE_OPTIONS_KEY, REASON_KEY, DECLARATION_KEYS } = TestPractice;
+  const key = (k) => `${DECLARATION_KEY}.${k}`;
+  const refuse = (text) => {
+    throw new Error(`@proteinjs/jest-preset: ${name} ${text}`);
+  };
+  if (!declared || typeof declared !== 'object' || Array.isArray(declared)) {
+    refuse(
+      `declares ${DECLARATION_KEY} but ${DECLARATION_KEY} is not an object (the declaration: { "${IN_BAND_KEY}": "<the reason>" }, ` +
+        `{ "${NODE_OPTIONS_KEY}": ["<node flag>", …], "${REASON_KEY}": "<the reason>" }, or both).`
+    );
+  }
+  const unknown = Object.keys(declared).filter((k) => !DECLARATION_KEYS.includes(k));
+  if (unknown.length) {
+    refuse(
+      `declares ${unknown.map(key).join(', ')} — no key the preset reads (the declaration's keys: ${DECLARATION_KEYS.join(', ')}); ` +
+        `a key read as nothing would run this package as if it declared nothing.`
+    );
+  }
+  const inBand = declared[IN_BAND_KEY];
+  if (inBand !== undefined && (typeof inBand !== 'string' || !inBand.trim())) {
+    refuse(
+      `declares ${key(IN_BAND_KEY)} without its reason — the declaration is the record of why this package runs one suite at a ` +
+        `time (one Spanner CI database per run, the suites sharing one emulator database, …); write the reason as the value, ` +
+        `never true or an empty string.`
+    );
+  }
+  const flags = declared[NODE_OPTIONS_KEY];
+  const reason = declared[REASON_KEY];
+  if (flags === undefined && reason !== undefined) {
+    refuse(
+      `declares ${key(REASON_KEY)} without ${key(NODE_OPTIONS_KEY)} — the reason belongs beside the flags it explains (the ` +
+        `in-band declaration carries its reason as its value).`
+    );
+  }
+  if (flags !== undefined) {
+    const isFlag = (flag) => typeof flag === 'string' && /^-\S+$/.test(flag.trim());
+    if (!Array.isArray(flags) || !flags.length || !flags.every(isFlag)) {
+      refuse(
+        `declares ${key(NODE_OPTIONS_KEY)} but ${key(NODE_OPTIONS_KEY)} is not a list of node flags ` +
+          `(["--experimental-vm-modules"] — the flags jest's workers start under).`
+      );
+    }
+    if (typeof reason !== 'string' || !reason.trim()) {
+      refuse(
+        `declares ${key(NODE_OPTIONS_KEY)} without its reason — ${key(REASON_KEY)} is the record of why this package's workers ` +
+          `need the flags (the library, the import, the line); write it as a non-empty string.`
+      );
+    }
+    const unallowed = flags.map((flag) => flag.trim()).filter((flag) => !process.allowedNodeEnvironmentFlags.has(flag));
+    if (unallowed.length) {
+      refuse(
+        `declares ${key(NODE_OPTIONS_KEY)} ${unallowed.join(' ')} — a flag NODE_OPTIONS cannot carry (node's ` +
+          `process.allowedNodeEnvironmentFlags); every worker would die at spawn.`
+      );
+    }
+  }
+  return {
+    name,
+    inBand: inBand === undefined ? null : inBand.trim(),
+    nodeOptions: flags === undefined ? null : { flags: flags.map((flag) => flag.trim()), reason: reason.trim() },
+  };
+};
+
+/** The node flags `packageDir`'s jest workers start under — its declaration's `{ flags, reason }` — or null when it declares none. */
+const nodeOptions = (packageDir) => declaration(packageDir).nodeOptions;
+
+module.exports = { workers, workerIdleMemoryLimit, testTimeoutForBackend, declaration, nodeOptions };
