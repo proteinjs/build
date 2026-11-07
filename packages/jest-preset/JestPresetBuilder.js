@@ -58,14 +58,19 @@ class JestPresetBuilder {
   /** The in-band declaration under it: a non-empty string, the reason. */
   static IN_BAND_KEY = 'inBand';
 
-  constructor({ env = process.env, packageDir = process.cwd(), tsJestVersion } = {}) {
+  /** TypeScript's floor for a Node16 / NodeNext package: ts-jest's transpile-only road for those module kinds reads JSDocParsingMode (5.3+). */
+  static NODE_MODULES_TYPESCRIPT_FLOOR = '5.3.0';
+
+  constructor({ env = process.env, packageDir = process.cwd(), tsJestVersion, typescriptVersion } = {}) {
     this.env = env;
     this.packageDir = packageDir;
     this.tsJestVersion = tsJestVersion ?? this.resolveTsJestVersion();
+    this.typescriptVersion = typescriptVersion ?? null;
   }
 
   build() {
     this.assertTsJestFloor();
+    this.assertTypeScriptFloorForNodeModules();
     return {
       testEnvironment: 'node',
       moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
@@ -87,6 +92,58 @@ class JestPresetBuilder {
           `ignores tsconfig.isolatedModules and silently falls back to full type-check — the exact ` +
           `worker-heap/boot-floor cost this preset exists to remove. Bump the package's ts-jest.`
       );
+    }
+  }
+
+  /**
+   * THE NODE16 FLOOR (space-server, 2026-11-07): a package whose tsconfig compiles under `module: Node16` or `NodeNext`
+   * takes ts-jest's own transpile-only road for those module kinds (its transpile-module port, needed for the implied
+   * node format), which reads TypeScript's JSDocParsingMode — a 5.3 API; on 5.2.2 every suite died at globalSetup with
+   * "Cannot read properties of undefined (reading 'ParseAll')". Named here at config load instead: the module kind,
+   * the TypeScript found, the floor. A commonjs package rides ts.transpileModule and has no floor beyond ts-jest's.
+   */
+  assertTypeScriptFloorForNodeModules() {
+    const moduleKind = this.tsconfigModule();
+    if (!moduleKind || !/^(node16|nodenext)$/i.test(moduleKind)) {
+      return;
+    }
+    const version = this.typescriptVersion ?? this.resolveTypeScriptVersion();
+    if (version === null) {
+      return;
+    }
+    const [major, minor] = version.split('.').map(Number);
+    const [floorMajor, floorMinor] = JestPresetBuilder.NODE_MODULES_TYPESCRIPT_FLOOR.split('.').map(Number);
+    if (major < floorMajor || (major === floorMajor && minor < floorMinor)) {
+      throw new Error(
+        `@proteinjs/jest-preset: this package compiles under module ${moduleKind} and ts-jest's transpile-only road for ` +
+          `that module kind reads TypeScript ${JestPresetBuilder.NODE_MODULES_TYPESCRIPT_FLOOR}'s JSDocParsingMode — found TypeScript ${version} ` +
+          `(every suite would die at load on "reading 'ParseAll'"). Move the package's typescript to >= ` +
+          `${JestPresetBuilder.NODE_MODULES_TYPESCRIPT_FLOOR}, or its module to commonjs.`
+      );
+    }
+  }
+
+  /** The consuming package's tsconfig `compilerOptions.module`, or null (no tsconfig, or none declared). */
+  tsconfigModule() {
+    const tsconfigPath = path.join(this.packageDir, 'tsconfig.json');
+    if (!fs.existsSync(tsconfigPath)) {
+      return null;
+    }
+    try {
+      const options = JSON.parse(fs.readFileSync(tsconfigPath, 'utf-8')).compilerOptions || {};
+      return typeof options.module === 'string' ? options.module : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** TypeScript's version as the CONSUMING package resolves it (the ts-jest resolution's twin), or null when it is not resolvable from there. */
+  resolveTypeScriptVersion() {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      return require(require.resolve('typescript/package.json', { paths: [this.packageDir] })).version;
+    } catch {
+      return null;
     }
   }
 

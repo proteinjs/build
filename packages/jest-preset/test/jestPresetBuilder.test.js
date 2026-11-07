@@ -226,3 +226,44 @@ describe('the in-band declaration (package.json jestPreset.inBand)', () => {
     expect(JestPresetBuilder.IN_BAND_KEY).toBe('inBand');
   });
 });
+
+/**
+ * THE NODE16 FLOOR (space-server, 2026-11-07): a package that compiles under `module: Node16` / `NodeNext` takes
+ * ts-jest's own transpile-only road for those module kinds, which reads TypeScript's JSDocParsingMode — a 5.3 API;
+ * on 5.2.2 every suite died at globalSetup with the cryptic "Cannot read properties of undefined (reading
+ * 'ParseAll')". The preset names the pair at config load instead: the module kind, the TypeScript found, the floor.
+ * A commonjs package on 5.2.2 is untouched (ts.transpileModule's road).
+ */
+describe('the TypeScript floor for Node16 / NodeNext packages (ts-jest’s transpile-only road reads a 5.3 API)', () => {
+  const withTsconfig = (module, typescriptVersion) =>
+    new JestPresetBuilder({
+      env: {},
+      packageDir: makePackageDirWith({
+        'tsconfig.json': JSON.stringify({ compilerOptions: { module, moduleResolution: module.toLowerCase() } }),
+      }),
+      tsJestVersion: TS_JEST_OK,
+      typescriptVersion,
+    });
+
+  test('a Node16 package on TypeScript 5.2.2 is refused by name: the module kind, the version found, the floor', () => {
+    expect(() => withTsconfig('Node16', '5.2.2').build()).toThrow(/module Node16.*TypeScript 5\.2\.2.*5\.3\.0/);
+    expect(() => withTsconfig('NodeNext', '5.2.2').build()).toThrow(/module NodeNext/);
+  });
+
+  test('a Node16 package on TypeScript 5.3.3 builds; a commonjs package on 5.2.2 builds', () => {
+    expect(() => withTsconfig('Node16', '5.3.3').build()).not.toThrow();
+    expect(() => withTsconfig('commonjs', '5.2.2').build()).not.toThrow();
+    expect(() => withTsconfig('CommonJS', '5.2.2').build()).not.toThrow();
+  });
+
+  test('no tsconfig at the package dir (the preset’s own fixtures): no floor read, the build stands', () => {
+    expect(() =>
+      new JestPresetBuilder({
+        env: {},
+        packageDir: makePackageDir([]),
+        tsJestVersion: TS_JEST_OK,
+        typescriptVersion: '5.2.2',
+      }).build()
+    ).not.toThrow();
+  });
+});
