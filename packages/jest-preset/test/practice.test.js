@@ -312,6 +312,29 @@ describe('the judge: a pure read of package.json + jest.config.js, one rule at a
     ).toEqual([]);
   });
 
+  test('P1 through the stripper’s keyword road: a `/` after `return` or `typeof` opens a regex literal — also when the keyword follows an unpunctuated line (ASI; round 4’s dodge read `1return` as one word and the `/` as division, its quote swallowing the write beside it) — so the write on the regex’s line is named', () => {
+    const named = (lines) => {
+      const found = judge(manifest(), [...lines, "module.exports = { preset: '@proteinjs/jest-preset' };"].join('\n'));
+      expect(rules(found)).toEqual(['P1']);
+      return found[0].detail;
+    };
+    // the ASI case: `1` and `return` are two words across the newline, so the `/` after `return` opens a regex whose quote
+    // opens no string — the write after it on the same line is read (the round-4 refuter's probe, judged [] at c5d7e174)
+    expect(
+      named([
+        'function f(x) {',
+        '  const a = 1',
+        "  return /'/.test(x); process.env.NODE_OPTIONS = '--x';",
+        '}',
+        'f();',
+      ])
+    ).toMatch(/at 3 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\) —/);
+    // the keyword road on one line: `typeof /'/` is a regex, never a division — the write beside it is read
+    expect(named(["const kind = typeof /'/; process.env.NODE_OPTIONS = '--x';"])).toMatch(
+      /at 1 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\) —/
+    );
+  });
+
   test('P2: --runInBand, a typed NODE_OPTIONS, a bare `jest`, a missing script beside a config — each named with the practice’s script', () => {
     for (const test of [
       'jest --runInBand --passWithNoTests',
