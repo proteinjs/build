@@ -381,6 +381,91 @@ describe('the declared-imports law', () => {
     ]);
   });
 
+  it('a spread `...require()` names a dependency — the house stub shape (`module.exports = { ...require("pkg") }`, a jest.mock factory spreading a module); a member `require` (`bag.require("x")`) is no module reach and stays unread', () => {
+    const root = workspace({
+      common: {
+        'package.json': { name: '@fixture/common', version: '1.0.0' },
+        'src/stub.js': ['module.exports = {', "  ...require('spread-pkg'),", '  own: 1,', '};', ''].join('\n'),
+        'test/mock.test.ts': [
+          "jest.mock('x', () => ({",
+          "  ...require('spread-sub/dist/src/a'),",
+          '}));',
+          'const bag = { require: (s: string) => s };',
+          "const notNode = bag.require('member-pkg');",
+          'export const t = notNode;',
+          '',
+        ].join('\n'),
+      },
+    });
+    expect(rows(root)).toEqual([
+      ['common', 'src/stub.js:2', 'spread-pkg', 'spread-pkg'],
+      ['common', 'test/mock.test.ts:2', 'spread-sub/dist/src/a', 'spread-sub'],
+    ]);
+  });
+
+  it('a dynamic import() in a TYPE position is erased by the compiler and never counts — an annotation (`doc: import("pkg").Node`), `typeof import("pkg")` in type arguments, a type alias, a function type’s return, `as`, a generic’s argument; a value-position import() counts — a lazy arrow, a `.then(` chain, both arms of a ternary, an array of them', () => {
+    const root = workspace({
+      common: {
+        'package.json': { name: '@fixture/common', version: '1.0.0' },
+        'src/types.ts': [
+          "function find(doc: import('type-pos-pkg').Node, n: number): number {",
+          '  return n;',
+          '}',
+          "const actual = jest.requireActual<typeof import('typeof-pkg')>('typeof-pkg');",
+          "type Thought = import('alias-pkg').Thought;",
+          "let readiness: () => import('fn-type-pkg').PageReadiness;",
+          "const meta = {} as unknown as import('as-pkg').Metadata;",
+          "let editor: { current?: import('opt-pkg').Editor } | null = null;",
+          "let pane: Array<import('generic-pkg').Pane> = [];",
+          "const lazy = () => import('lazy-pkg');",
+          "const loaded = import('then-pkg').then((m) => m);",
+          "const pick = flag ? import('tern-a') : import('tern-b');",
+          "const all = Promise.all([import('arr-a'), import('arr-b')]);",
+          'export const types = [find, actual, readiness, meta, editor, pane, lazy, loaded, pick, all] as [Thought];',
+          '',
+        ].join('\n'),
+      },
+    });
+    expect(rows(root)).toEqual([
+      ['common', 'src/types.ts:10', 'lazy-pkg', 'lazy-pkg'],
+      ['common', 'src/types.ts:11', 'then-pkg', 'then-pkg'],
+      ['common', 'src/types.ts:12', 'tern-a', 'tern-a'],
+      ['common', 'src/types.ts:12', 'tern-b', 'tern-b'],
+      ['common', 'src/types.ts:13', 'arr-a', 'arr-a'],
+      ['common', 'src/types.ts:13', 'arr-b', 'arr-b'],
+    ]);
+  });
+
+  it('a JSX closing tag is never a regex literal and a `/` with no close on its line divides: every statement after `</div>` (at a line’s end, in a jest.mock factory, before a `{done}/` text line) keeps its line — the file:line contract — and a require after JSX on the same line is read', () => {
+    const root = workspace({
+      ui: {
+        'package.json': { name: '@fixture/ui', version: '1.0.0', peerDependencies: { react: '>=18' } },
+        'src/View.tsx': [
+          "import React from 'react';",
+          'const A = () => <div>hi</div>',
+          'const B = () => <p>{1}</p>;',
+          "jest.mock('m', () => ({ C: () => <span>b</span> }));",
+          "import x from 'after-jsx-pkg';",
+          'const D = ({ done, total }: { done: number; total: number }) => (',
+          '  <p>',
+          '    {done}/',
+          '    {total}',
+          '  </p>',
+          ');',
+          "import y from 'after-slash-pkg';",
+          "const el = <div>x</div>; const m = require('same-line-pkg'); const el2 = <p>y</p>;",
+          'export const all = [React, A, B, x, D, y, m, el, el2];',
+          '',
+        ].join('\n'),
+      },
+    });
+    expect(rows(root)).toEqual([
+      ['ui', 'src/View.tsx:5', 'after-jsx-pkg', 'after-jsx-pkg'],
+      ['ui', 'src/View.tsx:12', 'after-slash-pkg', 'after-slash-pkg'],
+      ['ui', 'src/View.tsx:13', 'same-line-pkg', 'same-line-pkg'],
+    ]);
+  });
+
   it('declaration files, dist/ and node_modules/ are never scanned; a self-import is declared by the package’s own name', () => {
     const root = workspace({
       common: {

@@ -18,8 +18,12 @@ import { builtinModules } from 'module';
  * `__tests__/` directory, a `*.test.*` or `*.spec.*` file). A subpath specifier resolves to its
  * package (`@scope/name/dist/x` → `@scope/name`, `lodash/fp` → `lodash`); any range declares (a
  * workspace sibling by `*`, `workspace:` or `file:` counts); a package's own name is declared (a
- * self-import). Never counted: a relative or absolute path, a `#` import, a `node:` or builtin name,
- * a scheme (`data:`), `import type` / `export type … from`, and anything inside a comment or a string. A
+ * self-import); a `require()` counts spread too (`...require('pkg')`, the stub shape). Never counted: a relative or
+ * absolute path, a `#` import, a `node:` or builtin name, a scheme (`data:`), `import type` / `export type … from`, a
+ * dynamic `import()` in a TYPE position (`doc: import('pkg').Node`, `typeof import('pkg')`, `Array<import('pkg').T>`,
+ * `type T = import('pkg').T` — erased like `import type`; one in a value position counts: `await import('pkg')`,
+ * `() => import('pkg')`, `import('pkg').then(…)`), a member `x.require(…)` (no module reach), and anything inside a
+ * comment or a string. A
  * PATH ALIAS is never a package: a specifier a tsconfig `paths` key covers, or whose first segment is a directory
  * under the package's tsconfig `baseUrl` (`src/tables/TagTable` with `baseUrl: "."`), and — in a test file — one a
  * jest `moduleNameMapper` key matches; an alias whose target is a node_modules copy (`@proteinjs/*` →
@@ -27,12 +31,15 @@ import { builtinModules } from 'module';
  *
  * THE SCAN AND ITS LIMITS: a tokenizer over each file's text — comments dropped, string literals
  * replaced by numbered placeholders, regex literals skipped where the usual heuristic puts one (after
- * `( , = : [ ! & | ? { } ;` or a keyword such as `return`) — then four regular expressions over the
- * result; never a TypeScript program, so the law runs before any install or build, in seconds. It
- * reads a LITERAL specifier only: a specifier built at run time (`require(name)`, a template with
- * `${}`), `require.resolve(…)`, `jest.mock('…')`, the loader half of a loader-prefixed specifier, a
- * statement inside JSX text, a template literal nested in `${}` and an unterminated regex literal
- * are outside what it sees. Files: src/** and test/** of each package with the extensions below,
+ * `( , = : [ ! & | ? { } ;` or a keyword such as `return`; never right after `<`, a JSX closing tag, and only when
+ * the literal closes on its line — a `/` with no closing `/` before the newline divides) — then four regular
+ * expressions over the result, a dynamic `import()` read as a type by what surrounds it (a type keyword or `<`,
+ * `|`, `&` before it; a member chain after it that is never called); never a TypeScript program, so the law runs
+ * before any install or build, in seconds. It reads a LITERAL specifier only: a specifier built at run time
+ * (`require(name)`, a template with `${}`), `require.resolve(…)`, `jest.mock('…')`, `jest.requireActual('…')`,
+ * the loader half of a loader-prefixed specifier and a template literal nested in `${}` are outside what it sees;
+ * a bare type-position `import('pkg')` with no member after it and no type keyword before it (`x: import('pkg')`)
+ * reads as a value and counts (it fails safe). Files: src/** and test/** of each package with the extensions below,
  * never dist/, node_modules/ or a `.d.ts` (type-level). Packages: lerna.json `packages` (globs — `*`
  * one level, `**` any depth — ending at a directory that holds a package.json) or package.json
  * `workspaces`; a root with neither and a package.json of its own is the one package (`--root <pkg>`).
@@ -217,12 +224,15 @@ export class DeclaredImports {
       }
       return line;
     };
-    for (const { re, type, id } of DeclaredImports.PATTERNS) {
+    for (const { re, type, id, dynamic } of DeclaredImports.PATTERNS) {
       re.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = re.exec(code))) {
         if (type && m[type]) {
           continue; // `import type` / `export type … from`: erased by the compiler
+        }
+        if (dynamic && m[dynamic] === 'import' && DeclaredImports.isTypeImport(code, m.index + m[1].length)) {
+          continue; // a type-position import(): erased by the compiler like `import type`
         }
         const text = strings[Number(m[id])];
         const key = `${m.index}:${text}`;
@@ -536,9 +546,13 @@ export class DeclaredImports {
         tail = '"';
         continue;
       }
-      if (c === '/' && DeclaredImports.regexMayStart(tail)) {
+      // a regex literal where the heuristic puts one — never right after `<` (a JSX closing tag: `</div>`), and only
+      // when it closes on its line: a `/` with no closing `/` before the newline divides (a JSX text's `{done}/`), so
+      // the newline stays and every later statement keeps its line
+      if (c === '/' && source[i - 1] !== '<' && DeclaredImports.regexMayStart(tail)) {
         let j = i + 1;
         let inClass = false;
+        let closed = false;
         while (j < n) {
           const ch = source[j];
           if (ch === '\\') {
@@ -555,15 +569,18 @@ export class DeclaredImports {
           } else if (ch === '[') {
             inClass = true;
           } else if (ch === '/') {
+            closed = true;
             break;
           }
           j += 1;
         }
-        const stop = Math.min(n, j + 1);
-        out += ' '.repeat(stop - i);
-        i = stop;
-        tail = '/';
-        continue;
+        if (closed) {
+          const stop = j + 1;
+          out += ' '.repeat(stop - i);
+          i = stop;
+          tail = '/';
+          continue;
+        }
       }
       out += c;
       if (!/\s/.test(c)) {
@@ -585,6 +602,73 @@ export class DeclaredImports {
     }
     const word = /[A-Za-z_$][\w$]*$/.exec(tail);
     return Boolean(word && DeclaredImports.EXPRESSION_KEYWORDS.has(word[0]));
+  }
+
+  /**
+   * Whether the `import(` at `at` sits in a TYPE position — erased by the compiler like `import type`. Read from what
+   * surrounds it: a type keyword before it (`typeof import(…)`, `keyof`, `as`, `extends`, `implements`, `satisfies`,
+   * `is`, `infer`, `readonly`) or a type-only operator (`<`, `|`, `&` — never an expression's neighbor); else a member
+   * chain after it that is never called (`import('pkg').Node`, `.Node<T>` — a value's chain is a call: `.then(`) or a
+   * type continuation (`>`, `|`, `&`, `[`). What is left — `await import(…)`, `=> import(…)`, `? import(…) : import(…)`,
+   * `[import(…), …]`, `{ key: import(…) }`, a bare `x: import('pkg')` — is read as a value and counts.
+   */
+  private static isTypeImport(code: string, at: number): boolean {
+    const before = code.slice(Math.max(0, at - 40), at).trimEnd();
+    const word = /[A-Za-z_$][\w$]*$/.exec(before);
+    if (word && DeclaredImports.TYPE_KEYWORDS.has(word[0])) {
+      return true;
+    }
+    const last = before[before.length - 1];
+    if (last === '<' || last === '|' || last === '&') {
+      return true;
+    }
+    let i = code.indexOf('(', at);
+    if (i === -1) {
+      return false;
+    }
+    for (let depth = 0; i < code.length; i += 1) {
+      if (code[i] === '(') {
+        depth += 1;
+      } else if (code[i] === ')' && (depth -= 1) === 0) {
+        break;
+      }
+    }
+    i += 1;
+    const limit = Math.min(code.length, i + 400);
+    const skipSpace = () => {
+      while (i < limit && /\s/.test(code[i])) {
+        i += 1;
+      }
+    };
+    skipSpace();
+    let members = 0;
+    while (code[i] === '.') {
+      i += 1;
+      skipSpace();
+      const name = /^[A-Za-z_$][\w$]*/.exec(code.slice(i, i + 80));
+      if (!name) {
+        return false;
+      }
+      i += name[0].length;
+      members += 1;
+      skipSpace();
+      if (code[i] === '<') {
+        for (let depth = 0; i < limit; i += 1) {
+          if (code[i] === '<') {
+            depth += 1;
+          } else if (code[i] === '>' && (depth -= 1) === 0) {
+            i += 1;
+            break;
+          }
+        }
+        skipSpace();
+      }
+    }
+    if (members) {
+      return code[i] !== '(';
+    }
+    const next = code[i];
+    return next === '>' || next === '|' || next === '&' || next === '[';
   }
 
   private static unescape(ch: string): string {
@@ -689,15 +773,32 @@ export class DeclaredImports {
     'await',
   ]);
 
-  /** The four shapes over the tokenized code: `m[1]` the prefix, `type` the erasing keyword's group, `id` the placeholder's. */
-  private static readonly PATTERNS: { re: RegExp; type: number | null; id: number }[] = [
+  /** The words a type-position `import()` follows: `typeof import('pkg')`, `as import('pkg').T`, `extends import('pkg').T`. */
+  private static readonly TYPE_KEYWORDS = new Set([
+    'typeof',
+    'keyof',
+    'as',
+    'extends',
+    'implements',
+    'satisfies',
+    'is',
+    'infer',
+    'readonly',
+  ]);
+
+  /**
+   * The four shapes over the tokenized code: `m[1]` the prefix, `type` the erasing keyword's group, `id` the
+   * placeholder's, `dynamic` the `require`/`import` keyword's (a type-position `import()` is dropped by `isTypeImport`).
+   */
+  private static readonly PATTERNS: { re: RegExp; type: number | null; id: number; dynamic?: number }[] = [
     // import x from "§n" · import { a, type b } from "§n" · import * as ns from "§n" · import type … from "§n" (erased)
     { re: /(^|[^\w$.])import\s+(type\s+)?(?:[^;"]*?\s)?from\s*"§(\d+)"/g, type: 2, id: 3 },
     // import "§n" (a side-effect import)
     { re: /(^|[^\w$.])import\s*"§(\d+)"/g, type: null, id: 2 },
     // export * from "§n" · export * as ns from "§n" · export { a as b } from "§n" · export type { … } from "§n" (erased)
     { re: /(^|[^\w$.])export\s+(type\s+)?(?:\*(?:\s+as\s+[\w$]+)?|\{[^}"]*\})\s*from\s*"§(\d+)"/g, type: 2, id: 3 },
-    // require("§n") · import("§n")
-    { re: /(^|[^\w$.])(?:require|import)\s*\(\s*"§(\d+)"\s*[,)]/g, type: null, id: 2 },
+    // require("§n") · ...require("§n") (a spread — the stub shape) · import("§n"); a member `x.require(…)` is no module
+    // reach and is never read; a type-position import() is dropped by `isTypeImport`
+    { re: /(^|[^\w$.]|\.\.\.)(require|import)\s*\(\s*"§(\d+)"\s*[,)]/g, type: null, id: 3, dynamic: 2 },
   ];
 }
