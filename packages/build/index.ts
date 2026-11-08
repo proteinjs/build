@@ -23,3 +23,7 @@ export * from './src/links/DistHash';
 // The formatter pass's argv (prettier --write / --check, eslint --fix, the excluded globs): a
 // consumer's guard runs the same pass read-only from the one owner.
 export * from './src/PackageFormatter';
+// THE DECLARED-IMPORTS LAW (row 3276): every package an import names is a dependency the importing package
+// declares — one class, two doors: the `declared-imports` bin (a repo's _test.yml, a lane's worktree) and a
+// metarepo's land stage, which runs it over every package of a staged repo at the composed tip and refuses by name.
+export * from './src/DeclaredImports';

@@ -1,0 +1,12 @@
+{
+  "branch": "feat/declared-imports",
+  "packages": ["build"],
+  "suites": [
+    "packages/build/test/DeclaredImports.test.ts",
+    "packages/build/test/installArgsOwner.test.ts",
+    "packages/build/test/linkedWorkspaceDist.test.ts",
+    "packages/build/test/pullForward.test.ts",
+    "packages/build/test/workspaceDoctor.test.ts"
+  ],
+  "removes": []
+}

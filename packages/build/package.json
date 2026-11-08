@@ -23,7 +23,8 @@
     "sync-workspace": "dist/src/bin/runSyncWorkspace.js",
     "pull-forward": "dist/src/bin/runPullForward.js",
     "serve-package": "dist/src/bin/runServePackage.js",
-    "link-workspace": "dist/src/bin/runLinkWorkspace.js"
+    "link-workspace": "dist/src/bin/runLinkWorkspace.js",
+    "declared-imports": "dist/src/bin/runDeclaredImports.js"
   },
   "publishConfig": {
     "access": "public"
