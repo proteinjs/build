@@ -313,9 +313,11 @@ describe('the judge: a pure read of package.json + jest.config.js, one rule at a
     ).toEqual([]);
   });
 
-  // THE STRIPPER'S `/` ROAD (rounds 5–6, row 3260): a `/` opens a regex literal after a keyword (REGEX_AFTER) and is
-  // division after a name; the word before it ends at whitespace (`emit`) and at a blanked span (`space`). One guard per
-  // case, so a wrong road shows on every guard it breaks — never hidden behind an earlier expectation of the same case.
+  // THE STRIPPER'S `/` ROAD (rounds 5–7, row 3260): a `/` opens a regex literal after a keyword (REGEX_AFTER) and is
+  // division after a name; the word before it ends at whitespace (`emit`) and at a blanked span (`space`); after a
+  // closer — `)`, `]`, a string's or a template's close — it is division too (regexOpens' punctuation branch, each
+  // closer its own guard). One guard per case, so a wrong road shows on every guard it breaks — never hidden behind an
+  // earlier expectation of the same case.
   test('P1 through the stripper’s keyword road: a `/` after `return` opens a regex literal also when `return` follows an unpunctuated line (ASI; round 4’s dodge read `1return` as one word and the `/` as division, its quote swallowing the write beside it) — the write on the regex’s line is named', () => {
     // `1` and `return` are two words across the newline, so the `/` after `return` opens a regex whose quote opens no
     // string — the write after it on the same line is read (the round-4 refuter's probe, judged [] at c5d7e174)
@@ -350,6 +352,37 @@ describe('the judge: a pure read of package.json + jest.config.js, one rule at a
     expect(
       named(["const half = n / 2; const quote = \"'\"; process.env.NODE_OPTIONS = '--x'; const third = m / 3;"])
     ).toMatch(/at 1 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\) —/);
+  });
+
+  // regexOpens' punctuation branch (the round-6 refuter: `return true` there — every closer dropped — left the suite
+  // green): a `/` after a value's close is division; were it a regex opener, `f(x) / 2 … g() /` would blank the write
+  // between the two slashes. One closer per case, so a set missing one closer fails on that case alone.
+  test('P1 through the stripper’s other direction: a `/` after `)` is division, never a regex literal — the write between two divisions, past a quote, is named', () => {
+    expect(
+      named(["const x = f(x) / 2; const q = \"'\"; process.env.NODE_OPTIONS = '--x'; const y = g() / 3;"])
+    ).toMatch(/at 1 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\) —/);
+  });
+
+  test('P1 through the stripper’s other direction: a `/` after `]` is division, never a regex literal — the write between two divisions, past a quote, is named', () => {
+    expect(
+      named(["const x = arr[0] / 2; const q = \"'\"; process.env.NODE_OPTIONS = '--x'; const y = arr[1] / 3;"])
+    ).toMatch(/at 1 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\) —/);
+  });
+
+  test('P1 through the stripper’s other direction: a `/` after a string’s close (`\'` on one line, `"` on the next) is division, never a regex literal — the write on each line is named', () => {
+    // two lines, one quote kind each: a set that keeps one quote and drops the other names one line, not both
+    expect(
+      named([
+        "const x = 'a' / 2; const q = \"'\"; process.env.NODE_OPTIONS = '--x'; const y = 'b' / 3;",
+        'const z = "a" / 2; const r = "\'"; process.env.TZ = \'UTC\'; const w = "b" / 3;',
+      ])
+    ).toMatch(/at 1 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\), 2 \(a write to process\.env\) —/);
+  });
+
+  test('P1 through the stripper’s other direction: a `/` after a template’s close is division, never a regex literal — the write between two divisions, past a quote, is named', () => {
+    expect(named(["const x = `t` / 2; const q = \"'\"; process.env.NODE_OPTIONS = '--x'; const y = `u` / 3;"])).toMatch(
+      /at 1 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\) —/
+    );
   });
 
   test('P2: --runInBand, a typed NODE_OPTIONS, a bare `jest`, a missing script beside a config — each named with the practice’s script', () => {
