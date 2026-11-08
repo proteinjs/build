@@ -23,9 +23,12 @@
  *      IS the package's writing and is read through, its keys the package's own (no road smuggles a preset key).
  *      And the config never reads or writes the PROCESS
  *      (PROCESS_READS, named by line in the config and in any local module it requires): process.env written,
- *      process.env.NODE_OPTIONS / process.argv / process.execArgv read, process.exit — the one owner of a node flag and
- *      of the run's mode is P3's declaration through the preset (thought-export's round-1 seam joined NODE_OPTIONS and
- *      refused an in-process run from its config: a second mechanism beside the preset's, row 3260).
+ *      process.env.NODE_OPTIONS / process.argv / process.execArgv read, process.exit — and never the process or its env
+ *      held as a VALUE (`const { env } = process`, `const e = process.env`, `{ ...process.env }`: a config has no use
+ *      for the object itself, and an alias reads what its target reads) — the one owner of a node flag and of the run's
+ *      mode is P3's declaration through the preset (thought-export's round-1 seam joined NODE_OPTIONS and refused an
+ *      in-process run from its config: a second mechanism beside the preset's one owner, row 3260; round 3's refuter
+ *      re-typed it through an alias and the lexical rule read []).
  *   P2 the script — `scripts.test` is exactly `jest --passWithNoTests`: never `--runInBand`, never a typed NODE_OPTIONS,
  *      never a bare `jest` (a package with no suite yet reds the leg otherwise).
  *   P3 the declaration — a `jestPreset` key is an object over a closed vocabulary (inBand, nodeOptions, reason — a key
@@ -64,9 +67,12 @@ class TestPractice {
    * P1's process reads — what a jest.config.js (or a local module it requires) never does, each named by line: the
    * process is the preset's to shape (P3's declaration carries a node flag; the builder joins it to NODE_OPTIONS for the
    * workers and refuses an in-process run that lacks it) — a config that joins NODE_OPTIONS itself, reads the run's
-   * mode from process.argv / process.execArgv, or exits is a second owner beside it. Each kind is a regular expression
-   * over one line of the text with comments and prose strings blanked (`blank`; a computed key's string —
-   * `process.env['NODE_OPTIONS']` — stays). A read of another env key (`process.env.CI`) is a seam's input, not named.
+   * mode from process.argv / process.execArgv, or exits is a second owner beside it — and so is one that holds the
+   * process or its env as a value: a BARE `process.env` (not followed by a key — `.KEY` or `[…]`) and a BARE `process`
+   * (not followed by a member) are the object itself, an alias of the reads above. Each kind is a regular expression
+   * over one line of the text with comments, prose strings and regex bodies blanked (`blank`; a computed key's string —
+   * `process.env['NODE_OPTIONS']` — stays). A read of another env key (`process.env.CI`) or another member
+   * (`process.cwd()`, `process.platform`) is a seam's input, not named.
    */
   static PROCESS_READS = [
     {
@@ -80,7 +86,29 @@ class TestPractice {
     { what: 'process.execArgv', re: /\bprocess\.execArgv\b/ },
     { what: 'process.argv', re: /\bprocess\.argv\b/ },
     { what: 'process.exit', re: /\bprocess\.exit\s*\(/ },
+    // the object itself: `process.env` with no key after it (`const e = process.env`, `{ ...process.env }`, `f(process.env)`,
+    // `process.env` split from its key onto the next line)
+    { what: 'process.env itself', re: /\bprocess\.env\b(?!\s*(?:\??\.\s*[A-Za-z_$]|\[))/ },
+    // `process` with no member after it (`const { env } = process`, `const p = process`, `typeof process`)
+    { what: 'process itself', re: /\bprocess\b(?!\s*(?:\?\.|\.|\[))/ },
   ];
+  /** The words a `/` may open a regex literal after (`return /x/`) — `blank` reads division after any other name. */
+  static REGEX_AFTER = new Set([
+    'return',
+    'typeof',
+    'instanceof',
+    'in',
+    'of',
+    'new',
+    'delete',
+    'void',
+    'throw',
+    'case',
+    'do',
+    'else',
+    'yield',
+    'await',
+  ]);
   static RULES = {
     P1: "the config is the house preset plus the package's own seams",
     P2: `the test script is exactly "${TestPractice.SCRIPT}"`,
@@ -246,13 +274,13 @@ class TestPractice {
     const { DECLARATION_KEY, IN_BAND_KEY, NODE_OPTIONS_KEY } = TestPractice;
     say(
       'P1',
-      `${file} reads or writes the process at ${reads.map((r) => `${r.line} (${r.kinds.join(' + ')})`).join(', ')} — a config never mutates the process or reads the run's mode: a node flag is package.json ${DECLARATION_KEY}.${NODE_OPTIONS_KEY} with its reason, one suite at a time is ${DECLARATION_KEY}.${IN_BAND_KEY}; the preset starts jest's workers under the declared flags and refuses an in-process run that lacks them`
+      `${file} reads or writes the process at ${reads.map((r) => `${r.line} (${r.kinds.join(' + ')})`).join(', ')} — a config never mutates the process or reads the run's mode, nor holds the process or its env as a value (an alias reads what its target reads): a node flag is package.json ${DECLARATION_KEY}.${NODE_OPTIONS_KEY} with its reason, one suite at a time is ${DECLARATION_KEY}.${IN_BAND_KEY}; the preset starts jest's workers under the declared flags and refuses an in-process run that lacks them`
     );
   }
 
   /**
    * The lines of `text` that read or write the process (PROCESS_READS) — [{ line, kinds }], 1-based, each kind once —
-   * over the text with its comments and prose strings blanked; [] when none.
+   * over the text with its comments, prose strings and regex bodies blanked (`blank`); [] when none.
    */
   static processReads(text) {
     const out = [];
@@ -286,56 +314,182 @@ class TestPractice {
   }
 
   /**
-   * The text with its comments blanked and, unless `strings` is false, its string literals' prose blanked — every
-   * line kept at its number (a blank is a space; newlines stay), so a read names the line it sits on. A string whose
-   * body is identifier-shaped (`'NODE_OPTIONS'`, a computed key) keeps its body; a template's `${…}` is read as text.
+   * THE ONE STRIPPER — the text with its comments blanked, its regex literals' bodies blanked and, unless `strings` is
+   * false, its string and template literals' prose blanked; every line kept at its number (a blank is a space; newlines
+   * stay), so a read names the line it sits on, and every reader of a config's text reads through this one scan (the
+   * process reads, the local requires, the exported literal). One pass tokenizes the four at once, so none is read
+   * inside another: a `//` inside a string or a regex literal is no comment, a quote inside a regex literal opens no
+   * string (round 3's two corners, row 3260), a `'`/`"` string ends at its line (never swallows the next), and a
+   * template's `${…}` is code — scanned like the line around it, its own strings and comments blanked — not prose. A
+   * string whose body is identifier-shaped (`'NODE_OPTIONS'`, a computed key) keeps its body. A `/` opens a regex
+   * literal where no value can end before it (the start of the text; after `( , = : [ ! & | ? { } ; + - * % < > ~ ^`;
+   * after a keyword such as `return` or `typeof`) and is division after a value (a name, a number, `)`, `]`, a
+   * literal's close); a regex literal with no close on its line is read as division after all.
    */
   static blank(text, { strings = true } = {}) {
     const out = [];
     const n = text.length;
-    let i = 0;
-    while (i < n) {
-      const c = text[i];
-      const next = text[i + 1];
-      if (c === '/' && next === '*') {
-        const end = text.indexOf('*/', i + 2);
-        const stop = end === -1 ? n : end + 2;
-        for (let j = i; j < stop; j += 1) {
-          out.push(text[j] === '\n' ? '\n' : ' ');
+    let prev = ''; // the last significant (non-blank) character emitted — what decides whether a `/` opens a regex
+    let word = ''; // the identifier ending at `prev`, when it is one (a keyword before a regex)
+    const emit = (ch) => {
+      out.push(ch);
+      if (/\s/.test(ch)) {
+        return;
+      }
+      word = /[\w$]/.test(ch) ? (/[\w$]/.test(prev) ? word + ch : ch) : '';
+      prev = ch;
+    };
+    const space = (from, to) => {
+      for (let j = from; j < to; j += 1) {
+        out.push(text[j] === '\n' ? '\n' : ' ');
+      }
+    };
+    const keep = (from, to) => {
+      for (let j = from; j < to; j += 1) {
+        out.push(text[j]);
+      }
+      prev = text[to - 1];
+      word = '';
+    };
+    const regexOpens = () => {
+      if (prev === '') {
+        return true;
+      }
+      if (/[\w$]/.test(prev)) {
+        return TestPractice.REGEX_AFTER.has(word);
+      }
+      return !')]\'"`'.includes(prev);
+    };
+    // a '…' / "…" literal from `i`: identifier-shaped bodies (and every body when `strings` is false) kept, prose blanked;
+    // an unterminated one ends at its line
+    const quoted = (i) => {
+      const q = text[i];
+      let j = i + 1;
+      while (j < n && text[j] !== q && text[j] !== '\n') {
+        j += text[j] === '\\' ? 2 : 1;
+      }
+      const close = Math.min(j, n);
+      const closed = close < n && text[close] === q;
+      const body = text.slice(i + 1, close);
+      if (!strings || /^[A-Za-z_$][\w$]*$/.test(body)) {
+        keep(i, closed ? close + 1 : close);
+      } else {
+        emit(q);
+        space(i + 1, close);
+        if (closed) {
+          emit(q);
         }
-        i = stop;
-      } else if (c === '/' && next === '/') {
-        while (i < n && text[i] !== '\n') {
-          out.push(' ');
-          i += 1;
+      }
+      return closed ? close + 1 : close;
+    };
+    // a /…/ literal from `i`: its body blanked (a class `[…]` may hold a `/`), its flags kept; no close on the line = division
+    const regex = (i) => {
+      let j = i + 1;
+      let inClass = false;
+      while (j < n && text[j] !== '\n') {
+        const ch = text[j];
+        if (ch === '\\') {
+          j += 2;
+          continue;
         }
-      } else if (c === "'" || c === '"' || c === '`') {
-        let j = i + 1;
-        while (j < n && text[j] !== c) {
-          if (text[j] === '\\') {
+        if (inClass) {
+          inClass = ch !== ']';
+        } else if (ch === '[') {
+          inClass = true;
+        } else if (ch === '/') {
+          break;
+        }
+        j += 1;
+      }
+      if (j >= n || text[j] !== '/') {
+        emit('/');
+        return i + 1;
+      }
+      emit('/');
+      space(i + 1, j);
+      emit('/');
+      let k = j + 1;
+      while (k < n && /[A-Za-z]/.test(text[k])) {
+        emit(text[k]);
+        k += 1;
+      }
+      return k;
+    };
+    // a `…` literal from `i`: prose blanked (kept when `strings` is false), each `${…}` scanned as code
+    const template = (i) => {
+      emit('`');
+      let j = i + 1;
+      while (j < n) {
+        const ch = text[j];
+        if (ch === '\\') {
+          const stop = Math.min(j + 2, n);
+          if (strings) {
+            space(j, stop);
+          } else {
+            keep(j, stop);
+          }
+          j = stop;
+        } else if (ch === '`') {
+          emit('`');
+          return j + 1;
+        } else if (ch === '$' && text[j + 1] === '{') {
+          emit('$');
+          emit('{');
+          j = scan(j + 2, true);
+          if (j < n) {
+            emit('}');
             j += 1;
           }
+        } else {
+          out.push(strings && ch !== '\n' ? ' ' : ch);
           j += 1;
         }
-        const close = Math.min(j, n);
-        const body = text.slice(i + 1, close);
-        if (!strings || /^[A-Za-z_$][\w$]*$/.test(body)) {
-          out.push(text.slice(i, Math.min(close + 1, n)));
-        } else {
-          out.push(c);
-          for (const ch of body) {
-            out.push(ch === '\n' ? '\n' : ' ');
-          }
-          if (j < n) {
-            out.push(c);
-          }
-        }
-        i = close + 1;
-      } else {
-        out.push(c);
-        i += 1;
       }
-    }
+      return j;
+    };
+    // the code itself; `inExpression` = inside a template's ${…}: returns at the brace that closes it
+    const scan = (start, inExpression) => {
+      let i = start;
+      let depth = 0;
+      while (i < n) {
+        const c = text[i];
+        const next = text[i + 1];
+        if (c === '/' && next === '*') {
+          const end = text.indexOf('*/', i + 2);
+          const stop = end === -1 ? n : end + 2;
+          space(i, stop);
+          i = stop;
+        } else if (c === '/' && next === '/') {
+          let j = i;
+          while (j < n && text[j] !== '\n') {
+            j += 1;
+          }
+          space(i, j);
+          i = j;
+        } else if (c === "'" || c === '"') {
+          i = quoted(i);
+        } else if (c === '`') {
+          i = template(i);
+        } else if (c === '/' && regexOpens()) {
+          i = regex(i);
+        } else {
+          if (inExpression) {
+            if (c === '{') {
+              depth += 1;
+            } else if (c === '}') {
+              if (depth === 0) {
+                return i;
+              }
+              depth -= 1;
+            }
+          }
+          emit(c);
+          i += 1;
+        }
+      }
+      return i;
+    };
+    scan(0, false);
     return out.join('');
   }
 
@@ -351,8 +505,8 @@ class TestPractice {
    * The config's exported object literal, read entry by entry: { keys, spreads } — `keys` a Map of every top-level
    * key → its value when a plain string literal, else null (an object literal spread in place is read through into it);
    * `spreads` the expressions the other top-level `...` entries carry (the fragment owners' keys, not read). The literal is found behind `module.exports =` (the literal itself, or the name of a `const`/`let`/`var`
-   * bound to one) in the comment-stripped, LF-normalized text and scanned by its own braces — any layout. Null when
-   * the text exports no object literal the scan can read.
+   * bound to one) in the LF-normalized text with its comments and regex bodies blanked (`blank`, strings kept) and
+   * scanned by its own braces — any layout. Null when the text exports no object literal the scan can read.
    */
   static readConfig(text) {
     const literal = TestPractice.exportedLiteral(text);
@@ -405,7 +559,7 @@ class TestPractice {
 
   /** The body of the exported object literal (between its braces), or null. */
   static exportedLiteral(text) {
-    const src = TestPractice.stripComments(text.replace(/\r\n?/g, '\n'));
+    const src = TestPractice.blank(text.replace(/\r\n?/g, '\n'), { strings: false });
     const exported = /module\.exports\s*=\s*/.exec(src);
     if (!exported) {
       return null;
@@ -482,32 +636,6 @@ class TestPractice {
       }
     }
     return -1;
-  }
-
-  /** The text without its comments — block comments and `//` comments outside string literals (a URL in a string stays). */
-  static stripComments(text) {
-    const noBlocks = text.replace(/\/\*[\s\S]*?\*\//g, '');
-    return noBlocks
-      .split('\n')
-      .map((line) => {
-        let quote = null;
-        for (let i = 0; i < line.length; i += 1) {
-          const c = line[i];
-          if (quote) {
-            if (c === '\\') {
-              i += 1;
-            } else if (c === quote) {
-              quote = null;
-            }
-          } else if (c === "'" || c === '"' || c === '`') {
-            quote = c;
-          } else if (c === '/' && line[i + 1] === '/') {
-            return line.slice(0, i);
-          }
-        }
-        return line;
-      })
-      .join('\n');
   }
 }
 

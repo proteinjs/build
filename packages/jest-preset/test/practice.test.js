@@ -231,7 +231,7 @@ describe('the judge: a pure read of package.json + jest.config.js, one rule at a
     );
     expect(rules(kinds)).toEqual(['P1']);
     expect(kinds[0].detail).toMatch(
-      /at 1 \(a write to process\.env\), 2 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\), 3 \(process\.execArgv\), 4 \(process\.argv \+ process\.exit\), 5 \(a write to process\.env\), 6 \(a write to process\.env\)/
+      /at 1 \(a write to process\.env\), 2 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\), 3 \(process\.execArgv\), 4 \(process\.argv \+ process\.exit\), 5 \(a write to process\.env\), 6 \(a write to process\.env \+ process\.env itself\)/
     );
     // a read of another env key is a seam's input, not a mutation; a comment or a message that spells the words is prose
     expect(
@@ -281,6 +281,58 @@ describe('the judge: a pure read of package.json + jest.config.js, one rule at a
         rules(p.deviations),
       ])
     ).toEqual([['server', ['P1']]]);
+  });
+
+  test('P1: an ALIAS of the process or its env is the same read (round 3’s dodge: `const { env } = process`, `const e = process.env`), and a regex literal is no comment and opens no string (the two blank corners) — each named by line; another env key’s read and a TZ write judge as before', () => {
+    // the dodges the refuter of row 3260 round 3 typed against the judge at 1d05841a — each judged [] there
+    const named = (lines) => {
+      const found = judge(manifest(), [...lines, "module.exports = { preset: '@proteinjs/jest-preset' };"].join('\n'));
+      expect(rules(found)).toEqual(['P1']);
+      return found[0].detail;
+    };
+    // the process destructured or held: the object itself is the read (a jest config has no use for it)
+    expect(named(['const { env } = process;', "env.NODE_OPTIONS = '--x';"])).toMatch(/at 1 \(process itself\) —/);
+    expect(named(['const { argv } = process;', "if (argv.includes('-i')) throw new Error('in process');"])).toMatch(
+      /at 1 \(process itself\) —/
+    );
+    expect(named(['const p = process;', 'p.exit(1);'])).toMatch(/at 1 \(process itself\) —/);
+    // the env held: `process.env` bare — not followed by a key — is the read, whatever the alias does next
+    expect(named(['const e = process.env;', "e.NODE_OPTIONS = (e.NODE_OPTIONS || '') + ' --x';"])).toMatch(
+      /at 1 \(process\.env itself\) —/
+    );
+    expect(named(['const copy = { ...process.env };', "copy.NODE_OPTIONS = '--x';"])).toMatch(
+      /at 1 \(process\.env itself\) —/
+    );
+    // the key split onto the next line: the bare reference is the line it sits on
+    expect(named(['process.env', "  .NODE_OPTIONS = '--x';"])).toMatch(/at 1 \(process\.env itself\) —/);
+    // a regex literal that spells `//`: no comment — the write beside it on the line is read
+    expect(named(["const slashes = /\\/\\//; process.env.NODE_OPTIONS = '--x';"])).toMatch(
+      /at 1 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\) —/
+    );
+    // a regex literal that carries a quote: no string opens — the next line is read as the code it is
+    expect(named(["const apostrophe = /don't/;", "process.env.NODE_OPTIONS = '--x';"])).toMatch(
+      /at 2 \(process\.env\.NODE_OPTIONS \+ a write to process\.env\) —/
+    );
+    // a read inside a template's ${…} is code, not prose
+    expect(named(["const mode = `run: ${process.argv.join(' ')}`;"])).toMatch(/at 1 \(process\.argv\) —/);
+    // the kinds the rule named before still read as they did, beside the alias kinds
+    expect(named(["process.env.TZ = 'UTC';"])).toMatch(/at 1 \(a write to process\.env\) —/);
+    // the member reads a seam legitimately makes — another env key (space-server's worker cap), the cwd, the platform —
+    // are not the object: unnamed, and so is a word in prose or a regex that only spells the names
+    expect(
+      judge(
+        manifest(),
+        [
+          "const cap = process.env.JEST_WORKER_IDLE_MEMORY_LIMIT || '1.5GB';",
+          'const root = process.cwd();',
+          "const darwin = process.platform === 'darwin';",
+          '// one @proteinjs copy per process; const { env } = process would be named',
+          'const re = /process\\.env|process\\.argv/;',
+          'const note = `every process has its env; see \\`process.argv\\``;',
+          "module.exports = { preset: '@proteinjs/jest-preset', testTimeout: darwin ? 30000 : 120000, displayName: note + cap + root + String(re) };",
+        ].join('\n')
+      )
+    ).toEqual([]);
   });
 
   test('P2: --runInBand, a typed NODE_OPTIONS, a bare `jest`, a missing script beside a config — each named with the practice’s script', () => {
