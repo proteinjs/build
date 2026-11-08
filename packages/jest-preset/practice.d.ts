@@ -56,8 +56,10 @@ export class TestPractice {
   static REASON_KEY: string;
   static DECLARATION_KEYS: string[];
   static PRESET_KEYS: string[];
-  /** P1's process reads — each kind named with the regular expression that finds it on one blanked line. */
+  /** P1's process reads — each kind (a write, NODE_OPTIONS / argv / execArgv / exit, and the process or its env held bare as a value) named with the regular expression that finds it on one blanked line. */
   static PROCESS_READS: { what: string; re: RegExp }[];
+  /** The words a `/` may open a regex literal after (`return /x/`); `blank` reads division after any other name. */
+  static REGEX_AFTER: Set<string>;
   static RULES: { P1: string; P2: string; P3: string };
   static drift(packages: PackageRead[]): PackageDrift[];
   static judge(read: {
@@ -66,11 +68,11 @@ export class TestPractice {
     modules?: ModuleRead[];
   }): Deviation[];
   static underTheLaw(manifest: Record<string, any> | null, config: string | null): boolean;
-  /** The lines of `text` that read or write the process (PROCESS_READS), over its comment- and prose-blanked form. */
+  /** The lines of `text` that read or write the process (PROCESS_READS), over its blanked form (comments, prose strings, regex bodies). */
   static processReads(text: string): ProcessRead[];
   /** The `require('./…')` / `require('../…')` specifiers of a text, in order, each once. */
   static localRequires(text: string): string[];
-  /** The text with comments (and, unless `strings` is false, string prose) blanked, every line kept at its number. */
+  /** THE ONE STRIPPER: comments, regex bodies and (unless `strings` is false) string and template prose blanked in one tokenizing pass — a template's ${…} read as code — every line kept at its number. */
   static blank(text: string, options?: { strings?: boolean }): string;
   static describe(drift: PackageDrift[]): string;
   static readConfig(text: string): ConfigRead | null;
@@ -78,5 +80,4 @@ export class TestPractice {
   static exportedLiteral(text: string): string | null;
   static entriesOf(body: string): string[];
   static closeOf(src: string, open: number): number;
-  static stripComments(text: string): string;
 }
