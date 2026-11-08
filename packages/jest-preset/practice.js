@@ -324,25 +324,31 @@ class TestPractice {
    * string whose body is identifier-shaped (`'NODE_OPTIONS'`, a computed key) keeps its body. A `/` opens a regex
    * literal where no value can end before it (the start of the text; after `( , = : [ ! & | ? { } ; + - * % < > ~ ^`;
    * after a keyword such as `return` or `typeof`) and is division after a value (a name, a number, `)`, `]`, a
-   * literal's close); a regex literal with no close on its line is read as division after all.
+   * literal's close); the word before a `/` ends where whitespace or a blanked span begins, so `1⏎return /x/` is `return`
+   * then a regex (ASI), never `1return` then a division; a regex literal with no close on its line is read as division
+   * after all.
    */
   static blank(text, { strings = true } = {}) {
     const out = [];
     const n = text.length;
     let prev = ''; // the last significant (non-blank) character emitted — what decides whether a `/` opens a regex
     let word = ''; // the identifier ending at `prev`, when it is one (a keyword before a regex)
+    let joined = false; // `prev` emitted with no blank since: an identifier ends where whitespace or a blanked span begins
     const emit = (ch) => {
       out.push(ch);
       if (/\s/.test(ch)) {
+        joined = false; // a token boundary: `1` then `return` across a newline are two words (ASI), never `1return`
         return;
       }
-      word = /[\w$]/.test(ch) ? (/[\w$]/.test(prev) ? word + ch : ch) : '';
+      word = /[\w$]/.test(ch) ? (joined && /[\w$]/.test(prev) ? word + ch : ch) : '';
       prev = ch;
+      joined = true;
     };
     const space = (from, to) => {
       for (let j = from; j < to; j += 1) {
         out.push(text[j] === '\n' ? '\n' : ' ');
       }
+      joined = false; // a comment or a blanked literal separates tokens as whitespace does
     };
     const keep = (from, to) => {
       for (let j = from; j < to; j += 1) {
