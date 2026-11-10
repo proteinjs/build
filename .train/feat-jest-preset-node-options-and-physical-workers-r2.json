@@ -1,5 +1,5 @@
 {
-  "branch": "feat/jest-preset-node-options-and-physical-workers",
+  "branch": "feat/jest-preset-node-options-and-physical-workers-r2",
   "packages": ["jest-preset"],
   "suites": [
     "packages/jest-preset/test/jestPresetBuilder.test.js",
