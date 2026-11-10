@@ -395,7 +395,13 @@ class InstalledGraph {
     return trees;
   }
 
-  /** lerna's package globs: a literal dir, `<dir>/*` (its child dirs), `<dir>/**` (every dir below it) — kept when a package.json sits there. Sorted. */
+  /**
+   * lerna's package globs: a literal dir, `<dir>/*` (its child dirs), `<dir>/**` (every dir below it) — kept when a
+   * package.json sits there. Sorted. The walk never enters `node_modules`, `dist` or a dot-dir: the house's one answer
+   * to "what is a workspace package" (PackageUtil.findPackageJsonFiles in @proteinjs/util-node prunes the same names),
+   * so a build output that carries a copy of its package.json (tsc with `resolveJsonModule` emits one) is its
+   * package's content and never a second tree of the same name.
+   */
   expand(pattern) {
     const segments = pattern.split('/').filter(Boolean);
     let dirs = [''];
@@ -422,7 +428,7 @@ class InstalledGraph {
     }
     return fs
       .readdirSync(abs, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && e.name !== 'node_modules' && !e.name.startsWith('.'))
+      .filter((e) => e.isDirectory() && !InstalledGraph.PRUNED.has(e.name) && !e.name.startsWith('.'))
       .map((e) => path.posix.join(dir, e.name));
   }
 
@@ -438,5 +444,8 @@ class InstalledGraph {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
   }
 }
+
+/** The directory names the tree walk never enters (dot-dirs aside): installed copies and build outputs. */
+InstalledGraph.PRUNED = new Set(['node_modules', 'dist']);
 
 module.exports = { InstalledGraph };
