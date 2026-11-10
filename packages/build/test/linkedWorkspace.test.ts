@@ -840,4 +840,23 @@ describe('InstalledGraph', () => {
       /declares @acme\/fixture-missing \^1.0.0; nothing installed resolves it/
     );
   });
+
+  it('a build output is its package, never a tree: under `packages/**` a dist that carries a copy of package.json adds no tree and no finding (the first live release close read packages/server/dist as a second server)', () => {
+    const repoRoot = fixtureWorkspace();
+    writeJson(path.join(repoRoot, 'lerna.json'), { packages: ['packages/**'] });
+    const judge = () => new InstalledGraph({ repoRoot, scopes: ORG.scopes, log: () => undefined });
+    const messages = (run: { failures: { message: string }[] }) => run.failures.map((f) => f.message);
+    const beforeTheBuild = judge().run();
+    fs.mkdirSync(path.join(repoRoot, 'packages/server/dist'), { recursive: true });
+    fs.copyFileSync(
+      path.join(repoRoot, 'packages/server/package.json'),
+      path.join(repoRoot, 'packages/server/dist/package.json')
+    );
+    expect(
+      judge()
+        .loadTrees()
+        .map((t: { rel: string }) => t.rel)
+    ).toEqual(['packages/common', 'packages/server', 'packages/ui']);
+    expect(messages(judge().run())).toEqual(messages(beforeTheBuild));
+  });
 });
