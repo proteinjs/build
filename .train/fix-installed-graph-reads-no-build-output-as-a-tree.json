@@ -1,0 +1,10 @@
+{
+  "branch": "fix/installed-graph-reads-no-build-output-as-a-tree",
+  "packages": ["build"],
+  "suites": [
+    "packages/build/test/installArgsOwner.test.ts",
+    "packages/build/test/linkedWorkspace.test.ts",
+    "packages/build/test/linkedWorkspaceDist.test.ts"
+  ],
+  "removes": []
+}
