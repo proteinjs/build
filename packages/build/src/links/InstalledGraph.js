@@ -397,10 +397,10 @@ class InstalledGraph {
 
   /**
    * lerna's package globs: a literal dir, `<dir>/*` (its child dirs), `<dir>/**` (every dir below it) — kept when a
-   * package.json sits there. Sorted. The walk never enters `node_modules`, `dist` or a dot-dir: the house's one answer
-   * to "what is a workspace package" (PackageUtil.findPackageJsonFiles in @proteinjs/util-node prunes the same names),
-   * so a build output that carries a copy of its package.json (tsc with `resolveJsonModule` emits one) is its
-   * package's content and never a second tree of the same name.
+   * package.json sits there. Sorted. The walk never enters `node_modules`, `dist` or a dot-dir — the names the house's
+   * package discovery prunes too (PackageUtil.findPackageJsonFiles in @proteinjs/util-node; each reader keeps its own
+   * list, held in step by hand) — so a build output that carries a copy of its package.json (tsc with
+   * `resolveJsonModule` emits one) is its package's content and never a second tree of the same name.
    */
   expand(pattern) {
     const segments = pattern.split('/').filter(Boolean);
