@@ -1,9 +1,9 @@
 {
   "about": "Seconds per suite over its last green runs, oldest first; the median is the suite's weight when the land tool cuts this package's shards and a CI leg cuts its share (scripts/ci/DurationSharder.js). Written by the local verify after a green run — a measure, never a gate: a stale or missing file only makes the cut less even.",
   "suites": {
-    "test/jestPresetBuilder.test.js": [0.2, 0.1],
-    "test/knobsAdvisory.test.js": [0.1, 0],
-    "test/knobsTestTimeout.test.js": [0, 0],
-    "test/practice.test.js": [0.3]
+    "test/jestPresetBuilder.test.js": [0.2, 0.1, 0.2],
+    "test/knobsAdvisory.test.js": [0.1, 0, 0],
+    "test/knobsTestTimeout.test.js": [0, 0, 0],
+    "test/practice.test.js": [0.3, 0.4]
   }
 }

@@ -1,0 +1,33 @@
+{
+  "about": "Seconds per suite over its last green runs, oldest first; the median is the suite's weight when the land tool cuts this package's shards and a CI leg cuts its share (scripts/ci/DurationSharder.js). Written by the local verify after a green run — a measure, never a gate: a stale or missing file only makes the cut less even.",
+  "suites": {
+    "test/classifyCommitMessage.test.ts": [0],
+    "test/dependencyScheduler.test.ts": [0.3],
+    "test/dockerGuardian.test.ts": [0.1],
+    "test/estateCliHolds.test.ts": [0.1],
+    "test/estateDatabaseSweep.test.ts": [0.1],
+    "test/estateReaper.test.ts": [5.9],
+    "test/estateRegistry.test.ts": [0.1],
+    "test/installArgsOwner.test.ts": [0.2],
+    "test/linkedWorkspace.test.ts": [9.1],
+    "test/linkedWorkspaceDist.test.ts": [3.1],
+    "test/logGovernor.test.ts": [0.1],
+    "test/materializeDependencies.test.ts": [0.9],
+    "test/nodeModulesIdentityWatcher.test.ts": [0],
+    "test/packageFormatter.test.ts": [3.2],
+    "test/packageProcessRunner.test.ts": [0.2],
+    "test/packageTreeHasher.test.ts": [1],
+    "test/parseMergeToMainSpec.test.ts": [0],
+    "test/pressureValve.test.ts": [0.1],
+    "test/pullForward.test.ts": [10.9],
+    "test/reapEstatesOptions.test.ts": [0.1],
+    "test/servePackageSupervisor.test.ts": [58.5],
+    "test/symlinkWorkspace.test.ts": [0.1],
+    "test/syncWorkspacePull.test.ts": [2.9],
+    "test/versionWorkspaceCiPublish.test.ts": [2.7],
+    "test/versionWorkspaceReconciliation.test.ts": [8.1],
+    "test/workspaceBuilder.test.ts": [16.1],
+    "test/workspaceDoctor.test.ts": [1],
+    "test/worktreeCleaner.test.ts": [3.4]
+  }
+}
