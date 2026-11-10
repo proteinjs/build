@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.17.3](https://github.com/proteinjs/build/compare/@proteinjs/build@2.17.2...@proteinjs/build@2.17.3) (2026-11-10)
+
+
+### Bug Fixes
+
+* **links:** the installed graph reads no build output as a tree ([5455494](https://github.com/proteinjs/build/commit/5455494b1e00b9460b70c7e16be1d378d15072ed))
+
+
+
+
+
 ## [2.17.2](https://github.com/proteinjs/build/compare/@proteinjs/build@2.17.1...@proteinjs/build@2.17.2) (2026-10-03)
 
 
